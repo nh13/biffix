@@ -40,7 +40,7 @@ dependencies {
     // Spock (Groovy 4, matching Nextflow 25.x) + a JSON-schema validator (draft 2020-12, the draft
     // schemars writes), so the emitted engine events can be checked against the canonical
     // schemas/wire.engine.schema.json.
-    testImplementation 'org.spockframework:spock-core:2.3-groovy-4.0'
+    testImplementation 'org.spockframework:spock-core:2.5-groovy-4.0'
     testImplementation 'com.networknt:json-schema-validator:1.5.4'
 }
 
