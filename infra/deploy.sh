@@ -146,7 +146,7 @@ require_deploy_tools
 if [ -n "$RELEASE" ]; then
   [[ "$RELEASE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
     || die "--release takes a release tag, vMAJOR.MINOR.PATCH (got '$RELEASE')"
-  [ "$SKIP_UI" -eq 0 ] && [ "$SKIP_LAMBDAS" -eq 0 ] \
+  { [ "$SKIP_UI" -eq 0 ] && [ "$SKIP_LAMBDAS" -eq 0 ]; } \
     || die "--release deploys the release's UI and Lambdas; drop --skip-ui/--skip-lambdas"
   [ "$DRY_RUN" -eq 1 ] || command -v crane >/dev/null \
     || die "crane not found — --release copies the coordinator image with it (e.g. 'brew install crane')"
@@ -177,7 +177,7 @@ DATA_STACK="$(cfg data_stack)"
 EDGE_STACK="$(cfg edge_stack)"
 HOST_AWS_CLI_VERSION="$(cfg host_aws_cli_version)"
 HOST_AWS_CLI_ZIPS="$(cfg host_aws_cli_zips)"
-[ -n "$TENANT" ] && [ -n "$REGION" ] || die "$CONFIG: tenant and region must be set"
+{ [ -n "$TENANT" ] && [ -n "$REGION" ]; } || die "$CONFIG: tenant and region must be set"
 # Every region-scoped call below (and the aws subprocesses of image_retention) targets the config's
 # region, whatever the shell's default is. The ACM calls pass us-east-1 explicitly (CloudFront).
 export AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION"

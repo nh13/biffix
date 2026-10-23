@@ -172,7 +172,7 @@ build_snakemake_layers() {
   local executor logger
   executor=$(find "$WHEELS" -name 'snakemake_executor_plugin_aws_batch-*.whl' -print -quit)
   logger=$(find "$WHEELS" -name "snakemake_logger_plugin_biffix-${BIFFIX_RT_LOGGER_VERSION}-*.whl" -print -quit)
-  [ -n "$executor" ] && [ -n "$logger" ] || die "base image lacks the executor or logger wheel"
+  { [ -n "$executor" ] && [ -n "$logger" ]; } || die "base image lacks the executor or logger wheel"
   # The biffix-owned plugins by file, so the resolver can never substitute a PyPI release of the
   # same name; Snakemake is exact and exempt from the cutoff (a newer 9.x must still resolve).
   cat >"$WORK/requirements.in" <<EOF
@@ -306,7 +306,7 @@ install_nf_workflow_plugins() {
   read -r -a entries <<<"${BIFFIX_RT_NF_WORKFLOW_PLUGINS:-}"
   for entry in "${entries[@]}"; do
     IFS=@ read -r id pv sha <<<"$entry"
-    [ -n "$id" ] && [ -n "$pv" ] && [ -n "$sha" ] || die "bad BIFFIX_RT_NF_WORKFLOW_PLUGINS entry '$entry'"
+    { [ -n "$id" ] && [ -n "$pv" ] && [ -n "$sha" ]; } || die "bad BIFFIX_RT_NF_WORKFLOW_PLUGINS entry '$entry'"
     install_nf_plugin "$id" "$pv" "$sha" "$nf/plugins"
     echo "$id@$pv" >>"$nf/workflow-plugins"
   done
