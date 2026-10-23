@@ -1,0 +1,20 @@
+{
+  "id": "imported",
+  "bucket": "acme-imported",
+  "run_role_arn": "arn:aws:iam::123456789012:role/biffix-acme-project-imported-RunBaseRole",
+  "coordinator_job_definition": "arn:aws:batch:us-east-1:123456789012:job-definition/biffix-acme-imported-coordinator:3",
+  "task_log_group": "/biffix/biffix-acme-project-imported/batch",
+  "uploads": true,
+  "viewer_cors": true,
+  "data_sources": [
+    {
+      "id": "references",
+      "name": "References",
+      "bucket": "acme-references",
+      "prefix": "genomes/",
+      "description": "Shared reference genomes.",
+      "kind": "references",
+      "viewer_cors": true
+    }
+  ]
+}

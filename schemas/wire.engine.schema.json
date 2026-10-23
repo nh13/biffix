@@ -1,0 +1,519 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EngineEvent",
+  "description": "The engine-native event vocabulary (shared across engines). `kind` is the tag.",
+  "type": "object",
+  "properties": {
+    "run_id": {
+      "$ref": "#/$defs/RunId"
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint32",
+      "default": 1,
+      "minimum": 0
+    },
+    "ts": {
+      "type": "number",
+      "format": "double"
+    }
+  },
+  "oneOf": [
+    {
+      "description": "The engine began executing (coordinator's engine process started).",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "run_started"
+        },
+        "session_id": {
+          "description": "The engine's own session id (Nextflow `session.uniqueId`), when the engine has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "description": "Completed / total logical-task counts.",
+      "type": "object",
+      "properties": {
+        "completed": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "kind": {
+          "type": "string",
+          "const": "run_progress"
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "kind",
+        "completed",
+        "total"
+      ]
+    },
+    {
+      "description": "The engine reported the whole run finished.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "run_succeeded"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "description": "The engine reported the whole run failed.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "run_failed"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "description": "The run's group-level dependency graph (rule/process graph), emitted once when known. Folds\nas a set-union in the reducer.",
+      "type": "object",
+      "properties": {
+        "dag": {
+          "$ref": "#/$defs/Dag",
+          "default": {
+            "edges": [],
+            "nodes": []
+          }
+        },
+        "kind": {
+          "type": "string",
+          "const": "run_dag"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "description": "A logical task was registered (may be unsubmitted). `group` is the graph node (rule/process)\nit belongs to, for rolling task states up onto the DAG.",
+      "type": "object",
+      "properties": {
+        "deps": {
+          "description": "Task keys of the in-run tasks that produced this task's inputs (its upstream).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "group": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "task_created"
+        },
+        "task_key": {
+          "$ref": "#/$defs/TaskKey"
+        }
+      },
+      "required": [
+        "kind",
+        "task_key"
+      ]
+    },
+    {
+      "description": "An attempt was submitted to Batch — binds `batch_job_id → (run_id, task_key)`.",
+      "type": "object",
+      "properties": {
+        "attempt": {
+          "$ref": "#/$defs/Attempt"
+        },
+        "batch_job_id": {
+          "$ref": "#/$defs/BatchJobId"
+        },
+        "image": {
+          "description": "The container image the Batch job runs, as the engine resolved it (the tenant's copy,\n`<registry>/<repo>@sha256:…` where the engine knows the digest). Optional + additive:\nthe task's image provenance on a run with more than one image.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "task_submitted"
+        },
+        "task_key": {
+          "$ref": "#/$defs/TaskKey"
+        }
+      },
+      "required": [
+        "kind",
+        "task_key",
+        "attempt",
+        "batch_job_id"
+      ]
+    },
+    {
+      "description": "A **local** task (a rule run on the coordinator, never submitted to Batch — e.g. an\naggregation target) finished successfully. A Batch task's terminal is AWS's ground truth\n(`from_aws_batch`); a local rule has no Batch job, so the engine is its only terminal\nsource. Carries no `batch_job_id`.\n\n`attempt` is the engine's attempt number for the rule, when it retries local rules: each\nattempt's terminal is then a distinct fact (its dedup key carries the attempt), so a retried\nrule's second failure is not dropped as a redelivery of the first. Optional + additive:\nabsent ⇒ no attempt slot in the key.\n\n`execution_id` is the engine's id for this one execution of the task, for an engine that\ncan re-run a task without advancing `attempt` (Nextflow's trace `task_id`, new for every\nexecution, including an executor-level retry that keeps the attempt number). It makes each\nexecution's terminal a distinct fact (the dedup key's discriminator) while a redelivery of\none still dedupes. Optional + additive: absent ⇒ no discriminator in the key.",
+      "type": "object",
+      "properties": {
+        "attempt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Attempt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "execution_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "task_succeeded"
+        },
+        "task_key": {
+          "$ref": "#/$defs/TaskKey"
+        }
+      },
+      "required": [
+        "kind",
+        "task_key"
+      ]
+    },
+    {
+      "description": "A task was satisfied from the engine cache (e.g. Nextflow `-resume`): it produced its\noutputs on a prior run and was never submitted to Batch this time. Folds to a succeeded\nterminal but is flagged as cached, so cost/runtime views don't count it as work run. Like\n[`EngineBody::TaskSucceeded`], carries no `batch_job_id` and an optional `attempt` and\n`execution_id`.",
+      "type": "object",
+      "properties": {
+        "attempt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Attempt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "execution_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "task_cached"
+        },
+        "task_key": {
+          "$ref": "#/$defs/TaskKey"
+        }
+      },
+      "required": [
+        "kind",
+        "task_key"
+      ]
+    },
+    {
+      "description": "A **local** task failed (engine-reported). Same rationale, `attempt` and `execution_id` as\n[`EngineBody::TaskSucceeded`]: with `execution_id`, a failure at an attempt the engine\nre-ran without advancing it is not dropped as a redelivery of the first.",
+      "type": "object",
+      "properties": {
+        "attempt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Attempt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "execution_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "task_failed"
+        },
+        "task_key": {
+          "$ref": "#/$defs/TaskKey"
+        }
+      },
+      "required": [
+        "kind",
+        "task_key"
+      ]
+    },
+    {
+      "description": "A new attempt of a task is starting; links old → new.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "task_retrying"
+        },
+        "next_attempt": {
+          "$ref": "#/$defs/Attempt"
+        },
+        "prev_attempt": {
+          "$ref": "#/$defs/Attempt"
+        },
+        "task_key": {
+          "$ref": "#/$defs/TaskKey"
+        }
+      },
+      "required": [
+        "kind",
+        "task_key",
+        "prev_attempt",
+        "next_attempt"
+      ]
+    },
+    {
+      "description": "The outputs of one task attempt, as a set (one event per task, attempt and role). With no\n`task_key` the outputs are run-level (e.g. a Nextflow publish that no task can be credited\nwith). Folds as a set-union keyed on `s3_uri`.",
+      "type": "object",
+      "properties": {
+        "attempt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Attempt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "task_outputs"
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OutputRef"
+          }
+        },
+        "reused": {
+          "description": "True when the outputs were satisfied from the engine cache (Nextflow `-resume`), not\nproduced by this run.",
+          "type": "boolean"
+        },
+        "role": {
+          "description": "The role of every ref in this batch; absent ⇒ `output`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "examples": [
+            "output",
+            "published",
+            "intermediate",
+            "log",
+            "benchmark"
+          ]
+        },
+        "task_key": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskKey"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "outputs"
+      ]
+    },
+    {
+      "description": "The engine's verdict on a task attempt — today only `failed`: the engine failed an attempt\nwhose Batch job may have exited 0 (Nextflow: missing declared outputs, an exit status\noutside `validExitStatus`). Outranks AWS's `SUCCEEDED` for the task; the attempt keeps its\nAWS facts. `attempt` names the attempt (the one its `task_submitted` carried); absent ⇒\nevery attempt. Either way it covers only submissions at or before `ts`, so a later re-run\nunder the same attempt number is not rejected. A new kind, so it is named in the engine namespace\n([`crate::translate::ENGINE_KIND_PREFIX`]): an older backend stores it unfolded.",
+      "type": "object",
+      "properties": {
+        "attempt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Attempt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "category": {
+          "description": "`missing_output`, `app_error`, … (the open `TerminationCategory` vocabulary).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "examples": [
+            "spot",
+            "oom",
+            "host_terminated",
+            "app_error",
+            "missing_output"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "engine_task_verdict"
+        },
+        "reason": {
+          "description": "The engine's explanation, shown with the failure.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_key": {
+          "$ref": "#/$defs/TaskKey"
+        },
+        "verdict": {
+          "description": "The workflow engine's verdict on a task attempt (open enum).",
+          "type": "string",
+          "examples": [
+            "failed"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "task_key",
+        "verdict"
+      ]
+    }
+  ],
+  "required": [
+    "ts",
+    "run_id"
+  ],
+  "$defs": {
+    "Attempt": {
+      "description": "1-based attempt counter distinguishing retries of a single `task_key`.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "BatchJobId": {
+      "description": "AWS Batch job id for a single attempt; the join key between the engine and AWS streams.",
+      "type": "string"
+    },
+    "Dag": {
+      "description": "A run's group-level dependency graph. Carried by [`EventData::RunDag`]; the reducer folds nodes\nand edges as set-unions, so the projected graph is a pure function of the observed event set.",
+      "type": "object",
+      "properties": {
+        "edges": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DagEdge"
+          }
+        },
+        "nodes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DagNode"
+          }
+        }
+      }
+    },
+    "DagEdge": {
+      "description": "A directed dependency edge `from → to` between two graph nodes.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "DagNode": {
+      "description": "A node in a run's group-level dependency graph (a Snakemake rule or a Nextflow process).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "OutputRef": {
+      "description": "One output object a task wrote (or, for a cached task, was satisfied by).",
+      "type": "object",
+      "properties": {
+        "etag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "The engine's own name for the file (e.g. a Nextflow publish target relative to its publish\ndir), for display. Optional; the backend derives one from `s3_uri` and the run's output\nprefix when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "s3_uri": {
+          "type": "string"
+        },
+        "size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "s3_uri"
+      ]
+    },
+    "RunId": {
+      "description": "biffix-minted run identifier. Nullable on the wire until attribution.",
+      "type": "string"
+    },
+    "TaskKey": {
+      "description": "Stable logical-task identity: Snakemake `rule:sorted(wildcards)` / Nextflow the task name,\n`process (index)` untagged and `process (tag) #<index>` tagged (a tag need not be unique;\nthe index is, and depends on no other task: nf-biffix `BiffixObserver.taskKey`).\nSurvives retries — all attempts of one rule/process share it.",
+      "type": "string"
+    }
+  }
+}

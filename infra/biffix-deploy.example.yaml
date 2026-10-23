@@ -1,0 +1,261 @@
+# biffix deploy config: a complete, commented example.
+#
+# One deploy = one tenant = one AWS account. The whole CDK app is parameterized by this file, so a
+# new deployment is a config edit plus `infra/deploy.sh`, not a code change. Copy it and edit the
+# copy; never deploy this file as is (its account id is a placeholder that the deploy refuses):
+#
+#   cp infra/biffix-deploy.example.yaml infra/biffix-deploy.yaml    # gitignored
+#   infra/deploy.sh --config biffix-deploy.yaml
+#
+# Every key biffix reads is below, set to its default unless the comment says otherwise. A key you
+# leave out takes the default shown; a key biffix does not know is an error. Keys marked REQUIRED
+# have no default.
+
+# ── Tenancy ──────────────────────────────────────────────────────────────────────────────────────
+
+# REQUIRED. Names every resource: stacks are `biffix-<tenant>-<part>`, so do NOT start it with
+# `biffix-` (that gives `biffix-biffix-acme-*`). Lowercase letters, digits and `-` only, at most 32
+# characters. Changing it later means a new deployment, not a rename.
+tenant: acme
+# REQUIRED. The AWS region every stack is deployed to.
+region: us-east-1
+# The 12-digit AWS account this tenant lives in. deploy.sh and teardown.sh refuse to touch any
+# other account. Quote it (an id may start with 0; an unquoted one YAML shortened is refused).
+# deploy.sh takes it in place of `--account <id>`; teardown.sh always requires `--account`, which
+# must agree with it. Default: null, and then deploy.sh requires `--account` too.
+account: "123456789012"
+
+# ── Network ──────────────────────────────────────────────────────────────────────────────────────
+
+# How private subnets reach the internet:
+#   instance — one t4g.nano NAT instance (default; ~$4/month, but a single point of failure you
+#              patch yourself). Fine for a trial or a small lab.
+#   gateway  — a managed NAT gateway (~$32/month, highly available, no maintenance). Use it for
+#              production.
+nat_mode: instance
+# Where Batch workers (every compute environment except the coordinator's) may connect:
+#   nat         — anywhere, through the NAT (default).
+#   ecr_s3_only — only this account's ECR, ECS, CloudWatch Logs and S3 in this region, through VPC
+#                 endpoints, with no route to the internet. Tasks can then pull no image the tenant
+#                 does not hold and reach no bucket outside this account other than the data
+#                 sources and imported project buckets below. ~$90/month in interface endpoints.
+#                 Switching replaces the worker compute environments: do it while they are idle.
+worker_egress: nat
+
+# ── Compute ──────────────────────────────────────────────────────────────────────────────────────
+
+# REQUIRED. The queue-class menu: one AWS Batch compute environment and queue per entry
+# (`biffix-<tenant>-<name>`). Workflows pick a queue-class by name, and registration refuses a name
+# that is not here. Exactly one entry must be the coordinator's.
+queue_classes:
+  - name: cpu-spot
+    # SPOT (default) or ON_DEMAND. Spot is far cheaper; biffix retries tasks a reclaim kills.
+    capacity: SPOT
+    # Instance family keys (see instance_families below; Batch picks a size per job) or exact
+    # instance types (`c7i.4xlarge`, told apart by the `.`). Default: [] (an empty list leaves the
+    # choice to Batch's `optimal`).
+    instances: ["c", "m", "r"]
+    # Whether this is the coordinator's queue-class (default: false).
+    coordinator: false
+    # The most vCPUs this compute environment runs at once: its spend ceiling (default: 256).
+    max_vcpus: 256
+    # The encrypted root volume, in GB. Default: null (30 GB gp3). Raise it for tasks that need
+    # local scratch (a large sort).
+    ebs_gb: null
+    # gp3 throughput in MiB/s (125 baseline to 1000) and IOPS (3000 baseline to 16000, at most 500
+    # per GB of the root volume). Default: null (the gp3 baseline).
+    ebs_throughput: null
+    ebs_iops: null
+    # The instance metadata (IMDSv2) hop limit. Default: null (1: the host only). Set 2 when tools
+    # inside task containers must read instance metadata.
+    imds_hop_limit: null
+  - name: cpu-ondemand
+    capacity: ON_DEMAND
+    instances: ["c", "m", "r"]
+  # The coordinator runs one head job per run, for the run's whole length: on-demand, never spot.
+  - name: coordinator
+    capacity: ON_DEMAND
+    coordinator: true
+  # A queue-class pinned to exact instance types with more scratch (e.g. for benchmarks):
+  #   - name: bench-c7i
+  #     capacity: ON_DEMAND
+  #     instances: ["c7i.4xlarge"]
+  #     max_vcpus: 64
+  #     ebs_gb: 500
+  #     ebs_throughput: 500
+  #     ebs_iops: 6000
+
+# Instance family key -> the instance class Batch is given for it (Batch picks the size). These
+# entries are merged over the built-in defaults: c: c6i, m: m6i, r: r6i, g: g5, arm64: c7g,
+# highmem: x2iedn. Default: {} (the built-ins). Override a family as newer generations arrive, or
+# add your own keys:
+#   instance_families:
+#     c: c7i
+#     arm64: c8g
+instance_families: {}
+
+# The tag of the base coordinator image in this tenant's coordinator ECR repository.
+# Default: null, this checkout's release tag (v<version>, e.g. v0.1.0): the tag
+# `infra/deploy.sh --release v<version>` imports the published image under. Leave it unset when you
+# deploy releases. If you build the image yourself instead (the build-coordinator-image workflow,
+# or docker/coordinator/build-and-push.sh), they push it under its commit SHA and print the tag:
+# set that tag here. Tags are immutable: to ship a new image, push it and set its tag, then deploy.
+# Runs cannot launch until the tag names an image in the repository.
+coordinator_image_tag: null
+
+# The AWS CLI v2 every Batch host installs at boot (Nextflow stages each task's S3 files with it).
+# Default: null, biffix's pinned version and checksums (infra/README.md, "Host AWS CLI"). To move
+# to another release, set all three:
+#   host_aws_cli:
+#     version: "2.37.4"
+#     sha256_x86_64: <sha256 of awscli-exe-linux-x86_64-<version>.zip>
+#     sha256_aarch64: <sha256 of awscli-exe-linux-aarch64-<version>.zip>
+host_aws_cli: null
+
+# ── Projects ─────────────────────────────────────────────────────────────────────────────────────
+
+# REQUIRED, at least one. Each project is its own isolation boundary: its own bucket, KMS key and
+# run role, and a stack `biffix-<tenant>-project-<id>`. Two projects may not share a bucket.
+projects:
+  - # Letters, digits and `-` only, not starting with `rt-`. Changing it means a new project.
+    id: demo
+    # Your own KMS key for this project's data (BYOK). Default: null (biffix creates one).
+    key_arn: null
+    # An existing bucket to use instead of creating one (migration). biffix grants access to it but
+    # never changes it. Default: null (biffix creates and owns the bucket).
+    bucket_name: null
+    # For an imported bucket_name only: its owner has applied the browser-upload CORS rule and the
+    # abandoned-upload lifecycle rule the deploy prints, so the UI may offer uploads (default:
+    # false). A bucket biffix creates gets the rules itself and ignores this.
+    uploads_cors_applied: false
+    # For an imported bucket_name only: its owner has applied the alignment viewer's CORS rule
+    # (default: false). Ignored for a bucket biffix creates.
+    viewer_cors_applied: false
+    # Other S3 locations this project's runs may read inputs from, offered by name in the launch
+    # form's file picker. Each is a read-only grant (listing only under `prefix`) to the project's
+    # run role, the coordinator and the backend; biffix never writes to them. A bucket in another
+    # account also needs a bucket policy there allowing those roles. Default: [].
+    #   data_sources:
+    #     - id: core-drop                 # REQUIRED; unique in the project; `project` is reserved
+    #       name: Sequencing core         # REQUIRED; what the file picker shows
+    #       bucket: acme-seq-deliveries   # REQUIRED
+    #       prefix: lab-x/                # default: "" (the whole bucket)
+    #       description: Run folders the core delivers here.   # default: none
+    #       kind: data                    # data (default) | references
+    #       key_arn: null                 # the KMS key the objects use, if any (default: null)
+    #       viewer_cors_applied: false    # its owner applied the viewer's CORS rule (default: false)
+    data_sources: []
+
+# ── Data ─────────────────────────────────────────────────────────────────────────────────────────
+
+# Your own KMS key for the shared reference bucket (BYOK). Default: null (biffix creates one).
+reference_key_arn: null
+
+# How long run files are kept. Each takes a whole number of days, or null to keep forever.
+retention:
+  # Days after a run ends that its intermediate files (a Nextflow run's own work/ directory) are
+  # deleted; results are never deleted, but a run without them can no longer be resumed. The launch
+  # form also offers "delete when the run succeeds" and "keep". Default: 30.
+  intermediates_days: 30
+  # Days a Snakemake between-workflow cache entry is kept (workflows opt in with `cache: true` in
+  # biffix.yaml). Default: 90.
+  snakemake_cache_days: 90
+  # Project buckets are versioned, so the deletes above only hide objects: S3 frees them (and any
+  # overwritten or deleted result's old versions) this many days later. Until then they can be
+  # recovered. null keeps every version, so the deletes free no space. Default: 30.
+  noncurrent_versions_days: 30
+
+# The image archive: every image a workflow version pins is kept byte for byte in its own bucket,
+# so a lost image can be restored with an identical digest (infra/README.md, "Workflow images").
+image_archive:
+  # Days after archiving that image layers move to Glacier Instant Retrieval (null: never).
+  # Default: 0.
+  instant_retrieval_after_days: 0
+  # Days after archiving that image layers move to Glacier Deep Archive (null: never). Must be
+  # after the instant-retrieval tier. Default: 90.
+  deep_archive_after_days: 90
+  # Only objects larger than this move to the cold tiers, so small manifests stay readable at
+  # once. Default: 1048576 (1 MiB).
+  min_tiered_object_bytes: 1048576
+  # S3 Object Lock: every archived object is immutable for `days` (COMPLIANCE: nobody can delete it,
+  # GOVERNANCE: only with a bypass permission). It can only be turned on when the bucket is first
+  # created. Default: null (no lock).
+  #   object_lock:
+  #     mode: GOVERNANCE
+  #     days: 365
+  object_lock: null
+  # Your own KMS key for the archive bucket (BYOK). Default: null (biffix creates one).
+  key_arn: null
+
+# ── Identity ─────────────────────────────────────────────────────────────────────────────────────
+
+authorization:
+  # The role of a signed-in user no Cognito group grants one: viewer (default), operator,
+  # developer or admin. Google Workspace users carry no groups until you add them, so this is
+  # their role.
+  authenticated_default_role: viewer
+
+# Multi-factor sign-in for the Cognito pool's own users: off, optional (default; each user may
+# enrol an authenticator app) or required. TOTP only. Google sign-ins use Google's own MFA.
+cognito_mfa: optional
+
+# The Cognito hosted-UI domain prefix: <prefix>.auth.<region>.amazoncognito.com. It hosts the
+# sign-in pages the browser and the biffix CLI use, so set it for any deploy people sign in to; it
+# must be unique within the region. Default: null (no hosted UI: browser and CLI sign-in are off).
+# Keep it stable once Google federation uses it: the Google client's redirect URI is built from it.
+cognito_domain_prefix: biffix-acme
+
+# Google Workspace sign-in. Setting it makes Google the only sign-in method and needs
+# cognito_domain_prefix. Only the client id goes here: deploy.sh asks for the client secret once
+# and keeps it in Secrets Manager (infra/README.md, "Google Workspace federation"). Default: null
+# (Cognito users only).
+#   google_oidc:
+#     client_id: 1234567890-abc.apps.googleusercontent.com
+google_oidc: null
+
+# ── Registration ─────────────────────────────────────────────────────────────────────────────────
+
+registration:
+  # GitHub Actions OIDC subjects (your workflow repositories) allowed to assume a role that pulls
+  # and pushes images in this deployment's workflow ECR repository; registering a version is still
+  # an API call by a signed-in Developer. E.g. ["repo:acme-bio/pipelines:ref:refs/heads/main"]. Set
+  # your own repositories. A list of `repo:<owner>/<repository>:<context>` strings: a wildcard may
+  # widen the context (`repo:acme-bio/pipelines:*`) but never the owner or repository. Default: []
+  # (no such role is created).
+  github_subjects: []
+  # Trust for biffix's own coordinator image build in GitHub Actions (the build-coordinator-image
+  # workflow); `ref` is enforced by IAM, so only that branch can push images (leave it out for the
+  # default; it may not be null). Default: null (no such role; build and push images yourself
+  # with docker/coordinator/build-and-push.sh).
+  #   biffix_image_build:
+  #     subject: repo:acme-bio/biffix:environment:image-build    # REQUIRED when the block is set
+  #     ref: refs/heads/main                                      # default: refs/heads/main
+  biffix_image_build: null
+
+# ── Persistence ──────────────────────────────────────────────────────────────────────────────────
+
+# Days of automated Aurora backups (point-in-time recovery) for the event store, which holds every
+# run's history: 1 to 35. Default: 14.
+aurora_backup_retention_days: 14
+# Your own KMS key for the event store: the Aurora cluster's storage, its credential and the run
+# capability signing key (BYOK). Set it at the first deploy: changing it replaces the cluster.
+# Default: null (biffix creates a customer-managed key).
+aurora_key_arn: null
+
+# ── Alarms ───────────────────────────────────────────────────────────────────────────────────────
+
+# An address subscribed to the operational alarms (AWS emails it once to confirm). More recipients
+# can be added on the Settings page. Default: null (no subscriber from config), e.g.
+# alert_email: ops@biffix.example.org
+alert_email: null
+
+# ── Edge ─────────────────────────────────────────────────────────────────────────────────────────
+
+# The app's own hostname, e.g. biffix.example.org: the browser URL and the sign-in callback.
+# deploy.sh requests a DNS-validated certificate for it and tells you which DNS records to add.
+# Default: null (the CloudFront *.cloudfront.net domain; sign-in then only accepts a local
+# development callback, so set this for any deploy people use).
+app_domain: null
+# The ACM certificate (in us-east-1) for app_domain, when you issued it yourself. Needs app_domain.
+# Default: null (deploy.sh requests one).
+app_certificate_arn: null

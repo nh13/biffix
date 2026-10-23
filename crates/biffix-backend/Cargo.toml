@@ -1,0 +1,109 @@
+[package]
+name = "biffix-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "biffix control-plane API (axum + utoipa) — submit, read, ingest, health."
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Test-only surface: the static HMAC JWT verifier and the `testing` module's in-memory doubles, and
+# (with `aws`) biffix-db's schema-isolated pool for the pg tests. Never enabled by a production build:
+# the backend's own dev-dependency on itself below turns it on for its tests, and the CLI's for its
+# end-to-end test.
+test-support = ["dep:tower", "biffix-db?/test-support"]
+# The production build: the AWS provider, the Postgres stores and the Lambda wiring. Without it the
+# crate is the API surface over in-memory doubles (its tests) and the OpenAPI exporter.
+aws = ["dep:sqlx", "dep:biffix-db", "biffix-db/aws", "biffix-core/lambda", "dep:aws-config", "dep:aws-sdk-batch", "dep:aws-sdk-ecr", "dep:aws-sdk-s3", "dep:aws-sdk-cognitoidentityprovider", "dep:aws-sdk-cloudwatchlogs", "dep:aws-sdk-sns", "dep:aws-sdk-codebuild", "dep:aws-sdk-ssm", "dep:lambda_http", "dep:lambda_runtime"]
+
+[lib]
+name = "biffix_backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "biffix-backend"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "biffix-openapi"
+path = "src/bin/openapi.rs"
+
+[dependencies]
+biffix-core.workspace = true
+biffix-workflow.workspace = true
+# The shared HTTP wire contract. `openapi` turns on the utoipa derives so these types appear in the
+# generated OpenAPI document.
+biffix-api = { workspace = true, features = ["openapi"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+base64.workspace = true
+tokio.workspace = true
+futures.workspace = true
+flate2.workspace = true
+axum.workspace = true
+utoipa.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+jsonwebtoken.workspace = true
+reqwest.workspace = true
+uuid.workspace = true
+urlencoding.workspace = true
+jiff.workspace = true
+zip.workspace = true
+# `testing`'s request helpers drive a router with `tower::ServiceExt::oneshot` (`test-support` only).
+tower = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
+# The shared Postgres layer: migrations, connection, the event-log writer and projection.
+biffix-db = { workspace = true, optional = true }
+aws-config = { workspace = true, optional = true }
+aws-sdk-batch = { workspace = true, optional = true }
+aws-sdk-ecr = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-sdk-cognitoidentityprovider = { workspace = true, optional = true }
+aws-sdk-cloudwatchlogs = { workspace = true, optional = true }
+aws-sdk-sns = { workspace = true, optional = true }
+aws-sdk-codebuild = { workspace = true, optional = true }
+aws-sdk-ssm = { workspace = true, optional = true }
+lambda_http = { workspace = true, optional = true }
+lambda_runtime = { workspace = true, optional = true }
+
+[[bin]]
+name = "biffix-backend-lambda"
+path = "src/bin/lambda.rs"
+required-features = ["aws"]
+
+[[bin]]
+name = "biffix-backend-sweep"
+path = "src/bin/sweep.rs"
+required-features = ["aws"]
+
+[dev-dependencies]
+# The crate's own tests (unit and integration) build it with `test-support`.
+biffix-backend = { path = ".", features = ["test-support"] }
+# biffix-core's `testing` builders for the events the tests seed.
+biffix-core = { workspace = true, features = ["test-support"] }
+# An RSA key generated at test time signs tokens for the Cognito verifier's JWKS tests, from the OS
+# RNG of rsa's own rand_core (`getrandom`).
+rsa = { workspace = true, features = ["getrandom"] }
+# `tower::ServiceExt::oneshot` drives the HTTP handler tests; the production library does not use
+# tower directly (it composes routers through axum), only `test-support`'s request helpers do.
+tower.workspace = true
+# Paused time (`start_paused`) drives waits (a cancel waiting out a launch) without sleeping.
+tokio = { workspace = true, features = ["test-util"] }
+# A fake HTTP connection that records the request an AWS SDK client sends (ECR tag lookups). Not
+# aws-smithy-http-client's `test-util`: it turns on serde_json's `preserve_order` for the whole
+# workspace's test build, which changes JSON key order in code under test.
+aws-smithy-runtime-api.workspace = true
+aws-smithy-types.workspace = true

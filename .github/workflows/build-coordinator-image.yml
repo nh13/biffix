@@ -1,0 +1,132 @@
+# Build the biffix BASE coordinator image on native hardware for both fleet architectures and push
+# it to the tenant's coordinator ECR repository as a manifest list. The base carries no workflow
+# engine: the backend appends a per-release engine runtime layer to it (CodeBuild), so this image is
+# only the control-plane glue plus the biffix-owned engine plugins in /opt/biffix/wheels/.
+#
+# RELEASES DO NOT NEED THIS. release.yml publishes each release's image to GHCR, and
+# `infra/deploy.sh --release` copies it by digest into the tenant's repository. This workflow is for
+# deploying an unreleased image, from a fork whose CI may push into the deployer's account.
+#
+# WHY CI AND NOT A LAPTOP.
+#   1. Compute environments can run both x86 and Graviton instances, so the image must be built
+#      for amd64 AND arm64. Building both on one machine emulates one half under QEMU; building
+#      only the host's architecture leaves every queue class of the other unusable.
+#      coordinator-image.yml builds each half on a GitHub runner native for it.
+#   2. A laptop build is an unreviewed artifact from an unversioned working tree. Here the image is
+#      built from a known commit, and the tag IS that commit.
+#
+# CREDENTIALS. There are none. `id-token: write` mints a short-lived OIDC token describing this
+# workflow; AWS verifies it against GitHub's published keys and returns ~1h credentials. Nothing is
+# stored in repository secrets.
+#
+# ONLY ONE BRANCH CAN PUSH. The role trusts a subject scoped to this repo's `image-build`
+# environment AND pins the token's `ref` claim to one branch, enforced by AWS at AssumeRole. The
+# branch is `registration.biffix_image_build.ref` in the deploy config (default refs/heads/main). The
+# ref pin holds even where the environment has no required reviewers (they are not available on
+# every GitHub plan), so dispatching from another branch fails at credential minting, not at push.
+# This workflow deliberately does not use the shared, unpinned registration role.
+#
+# WHERE IT PUSHES. Into the deployer's own AWS account: run it from the repository (typically a
+# fork) that the deploy config's `registration.biffix_image_build.subject` names. It needs these
+# repository variables (Settings > Secrets and variables > Actions > Variables); the `image-build`
+# environment is created on first use (add required reviewers to it where the plan allows):
+#   AWS_IMAGE_BUILD_ROLE_ARN  the identity stack's ImageBuildRole ARN.
+#   AWS_REGION                the tenant's region (the deploy config's `region`).
+#   BIFFIX_TENANT             the tenant (the deploy config's `tenant`); the repository is found by
+#                             docker/coordinator/resolve-repo.sh. Or set
+#   COORDINATOR_REPO          the coordinator repository's exact name, which wins when both are set.
+# Without them the workflow stops at its first step. See infra/README.md.
+#
+# TAGS ARE IMMUTABLE. The coordinator repository is configured IMMUTABLE on purpose: a run must
+# always resolve the same bytes. So the tag is the commit SHA and a rebuild of the same commit
+# fails loudly rather than silently replacing what the fleet executes. To ship a new image:
+# run this workflow, then set `coordinator_image_tag` in the deploy config to the printed tag and
+# run infra/deploy.sh.
+name: build-coordinator-image
+
+# Never `pull_request`: this workflow pushes to ECR, and a fork must never reach that.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-coordinator-image-${{ github.sha }}
+  cancel-in-progress: false
+
+# Read by docker/coordinator/resolve-repo.sh and the AWS steps (coordinator-image.yml reads the
+# same ones itself). Repository variables, never inputs: what a dispatch can type must not choose
+# where credentials push.
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  BIFFIX_TENANT: ${{ vars.BIFFIX_TENANT }}
+  COORDINATOR_REPO: ${{ vars.COORDINATOR_REPO }}
+
+jobs:
+  # Each architecture natively, pushed as <sha>-<arch> (coordinator-image.yml).
+  build:
+    permissions:
+      contents: read
+      id-token: write # mint the OIDC token; without this the role cannot be assumed
+    uses: ./.github/workflows/coordinator-image.yml
+    with:
+      registry: ecr
+      tag: ${{ github.sha }}
+      # The OIDC subject the image-build role trusts is scoped to this environment, so this line is
+      # what makes the token assumable at all — and any required reviewers on it gate every push.
+      environment: image-build
+
+  join:
+    needs: build
+    environment: image-build
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Only for docker/coordinator/resolve-repo.sh.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_IMAGE_BUILD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2.1.6
+      # The two architectures were built on different machines, so they could not be one buildx
+      # invocation. Assemble the per-arch images into a manifest list, which copies no layers.
+      - name: assemble the manifest lists
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          coord="$(docker/coordinator/resolve-repo.sh)"
+          # Persist for the verify step (same job) so it need not re-resolve.
+          echo "coord=${coord}" >> "$GITHUB_ENV"
+          docker buildx imagetools create --tag "${REGISTRY}/${coord}:${SHA}" \
+            "${REGISTRY}/${coord}:${SHA}-amd64" "${REGISTRY}/${coord}:${SHA}-arm64"
+          {
+            echo "### Image tag"
+            echo "Set this in the deploy config, then run \`infra/deploy.sh --config <file>\`:"
+            echo '```yaml'
+            echo "coordinator_image_tag: \"${SHA}\""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      # A manifest list missing an architecture pushes cleanly and only fails later, on a worker of
+      # the missing arch, as an exec-format error far from the cause. Assert both are present.
+      - name: verify both architectures are present
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # `coord` was resolved and exported to $GITHUB_ENV by the assemble step above.
+          [ -n "${coord:-}" ] || { echo "::error::coord repo not set by the assemble step"; exit 1; }
+          docker buildx imagetools inspect "${REGISTRY}/${coord}:${SHA}" | tee /tmp/manifest.txt
+          for want in linux/amd64 linux/arm64; do
+            grep -q "${want}" /tmp/manifest.txt || { echo "::error::missing ${want}"; exit 1; }
+          done

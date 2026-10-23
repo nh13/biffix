@@ -1,0 +1,455 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SamplesContract",
+  "description": "The samples contract as one JSON Schema document (request and response).",
+  "type": "object",
+  "properties": {
+    "request": {
+      "$ref": "#/$defs/SampleDetectRequest"
+    },
+    "response": {
+      "$ref": "#/$defs/DetectedSamples"
+    }
+  },
+  "required": [
+    "request",
+    "response"
+  ],
+  "$defs": {
+    "ColumnRole": {
+      "description": "What a samplesheet column holds, so detected samples fill it.",
+      "type": "string",
+      "enum": [
+        "sample_id",
+        "read1",
+        "read2"
+      ]
+    },
+    "DetectFile": {
+      "description": "A file to place in a sample.",
+      "type": "object",
+      "properties": {
+        "size": {
+          "description": "Reserved: callers may send the object's size; detection does not read it.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri"
+      ]
+    },
+    "DetectRule": {
+      "description": "A detection rule.",
+      "type": "object",
+      "properties": {
+        "id_from": {
+          "$ref": "#/$defs/IdFrom",
+          "default": "name"
+        },
+        "lanes": {
+          "description": "What to do with several lanes. When not given, the samplesheet's choice, and without a\nsamplesheet, `merge`; a given `merge` wins over the samplesheet's choice.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lanes"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "$ref": "#/$defs/IdMethod",
+          "default": {
+            "kind": "auto"
+          }
+        }
+      }
+    },
+    "DetectedSample": {
+      "description": "One detected sample.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "lanes": {
+          "description": "How many lanes the files came from (1 when names carry none).",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "problems": {
+          "description": "What looks wrong with this sample, in words.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "read1": {
+          "description": "Read-1 files (several when lanes merge), lane by lane and in name order within a lane.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "read2": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "read1",
+        "read2",
+        "lanes"
+      ]
+    },
+    "DetectedSamples": {
+      "description": "What detection found.",
+      "type": "object",
+      "properties": {
+        "detection": {
+          "$ref": "#/$defs/Detection"
+        },
+        "example": {
+          "description": "The first file's name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rows": {
+          "description": "Rows for the samplesheet in the request (empty without one).",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "tokens": {
+          "description": "The first file's name split into parts, for choosing the parts that make up the id.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Token"
+          }
+        }
+      },
+      "required": [
+        "detection",
+        "rows",
+        "tokens"
+      ]
+    },
+    "Detection": {
+      "description": "The result of [`detect`].",
+      "type": "object",
+      "properties": {
+        "samples": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DetectedSample"
+          }
+        },
+        "skipped": {
+          "description": "Files left out on purpose: an uncompressed file whose gzipped copy is also given, a repeat of\na file already given, and an Illumina index read (`_I1_001`, `_I2_001`), which is no sample's\nread 1 or read 2.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MergeSuggestion"
+          }
+        },
+        "unmatched": {
+          "description": "Files the rule could not read an id from (a regex that did not match, a part index past the\nend of the name).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "samples"
+      ]
+    },
+    "IdFrom": {
+      "description": "What a sample id is read from.",
+      "oneOf": [
+        {
+          "description": "The file name alone.",
+          "type": "string",
+          "const": "name"
+        },
+        {
+          "description": "The parent folder's name, then the file name (for deliveries with one folder per run).",
+          "type": "string",
+          "const": "name_and_parent"
+        }
+      ]
+    },
+    "IdMethod": {
+      "description": "How a file name becomes a sample id.",
+      "oneOf": [
+        {
+          "description": "Recognize the common schemes: Illumina `<id>_S1_L001_R1_001`, `<id>_R1`, `<id>_1`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "auto"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Join the chosen parts of the name (indices into the response's `tokens`) into the id.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "tokens"
+            },
+            "selected": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "selected"
+          ]
+        },
+        {
+          "description": "A regular expression whose first capture group (or group `sample`) is the id, matched\nagainst the whole file name, extension included (`^(P\\d+)_` matches; `^(P\\d+)$` never\ndoes).",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "regex"
+            },
+            "pattern": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "pattern"
+          ]
+        }
+      ]
+    },
+    "Lanes": {
+      "description": "What to do with one sample's files from several lanes.",
+      "oneOf": [
+        {
+          "description": "One sample with every lane's files (technical replicates).",
+          "type": "string",
+          "const": "merge"
+        },
+        {
+          "description": "One sample per lane (`<id>_L001`).",
+          "type": "string",
+          "const": "separate"
+        },
+        {
+          "description": "A problem to fix: the workflow takes one file per read.",
+          "type": "string",
+          "const": "error"
+        }
+      ]
+    },
+    "MergeSuggestion": {
+      "description": "Two samples that look like one pair split by a naming slip (`P7` has only read 1, `P07` only\nread 2): the form offers to merge them into `into`.",
+      "type": "object",
+      "properties": {
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 2
+        },
+        "into": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ids",
+        "into"
+      ]
+    },
+    "SampleDetectRequest": {
+      "description": "Files to detect samples in, the rule, and (optionally) the samplesheet to fill.",
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DetectFile"
+          }
+        },
+        "rule": {
+          "$ref": "#/$defs/DetectRule",
+          "default": {
+            "id_from": "name",
+            "method": {
+              "kind": "auto"
+            }
+          }
+        },
+        "samplesheet": {
+          "description": "When given, the response includes the samplesheet rows for the detected samples.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SheetSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "files"
+      ]
+    },
+    "SheetColumn": {
+      "description": "One column of a samplesheet.",
+      "type": "object",
+      "properties": {
+        "accepts_folder": {
+          "description": "A file column whose cells may also name a folder (a row schema's `format: path`): a cell\nwith no object there is checked again as a prefix.",
+          "type": "boolean"
+        },
+        "default": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enum_values": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "file": {
+          "description": "A file path (`s3://`), existence-checked at submit.",
+          "type": "boolean",
+          "default": false
+        },
+        "name": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ColumnRole"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "suffixes": {
+          "description": "File-name endings a file column accepts.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "SheetFormat": {
+      "description": "The file format a samplesheet is written in.",
+      "type": "string",
+      "enum": [
+        "csv",
+        "tsv"
+      ]
+    },
+    "SheetSpec": {
+      "description": "A samplesheet as the workflow declares it.",
+      "type": "object",
+      "properties": {
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SheetColumn"
+          }
+        },
+        "format": {
+          "$ref": "#/$defs/SheetFormat",
+          "default": "csv"
+        },
+        "lanes": {
+          "description": "How detection treats several lanes of one sample.",
+          "$ref": "#/$defs/Lanes",
+          "default": "merge"
+        },
+        "paired_only": {
+          "description": "Every sample must have read 2.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "columns"
+      ]
+    },
+    "Token": {
+      "description": "One part of a file name, for clicking the parts that make up an id.",
+      "type": "object",
+      "properties": {
+        "separator": {
+          "description": "A separator (`_`, `-`, `.`) rather than a word.",
+          "type": "boolean"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "separator"
+      ]
+    }
+  }
+}

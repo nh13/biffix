@@ -1,0 +1,62 @@
+plugins {
+    id 'io.nextflow.nextflow-plugin' version '1.0.0-beta.10'
+}
+
+version = '0.6.1'
+
+nextflowPlugin {
+    // Compile against the one Nextflow release biffix runs (25.10.4, with nf-amazon 3.x): this is
+    // also the plugin's declared minimum (Plugin-Requires), matching engines.rs SUPPORTED.
+    nextflowVersion = '25.10.4'
+    provider = 'Nils Homer'
+    description = 'Reports Nextflow run and task events to biffix, maps task containers through the run image map, and tags AWS Batch job definitions with the run project'
+    className = 'io.github.nh13.biffix.BiffixPlugin'
+    extensionPoints = [
+        'io.github.nh13.biffix.BiffixObserverFactory',
+        'io.github.nh13.biffix.BiffixContainerResolver',
+        'io.github.nh13.biffix.BiffixAwsBatchExecutor'
+    ]
+    // BiffixAwsBatchExecutor extends nf-amazon's executor, so nf-amazon's classes must be visible to
+    // this plugin's class loader (pf4j resolves a plugin's classes through its Plugin-Dependencies)
+    // and nf-amazon must start first. A constraint rather than a pin: the runtime layer carries the
+    // nf-amazon its Nextflow release defaults to; the API this compiles against is the one below.
+    requirePlugins = ['nf-amazon@>=3.4.4']
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // nf-amazon's executor and handler, which the biffix executor extends. compileOnly (and so not
+    // packaged): at runtime they come from the nf-amazon plugin itself, and a second copy in this
+    // plugin's lib/ would be a different AwsBatchExecutor class. From Seqera's Maven repository
+    // (added by the nextflow-plugin Gradle plugin), with its AWS SDK v2 dependencies.
+    compileOnly 'io.nextflow:nf-amazon:3.4.4'
+    testImplementation 'io.nextflow:nf-amazon:3.4.4'
+    // Spock (Groovy 4, matching Nextflow 25.x) + a JSON-schema validator (draft 2020-12, the draft
+    // schemars writes), so the emitted engine events can be checked against the canonical
+    // schemas/wire.engine.schema.json.
+    testImplementation 'org.spockframework:spock-core:2.3-groovy-4.0'
+    testImplementation 'com.networknt:json-schema-validator:1.5.4'
+}
+
+test {
+    useJUnitPlatform()
+    // The specs read the repo's schemas/ (the engine wire schema and the ingest limits): a change
+    // there must re-run them, not leave the task up to date.
+    inputs.dir(rootProject.file('../../schemas'))
+        .withPropertyName('schemas')
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+}
+
+jar {
+    manifest {
+        // pf4j reads Plugin-License; the nextflow-plugin Gradle plugin writes the other Plugin-* keys.
+        attributes 'Plugin-License': 'MIT'
+    }
+    // The license text travels with the plugin.
+    from(rootProject.file('../../LICENSE')) {
+        into 'META-INF'
+    }
+}

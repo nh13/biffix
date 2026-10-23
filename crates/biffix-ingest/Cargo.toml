@@ -1,0 +1,62 @@
+[package]
+name = "biffix-ingest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "biffix ingest path: SQS→batched writer, projection store, reconcile tick."
+
+[lints]
+workspace = true
+
+[features]
+# The ingest and reconcile Lambdas: the AWS clients and the Lambda runtime. The Postgres store the
+# Lambdas share is always built.
+aws = ["biffix-db/aws", "biffix-core/lambda", "dep:tokio", "dep:aws-config", "dep:aws-sdk-batch", "dep:aws-sdk-ec2", "dep:aws-sdk-sqs", "dep:aws-sdk-s3", "dep:aws-sdk-cloudwatch", "dep:aws-sdk-pricing", "dep:reqwest", "dep:lambda_runtime", "dep:aws_lambda_events"]
+
+[lib]
+name = "biffix_ingest"
+path = "src/lib.rs"
+
+[dependencies]
+biffix-core.workspace = true
+# The shared Postgres layer: migrations, connection, the event-log writer and projection.
+biffix-db = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+# The Lambdas' runtime (`#[tokio::main]`), so only the `aws` bins need it.
+tokio = { workspace = true, optional = true }
+tracing.workspace = true
+sqlx = { workspace = true }
+aws-config = { workspace = true, optional = true }
+aws-sdk-batch = { workspace = true, optional = true }
+aws-sdk-ec2 = { workspace = true, optional = true }
+aws-sdk-sqs = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+aws-sdk-cloudwatch = { workspace = true, optional = true }
+aws-sdk-pricing = { workspace = true, optional = true }
+lambda_runtime = { workspace = true, optional = true }
+aws_lambda_events = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The async tests' runtime.
+tokio.workspace = true
+# The tests build their events with biffix-core's `testing` builders.
+biffix-core = { workspace = true, features = ["test-support"] }
+# The pg test harness's schema-isolated pool (tests/it/common).
+biffix-db = { workspace = true, features = ["test-support"] }
+
+[[bin]]
+name = "biffix-ingest-lambda"
+path = "src/bin/lambda.rs"
+required-features = ["aws"]
+
+[[bin]]
+name = "biffix-reconcile-lambda"
+path = "src/bin/reconcile.rs"
+required-features = ["aws"]

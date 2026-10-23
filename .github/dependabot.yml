@@ -1,0 +1,100 @@
+# Keeps the pinned dependencies it can see moving: the SHA-pinned actions (whose `# vX.Y.Z` comments
+# Dependabot rewrites with the SHA), the lockfiles and the coordinator's base image digest. Not the
+# versions pinned inline in a command, which move by hand: the Dockerfile's `pip install boto3==…`,
+# release.yml's `cargo-lambda==…` and ci.yml's actionlint. Each update waits a
+# week after its release (`cooldown`), so a compromised release has time to be caught before a PR
+# proposes it. Minor and patch updates are grouped per ecosystem; a major update gets its own PR.
+# Each commit is a conventional one, `chore(deps): …` (`chore(deps-dev): …` for a dev dependency).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directories: [/ui, /infra]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor:
+        update-types: [minor, patch]
+
+  # infra/, docker/coordinator/ and the Snakemake plugin pin the same ruff, pytest, mypy and
+  # validate-pyproject; one grouped PR across the three directories keeps them equal.
+  - package-ecosystem: uv
+    directories: [/infra, /docker/coordinator, /plugins/snakemake-logger-plugin-biffix]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    open-pull-requests-limit: 5
+    groups:
+      python-dev-tools:
+        patterns: [ruff, pytest, mypy, validate-pyproject]
+      python-minor:
+        update-types: [minor, patch]
+
+  - package-ecosystem: gradle
+    directory: /plugins/nf-biffix
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    open-pull-requests-limit: 5
+    ignore:
+      # nf-amazon is the version the supported Nextflow release ships; it moves with the engine
+      # support (crates/biffix-workflow/src/engines.rs, runtime/pins.rs), not on its own.
+      - dependency-name: "io.nextflow:*"
+    groups:
+      gradle-minor:
+        update-types: [minor, patch]
+
+  # The base image is pinned by digest under its python:3.12-slim tag; Dependabot refreshes the
+  # digest. A Python minor (3.13) changes what the runtime layer installs into, so it is not proposed.
+  - package-ecosystem: docker
+    directory: /docker/coordinator
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    ignore:
+      - dependency-name: python
+        update-types: [version-update:semver-major, version-update:semver-minor]

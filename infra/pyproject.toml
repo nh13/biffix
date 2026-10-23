@@ -1,0 +1,65 @@
+[project]
+name = "biffix-infra"
+version = "0.1.0"
+description = "biffix CDK (Python) — one deploy per AWS account = one tenant."
+license = "MIT"
+requires-python = ">=3.11.4"
+dependencies = [
+    "aws-cdk-lib>=2.269,<3",
+    "constructs>=10.3,<11",
+    "pyyaml>=6",
+]
+
+[dependency-groups]
+dev = [
+    # Pinned exactly, to the same versions in infra/, docker/coordinator/ and
+    # plugins/snakemake-logger-plugin-biffix/, so every project lints alike locally and in CI.
+    # Dependabot bumps the three together (.github/dependabot.yml).
+    "mypy==2.4.0",
+    "pytest==9.1.1",
+    "ruff==0.17.1",
+    "validate-pyproject[all]==0.26",
+    # Types for pyyaml (a runtime dependency).
+    "types-pyyaml>=6",
+]
+
+[tool.uv]
+# Resolve only releases at least a week old, so a compromised release has time to be caught before
+# it is locked. Keep it >= the Dependabot cooldown (7 days, .github/dependabot.yml), or Dependabot
+# proposes versions this project refuses to lock.
+exclude-newer = "1 week"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ARG", "N", "LOG", "RUF008", "RUF012", "RUF024"]
+
+[tool.mypy]
+files = ["app.py", "biffix_infra", "tests"]
+# tests/ and tests/synth/ are packages (the tests import their helpers as tests.*), so both
+# conftest modules are checked, as tests.conftest and tests.synth.conftest.
+python_version = "3.11"
+strict_optional = true
+strict_equality = true
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+warn_no_return = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unreachable = true
+warn_unused_configs = true
+warn_unused_ignores = true
+enable_error_code = ["ignore-without-code", "possibly-undefined", "exhaustive-match"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["biffix_infra"]

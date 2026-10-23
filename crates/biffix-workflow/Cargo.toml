@@ -1,0 +1,29 @@
+[package]
+name = "biffix-workflow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "biffix workflow authoring and registration: form schema, manifest, validation, samples, images and runtimes."
+
+[lints]
+workspace = true
+
+[dependencies]
+biffix-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_norway.workspace = true
+regex.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+hex.workspace = true
+url.workspace = true
+schemars.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

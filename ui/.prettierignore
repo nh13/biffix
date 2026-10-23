@@ -1,0 +1,7 @@
+# Generated / vendored — never format these.
+build/
+.svelte-kit/
+node_modules/
+package-lock.json
+src/lib/generated/openapi.json
+test-results/

@@ -1,0 +1,25 @@
+{
+  "causes": [
+    "could_not_start",
+    "out_of_memory",
+    "spot_reclaimed",
+    "host_lost",
+    "timed_out",
+    "missing_input",
+    "bad_input",
+    "reference_mismatch",
+    "no_space",
+    "access_denied",
+    "missing_output",
+    "step_error",
+    "engine_error",
+    "launch_failed",
+    "unknown"
+  ],
+  "try_again": [
+    "resume",
+    "rerun",
+    "fix_samples",
+    "fix_options"
+  ]
+}

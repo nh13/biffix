@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SampleGrid",
+  "description": "A run's samples × steps.",
+  "type": "object",
+  "properties": {
+    "declared": {
+      "description": "The run's samples are the samplesheet's (`true`), or only those tasks named so far.",
+      "type": "boolean"
+    },
+    "samples": {
+      "description": "Samples in the samplesheet's order, then any others seen, by id.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SampleRow"
+      }
+    },
+    "steps": {
+      "description": "Steps in pipeline order.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Step"
+      }
+    },
+    "study": {
+      "description": "Whole-study steps' cells, keyed by group.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Cell"
+      }
+    },
+    "unattributed": {
+      "description": "Tasks in a per-sample step that name no sample (biffix could not match them).",
+      "type": "integer",
+      "format": "int64"
+    }
+  },
+  "required": [
+    "steps",
+    "samples",
+    "study",
+    "unattributed",
+    "declared"
+  ],
+  "$defs": {
+    "Cell": {
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "description": "Attempts across the cell's tasks (more than its task count means a retry).",
+          "type": "integer",
+          "format": "int64"
+        },
+        "state": {
+          "$ref": "#/$defs/CellState"
+        },
+        "tasks": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "state",
+        "attempts",
+        "tasks"
+      ]
+    },
+    "CellState": {
+      "description": "A grid cell: one sample's step (or a whole-study step).",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "waiting",
+            "running",
+            "done",
+            "failed"
+          ]
+        },
+        {
+          "description": "Satisfied from an earlier run's results (every task cached).",
+          "type": "string",
+          "const": "reused"
+        }
+      ]
+    },
+    "SampleRow": {
+      "type": "object",
+      "properties": {
+        "cells": {
+          "description": "Keyed by step group; a step the sample has no task in yet is absent.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Cell"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/SampleState"
+        }
+      },
+      "required": [
+        "id",
+        "state",
+        "cells"
+      ]
+    },
+    "SampleState": {
+      "description": "How one sample stands.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "running",
+            "done",
+            "failed"
+          ]
+        },
+        {
+          "description": "No task yet (the run is still going).",
+          "type": "string",
+          "const": "waiting"
+        },
+        {
+          "description": "Did not finish because the run ended: the run failed or was cancelled first, or (a sheet\nsample no task ever named) it never ran.",
+          "type": "string",
+          "const": "stopped"
+        }
+      ]
+    },
+    "Step": {
+      "type": "object",
+      "properties": {
+        "authored": {
+          "description": "`label` is the author's, not one made from the group name: a client may word a made one\nits own way, but shows an authored one as written. Omitted when false.",
+          "type": "boolean"
+        },
+        "group": {
+          "type": "string"
+        },
+        "label": {
+          "description": "The author's label for the step (`samples.labels`), else one made from the group name.",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Whether a step runs once per sample or once for the whole study (open enum).",
+          "type": "string",
+          "examples": [
+            "sample",
+            "study"
+          ]
+        }
+      },
+      "required": [
+        "group",
+        "label",
+        "scope"
+      ]
+    }
+  }
+}

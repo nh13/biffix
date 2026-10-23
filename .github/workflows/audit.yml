@@ -1,0 +1,43 @@
+# The Rust dependency tree against the RustSec advisory database, plus the license, ban and source
+# rules, through cargo-deny and the repo's deny.toml. A new advisory can land against an unchanged
+# Cargo.lock, so besides pull requests that change the dependencies and pushes to main it runs daily.
+name: audit
+
+on:
+  push:
+    branches: [main]
+  # Only a change to the dependencies (or to the rules) can change the result on a PR.
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - Cargo.lock
+      - deny.toml
+      - .github/workflows/audit.yml
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  cargo-deny:
+    name: cargo-deny (advisories · licenses · bans · sources)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # A prebuilt cargo-deny at an exact version (checksum-verified by the action), not a
+      # from-source `cargo install`.
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: cargo-deny@0.20.2
+      # `--locked`: check the committed Cargo.lock as it is, never a re-resolved one.
+      - name: cargo deny check
+        run: cargo deny --locked check

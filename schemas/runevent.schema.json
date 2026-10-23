@@ -1,0 +1,1432 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunEvent",
+  "description": "The normalized event every producer's wire event maps into and every consumer folds.",
+  "type": "object",
+  "properties": {
+    "attempt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Attempt"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "batch_job_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BatchJobId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "coordinator_job_id": {
+      "description": "The coordinator's Batch job id, set only on `coordinator_submitted` (always equal to its\n`batch_job_id`). Informational: the fold joins on `batch_job_id`, and nothing in biffix\nreads this back. It stays a published contract field because stored events carry it and\nexternal consumers may name the coordinator by it (additive-only).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CoordinatorJobId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dedup_key": {
+      "description": "Producer-computed, deterministic; the log dedupes on it.",
+      "type": "string"
+    },
+    "instance_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/InstanceId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "queue": {
+      "description": "The AWS Batch job queue (its name, not ARN) an `aws-batch` event's job ran on. Like\n`instance_id`, a fact about where the attempt ran; it tells a spot attempt from an on-demand\none when the host's own lifecycle is unknown.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "requested_memory_mib": {
+      "description": "The memory (MiB) an `aws-batch` event's job asked Batch for (its `MEMORY` resource\nrequirement). As `requested_vcpus`.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "int64"
+    },
+    "requested_vcpus": {
+      "description": "The vCPUs an `aws-batch` event's job asked Batch for (its `VCPU` resource requirement): what\nthe attempt requested, not what its host has. Like `queue`, a fact about the attempt,\ncarried by the Batch state-change events that name it (not by a reaped terminal, which has\nno container); the reducer keeps the minimum across the events that carry it. `f64` end to\nend (wire, column, API), so a fractional request reads back exactly. Optional + additive:\nabsent on events from before this field and on jobs whose event names no requirement.",
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "source": {
+      "description": "Who produced the event (open enum).",
+      "type": "string",
+      "examples": [
+        "aws-batch",
+        "aws-ec2",
+        "aws-codebuild",
+        "nextflow",
+        "snakemake",
+        "biffix-control-plane"
+      ]
+    },
+    "task_key": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TaskKey"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ts": {
+      "description": "Source time of the fact.",
+      "type": "number",
+      "format": "double"
+    }
+  },
+  "oneOf": [
+    {
+      "description": "The control plane accepted the run — its provenance anchor (see [`RunSubmitted`]).",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "run_submitted"
+        }
+      },
+      "$ref": "#/$defs/RunSubmitted",
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "run_started"
+        },
+        "session_id": {
+          "description": "The engine's own session id, reported by the engine plugin at start (Nextflow\n`session.uniqueId`). A cross-check on the anchor's `engine_session_id`; `None` from the\nSnakemake logger and on events from before this field existed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "completed": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "kind": {
+          "type": "string",
+          "const": "run_progress"
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "kind",
+        "completed",
+        "total"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "run_succeeded"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "run_failed"
+        },
+        "reason": {
+          "description": "Why the control plane failed the run before it launched (e.g. a submit-time image that\ncould not be prepared). `None` from the engine, and on events from before this field\nexisted. Optional + additive.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stage": {
+          "description": "Which step of the control plane failed it: an open vocabulary (see\n[`FAILURE_STAGE_IMAGE_PREPARATION`], [`FAILURE_STAGE_LAUNCH`]); a reader treats a value\nit does not know, or none, as a launch failure. `None` from the engine, and on events\nfrom before this field existed. Optional + additive.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "run_cancelled"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "actor": {
+          "type": "string"
+        },
+        "actor_label": {
+          "description": "A human label for the actor (email/name), snapshotted when the cancel was asked for, as\na run's anchor snapshots its submitter's. `None` when none was known, and on events\nfrom before this field existed. Optional + additive.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "cancel_requested"
+        }
+      },
+      "required": [
+        "kind",
+        "actor"
+      ]
+    },
+    {
+      "description": "The run's intermediate files (a Nextflow run's `work/`) were deleted by the retention sweep;\nits results are kept, but it can no longer be resumed.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "work_deleted"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "description": "The run was accepted but waits for its submit-time images before it launches (see\n[`RunPreparing`]). Boxed like the anchor it precedes.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "run_preparing"
+        }
+      },
+      "$ref": "#/$defs/RunPreparing",
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "description": "The run was put in an experiment (`experiment_id`), moved to another, or taken out of one\n(`None`). The latest by `(ts, seq)` wins (see `RunProjection::experiment_id`); it overrides\nthe experiment the anchor was launched into.",
+      "type": "object",
+      "properties": {
+        "actor": {
+          "description": "Who made the change (the actor id `authorize` returned). Optional + additive.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "experiment_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "kind": {
+          "type": "string",
+          "const": "experiment_set"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "description": "The run was given a new human name (`run_name`), or its name was cleared (`None`: readers\nfall back to a derived one). The latest by `(ts, seq)` wins and overrides the name it was\nlaunched with (see `RunProjection::run_name`).",
+      "type": "object",
+      "properties": {
+        "actor": {
+          "description": "Who renamed it (the actor id `authorize` returned). Optional + additive.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "run_renamed"
+        },
+        "run_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "coordinator_submitted"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "coordinator_running"
+        },
+        "log_stream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "coordinator_succeeded"
+        },
+        "log_stream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "description": "The coordinator job stopped without succeeding. Batch's account of why (as on\n[`EventData::TaskFailed`]) is what the run's failure summary has to go on when the engine\nnever started or wrote no log (an image that could not be pulled, a lost host, an\nout-of-memory kill). Each is optional + additive: absent when Batch reported none.",
+      "type": "object",
+      "properties": {
+        "exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "kind": {
+          "type": "string",
+          "const": "coordinator_failed"
+        },
+        "log_stream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "termination_category": {
+          "description": "How a task attempt ended (open enum).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "examples": [
+            "spot",
+            "oom",
+            "host_terminated",
+            "app_error",
+            "missing_output"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "description": "The run's group-level dependency graph (rule graph for Snakemake, process graph for\nNextflow), emitted when the engine knows it. Folds as a set-union so re-emission or\nout-of-order delivery converges: its dedup key carries a hash of the node and\nedge sets, so a redelivery of the same graph dedupes while a grown or changed graph is a\ndistinct fact that reaches the fold. Group-level, not per-task-instance — the graph people\nread.",
+      "type": "object",
+      "properties": {
+        "dag": {
+          "$ref": "#/$defs/Dag"
+        },
+        "kind": {
+          "type": "string",
+          "const": "run_dag"
+        }
+      },
+      "required": [
+        "kind",
+        "dag"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "deps": {
+          "description": "The task keys this task depends on in this run: the tasks that produced its inputs.\nAdditive; empty on events from before this field existed and for a task with no\nin-run upstream.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "group": {
+          "description": "The graph node (rule/process) this task instance belongs to, for rolling task states up\nonto the DAG. Optional + additive; `None` on events from before this field existed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "task_created"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "image": {
+          "description": "The container image the attempt's Batch job runs, as the engine resolved it (the\ntenant's copy: `<registry>/<repo>@sha256:…`, or a tag when the engine has no digest).\nPer-task image provenance for a multi-image run. Optional + additive: `None` from a\nplugin that predates it, and on events from before this field existed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "task_submitted"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "task_queued"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "task_started"
+        },
+        "log_stream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "started_at": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "exit_code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "kind": {
+          "type": "string",
+          "const": "task_succeeded"
+        },
+        "log_stream": {
+          "description": "The attempt's CloudWatch log stream, from the Batch terminal (the final container's, so\nan attempt seen only through its terminal still has its log). `None` for an\nengine-reported local-rule terminal and on events from before this field existed.\nOptional + additive.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "exit_code"
+      ]
+    },
+    {
+      "description": "A task was satisfied from the engine's cache — it produced its outputs on a prior run and\nwas never submitted to Batch. Folds to a SUCCEEDED terminal (it counts as done) but is\nflagged `cached` on the projection, because a cache-hit never became a Batch job and so must not be\ncounted as work run this time (cost/runtime views). Engine-reported; carries no exit code.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "task_cached"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "exit_code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "kind": {
+          "type": "string",
+          "const": "task_failed"
+        },
+        "log_stream": {
+          "description": "As on [`EventData::TaskSucceeded`]. Optional + additive.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "termination_category": {
+          "description": "How a task attempt ended (open enum).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "examples": [
+            "spot",
+            "oom",
+            "host_terminated",
+            "app_error",
+            "missing_output"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "exit_code"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "task_retrying"
+        },
+        "next_attempt": {
+          "$ref": "#/$defs/Attempt"
+        },
+        "prev_attempt": {
+          "$ref": "#/$defs/Attempt"
+        }
+      },
+      "required": [
+        "kind",
+        "prev_attempt",
+        "next_attempt"
+      ]
+    },
+    {
+      "description": "The engine's verdict on one attempt of a task (`task_key` + `attempt` in the correlation\nfields), reported by the engine plugin. A `failed` verdict outranks AWS Batch's `SUCCEEDED`\nfor the *task*: the attempt no longer counts as the task's success (so the task fails, or,\nwith a retry announced, waits for the retry), while the attempt itself keeps its AWS facts\n(state, exit code, host, log stream). With no `attempt`, it applies to every attempt\nsubmitted at or before its `ts`. It changes nothing for a task with no Batch attempt (a\nlocal task's terminal is its engine `task_failed`), and an unknown verdict folds to nothing.\nNamed in the engine namespace (`engine_*`), so an older backend stores it unfolded.",
+      "type": "object",
+      "properties": {
+        "category": {
+          "description": "Why, as a category ([`TerminationCategory::MissingOutput`] for missing outputs,\n[`TerminationCategory::AppError`] for a rejected exit status). Optional.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "examples": [
+            "spot",
+            "oom",
+            "host_terminated",
+            "app_error",
+            "missing_output"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "engine_task_verdict"
+        },
+        "reason": {
+          "description": "The engine's own explanation, for display. Optional.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verdict": {
+          "description": "The workflow engine's verdict on a task attempt (open enum).",
+          "type": "string",
+          "examples": [
+            "failed"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "verdict"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "spot_reclaim_warning"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "description": "The outputs of one task attempt (or, with no task key, run-level outputs), as a set. Folds\nas a union keyed on `s3_uri`, so a re-emission, a partial batch or out-of-order delivery\nconverges. The task key and attempt ride in the RunEvent correlation fields.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "task_outputs"
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OutputRef"
+          }
+        },
+        "reused": {
+          "description": "True when the outputs were satisfied from the engine cache, not produced by this run.",
+          "type": "boolean"
+        },
+        "role": {
+          "description": "The engine's role for every ref in this batch. `None` ⇒ [`OutputRole::Output`].",
+          "type": [
+            "string",
+            "null"
+          ],
+          "examples": [
+            "output",
+            "published",
+            "intermediate",
+            "log",
+            "benchmark"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "outputs"
+      ]
+    },
+    {
+      "description": "biffix started a CodeBuild build (the control plane, right after `StartBuild`).",
+      "type": "object",
+      "properties": {
+        "build_arn": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "build_requested"
+        },
+        "request": {
+          "description": "What was asked for (the recipe, the inputs), for the record."
+        },
+        "subject": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "subject",
+        "build_arn"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "build_arn": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "build_started"
+        },
+        "logs_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subject": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "subject",
+        "build_arn"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "build_arn": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "build_succeeded"
+        },
+        "logs_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outputs": {
+          "description": "The buildspec's exported variables: what the build produced (a digest, …).",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "subject": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "subject",
+        "build_arn"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "build_arn": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "build_failed"
+        },
+        "logs_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "The build's final status (`FAILED`, `STOPPED`, `TIMED_OUT`, `FAULT`) and, when known,\nthe failed phase's message.",
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "subject",
+        "build_arn",
+        "reason"
+      ]
+    },
+    {
+      "description": "An unknown kind — preserved verbatim, stored + audited but not folded. The translators\nwrite it as `{\"kind\": <tag>, \"raw\": <the wire event>}` ([`EventData::unknown`]), so the\nstored kind is never empty and the wire event's own `ts`/`schema_version`/… cannot collide\nwith the RunEvent envelope's. Being serde's untagged fallback, it also captures a *known*\nkind with a malformed payload (see the module doc and\n[`EventData::is_degraded_known_kind`]).",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "not": {
+            "enum": [
+              "run_submitted",
+              "run_started",
+              "run_progress",
+              "run_succeeded",
+              "run_failed",
+              "run_cancelled",
+              "cancel_requested",
+              "work_deleted",
+              "run_preparing",
+              "experiment_set",
+              "run_renamed",
+              "coordinator_submitted",
+              "coordinator_running",
+              "coordinator_succeeded",
+              "coordinator_failed",
+              "run_dag",
+              "task_created",
+              "task_submitted",
+              "task_queued",
+              "task_started",
+              "task_succeeded",
+              "task_cached",
+              "task_failed",
+              "task_retrying",
+              "engine_task_verdict",
+              "spot_reclaim_warning",
+              "task_outputs",
+              "build_requested",
+              "build_started",
+              "build_succeeded",
+              "build_failed"
+            ]
+          }
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    }
+  ],
+  "required": [
+    "schema_version",
+    "dedup_key",
+    "ts",
+    "source"
+  ],
+  "$defs": {
+    "Attempt": {
+      "description": "1-based attempt counter distinguishing retries of a single `task_key`.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "BatchJobId": {
+      "description": "AWS Batch job id for a single attempt; the join key between the engine and AWS streams.",
+      "type": "string"
+    },
+    "CoordinatorJobId": {
+      "description": "The coordinator (head job) Batch job id.",
+      "type": "string"
+    },
+    "Dag": {
+      "description": "A run's group-level dependency graph. Carried by [`EventData::RunDag`]; the reducer folds nodes\nand edges as set-unions, so the projected graph is a pure function of the observed event set.",
+      "type": "object",
+      "properties": {
+        "edges": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DagEdge"
+          }
+        },
+        "nodes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DagNode"
+          }
+        }
+      }
+    },
+    "DagEdge": {
+      "description": "A directed dependency edge `from → to` between two graph nodes.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "DagNode": {
+      "description": "A node in a run's group-level dependency graph (a Snakemake rule or a Nextflow process).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "InputTable": {
+      "description": "A samplesheet biffix wrote for a run (see `RunSubmitted::input_tables`).",
+      "type": "object",
+      "properties": {
+        "etag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rows": {
+          "description": "The rows, by column name.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "uri": {
+          "description": "Where it was written (`s3://<project bucket>/biffix/runs/<run>/inputs/<param>.<ext>`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri",
+        "rows"
+      ]
+    },
+    "InstanceId": {
+      "description": "EC2 instance id (spot attribution).",
+      "type": "string"
+    },
+    "OutputRef": {
+      "description": "One output object a task wrote (or, for a cached task, was satisfied by).",
+      "type": "object",
+      "properties": {
+        "etag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "The engine's own name for the file (e.g. a Nextflow publish target relative to its publish\ndir), for display. Optional; the backend derives one from `s3_uri` and the run's output\nprefix when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "s3_uri": {
+          "type": "string"
+        },
+        "size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "s3_uri"
+      ]
+    },
+    "ReferenceUse": {
+      "description": "The reference bundle a run was launched with (see `RunSubmitted::reference_bundle`): its id and\nthe URIs it filled, by bundle key, as they were at submit.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "uris": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "uris"
+      ]
+    },
+    "ReusedSample": {
+      "description": "One sample as the run a resumed run resumes left it ([`SampleSpec::reused`]).",
+      "type": "object",
+      "properties": {
+        "done": {
+          "description": "The sample was done there.",
+          "type": "boolean",
+          "default": false
+        },
+        "id": {
+          "type": "string"
+        },
+        "steps": {
+          "description": "Its finished per-sample steps there, by group, with how many tasks each had.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "RunId": {
+      "description": "biffix-minted run identifier. Nullable on the wire until attribution.",
+      "type": "string"
+    },
+    "RunPreparing": {
+      "description": "The `run_preparing` payload: a run accepted at submit that waits for its submit-time images\nbefore it launches. The provisional facts the run list and page need until the\n`run_submitted` anchor (recorded at launch) supersedes them. `params` are redacted.",
+      "type": "object",
+      "properties": {
+        "experiment_id": {
+          "description": "The experiment the run was launched into, as the anchor will record it. Optional +\nadditive.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "images": {
+          "description": "The submit-time images the run waits for, as pinned.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SubmitImage"
+          }
+        },
+        "input_uris": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "output_prefix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "params": true,
+        "resumed_from": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "submitter": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "submitter_label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workflow_version_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow_version_id",
+        "params",
+        "input_uris",
+        "images"
+      ]
+    },
+    "RunSubmitted": {
+      "description": "The `run_submitted` anchor's payload — the run's provenance. A named struct so the\ncontrol plane builds it with struct-update syntax from [`RunSubmitted::new`] (the required\nfields) instead of patching a variant's `None`s after the fact.\n\nEvery field after `input_uris` is optional + additive: absent on anchors recorded\nbefore it existed.",
+      "type": "object",
+      "properties": {
+        "dropped_inactive": {
+          "description": "Params the submit dropped because their `show_if` conditions hid them (the form's\nactive set), so the record shows what was given but not used. Optional + additive.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "engine_session_id": {
+          "description": "The engine session this run executes as. Nextflow: the session uuid biffix minted (a\nfresh run) or re-used (a resumed run) — the key under `<output_prefix>.nextflow/cache/`.\nOptional + additive: `None` for Snakemake, and on anchors from before this\nfield existed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "experiment_id": {
+          "description": "The experiment the run was launched into (`RunSubmitRequest.experiment`); a later\n`experiment_set` moves it. Optional + additive: `None` when launched into none, and on\nanchors from before experiments.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "git_sha": {
+          "type": "string"
+        },
+        "image_digest": {
+          "type": "string"
+        },
+        "image_map": {
+          "description": "The run's image map: each declared image reference (as written and normalized) to the\ntenant image its tasks ran (`images.json`). Optional + additive.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "image_source_digest": {
+          "description": "The digest of the default image as imported, when the run's tasks ran an image derived\nfrom it (a Snakemake image with the version's engine runtime added); `image_digest` is\nthen the derived image's. Optional + additive.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input_provenance": {
+          "description": "Per-URI provenance tag (S3 `version-id`, else `ETag`, else empty) captured at the\nsubmit-time existence check, keyed by `input_uris` entry. Optional + additive,\nlike `submitter`: `None` on events from before this field existed, or for a\nproducer that has no tag to record (e.g. a prefix input has no ETag).",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "input_tables": {
+          "description": "Samplesheets biffix wrote for this run from rows given at submit, by param: where each\nwas written and its rows, so the run can be re-run with the same samples. Optional +\nadditive.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/$defs/InputTable"
+          }
+        },
+        "input_uris": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "output_prefix": {
+          "description": "The effective output prefix the workflow's outputs land under (the engine's default\nstorage prefix), captured at submit: a submit-time `--output-prefix`, else the isolated\nper-run `s3://<bucket>/biffix/runs/<run_id>/`. Recorded so the run's output location is\na fact of the log, not re-derived (which is wrong for an overridden prefix). Optional +\nadditive: `None` on events from before this field existed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "params": true,
+        "reference_bundle": {
+          "description": "The reference bundle chosen at submit and the URIs it filled (a bundle can be edited\nlater, so the run keeps what it used). Optional + additive.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReferenceUse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resumed_from": {
+          "description": "The run this one resumes (`--resume-from`): it shares that run's output prefix, work dir\nand engine session. Optional + additive: `None` for a fresh run.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retention": {
+          "description": "What happens to the run's intermediate files once it ends (see [`Retention`]). Absent ⇒\nthe deploy's default. Optional + additive.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "examples": [
+            "default",
+            "delete_on_success",
+            "keep"
+          ]
+        },
+        "run_name": {
+          "description": "The run's human name, given at submit (the UI pre-fills it from the workflow's\ntemplate). Optional + additive: `None` when the submitter gave none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime": {
+          "description": "The engine runtime the run's coordinator ran with (see [`RuntimeUse`]). Optional +\nadditive: `None` on anchors from before pinned engine runtimes.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeUse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sample_count": {
+          "description": "How many samples the run was launched with: those of the samplesheet biffix wrote for it\nfrom rows (the first, when there are several), else of the samplesheet given as an `s3://`\nfile when submit could read its sample ids (at most 1 MiB, in storage the run may read).\nAbsent when neither applies. Optional + additive.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "samples": {
+          "description": "The run's samples and the version's hint for matching tasks to them (the Lab view's\nper-sample progress; see [`crate::sample_progress`]). Optional + additive: `None` on\nanchors from before the field, which then match tasks by the default rules alone.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SampleSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "submit_images": {
+          "description": "The images given at submit (`--image`), as pinned; their keys are in `image_map`, where\nthey win over a version image spelled the same. Optional + additive: `None` when the\nsubmit named none, and on anchors from before submit-time images.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/SubmitImage"
+          }
+        },
+        "submitter": {
+          "description": "Who/what triggered the run: `user:<id>` or `watcher:<id>`. Optional + additive.\nNone ⇒ unknown.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "submitter_label": {
+          "description": "A human label for the submitter (email/display name captured from the auth context at\nsubmit). Optional + additive; `None` when unknown (e.g. a watcher, or no email claim).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "description": "The effective target built for this run (engine-agnostic: a Snakemake target\nrule/output, or a Nextflow `-entry` workflow), captured at submit. A submit-time\n`--target` overrides the version's registered target; this records whichever was used,\nso two runs of one version that build different targets are distinguishable. Optional +\nadditive: `None` on events from before this field existed, or when neither\nthe submit nor the version set a target.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workflow_version_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow_version_id",
+        "git_sha",
+        "image_digest",
+        "params",
+        "input_uris"
+      ]
+    },
+    "RuntimeUse": {
+      "description": "The engine a run was launched with (see `RunSubmitted::runtime`): the version's pinned release,\nthe runtime built for it, and the exact coordinator image (base image + that runtime) it ran on.",
+      "type": "object",
+      "properties": {
+        "coordinator_image": {
+          "description": "`<repo>@sha256:…` of the coordinator variant.",
+          "type": "string"
+        },
+        "engine_version": {
+          "type": "string"
+        },
+        "runtime_key": {
+          "description": "sha256 of the runtime's recipe (`biffix_workflow::runtime::runtime_key`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "engine_version",
+        "runtime_key",
+        "coordinator_image"
+      ]
+    },
+    "SampleHint": {
+      "description": "The author's hint for attributing tasks to samples (`samples:` in `biffix.yaml`), frozen with\nthe version's form. Every key is optional; without one the default rules apply.",
+      "type": "object",
+      "properties": {
+        "labels": {
+          "description": "Display names for steps, e.g. `STAR_ALIGN: \"Align (STAR)\"`, named as in `steps`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "steps": {
+          "description": "Steps forced to one scope, e.g. `joint_call: study`. A step is named by its full group name\nor, for a Nextflow process path, its last `:`-separated part (`STAR_ALIGN` names\n`NFCORE_RNASEQ:RNASEQ:STAR_ALIGN`); the full name wins when both are given.",
+          "type": "object",
+          "additionalProperties": {
+            "description": "Whether a step runs once per sample or once for the whole study (open enum).",
+            "type": "string",
+            "examples": [
+              "sample",
+              "study"
+            ]
+          }
+        },
+        "tag": {
+          "description": "Nextflow: a regex over the task's tag whose `sample` group is the sample id. Trusted as\ngiven (its match is the sample even when the sheet does not list it), and it overrides the\ndefault rules, file-name tags included.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wildcard": {
+          "description": "Snakemake: the wildcard that names the sample. Trusted as given: its value is the sample\neven when the run's sheet does not list it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "SampleSpec": {
+      "description": "What a run knows about its samples, captured at submit (`RunSubmitted::samples`): the sample\nids of the samplesheet biffix wrote from rows, else of the samplesheet given as an `s3://` file\nwhen submit could read them (at most 1 MiB, in storage the run may read); and the version's\nhint. `ids` is empty when neither applies: the set is then open, and a sample is whatever a\ntask key names.",
+      "type": "object",
+      "properties": {
+        "hint": {
+          "$ref": "#/$defs/SampleHint"
+        },
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reused": {
+          "description": "A resumed run's samples as the run it resumes left them: each sample's finished per-sample\nsteps there ([`SampleGrid::reused_by_resume`] of that run's grid, captured at submit). The\ngrid shows them as reused where this run has no task of its own (a Snakemake resume creates\nno task for a finished step, so without these a sample it skipped entirely would vanish).\nCarried on the anchor rather than read from the other run at fold time, so the grid stays a\nfunction of this run's own log. Optional + additive: empty for a run that resumes nothing.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReusedSample"
+          }
+        }
+      }
+    },
+    "SubmitImage": {
+      "description": "An image given at submit, pinned: the reference as the submitter wrote it, the digest-pinned\nsource it was resolved to, and the content key its import is built under.",
+      "type": "object",
+      "properties": {
+        "content_key": {
+          "type": "string"
+        },
+        "declared_ref": {
+          "type": "string"
+        },
+        "source_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "declared_ref",
+        "source_ref",
+        "content_key"
+      ]
+    },
+    "TaskKey": {
+      "description": "Stable logical-task identity: Snakemake `rule:sorted(wildcards)` / Nextflow the task name,\n`process (index)` untagged and `process (tag) #<index>` tagged (a tag need not be unique;\nthe index is, and depends on no other task: nf-biffix `BiffixObserver.taskKey`).\nSurvives retries — all attempts of one rule/process share it.",
+      "type": "string"
+    }
+  }
+}

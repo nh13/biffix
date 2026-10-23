@@ -1,0 +1,312 @@
+# Cut a biffix release: build everything a deploy needs from the tagged commit, and publish it, so
+# deploying is `infra/deploy.sh --release vX.Y.Z` with no Rust, cargo-lambda or Node toolchain and no
+# image build of one's own (infra/README.md, "Releases").
+#
+# WHAT IT PUBLISHES. On a pushed `v*` tag, a GitHub release of that tag with these assets:
+#   <bin>-x86_64.zip     the four Rust Lambdas (backend, sweep, ingest, reconcile), each a zipped
+#                        `bootstrap` from `cargo lambda build`. x86_64: the Lambdas set no
+#                        architecture, so they run on Lambda's default, x86_64 (rust_function.py).
+#   biffix-ui.tar.gz     the UI's static build, built against API types generated from this same
+#                        tree (and checked to be the committed ones).
+#   release.json         the manifest infra/biffix_infra/release.py reads: version, commit, the
+#                        Lambdas' architecture, and the coordinator image by digest.
+#   SHA256SUMS           over every other asset; deploy.sh --release checks each download against it.
+# and the base coordinator image, linux/amd64 + linux/arm64 (each built natively, by
+# coordinator-image.yml), at ghcr.io/<owner>/biffix-coordinator:<tag>. A deploy never pulls it
+# by tag: release.json pins the index's digest, and deploy.sh copies exactly that digest into the
+# tenant's own coordinator ECR repository. Every asset and the image get a signed build-provenance
+# attestation (`gh attestation verify`).
+#
+# WHY GHCR. It is the registry of the repository's own account: the job's GITHUB_TOKEN pushes to it
+# (packages: write), so there is no cloud account, no OIDC role and no stored secret to publish.
+# ECR Public would need an AWS account and role for the maintainer, for no gain: the tenant copies the
+# image into its private ECR either way, and anonymous pulls from a public GHCR package work.
+#
+# DRY RUN. workflow_dispatch builds every artifact (the images too, without pushing them) and
+# uploads the assets as a workflow artifact, `release`, without release.json's coordinator image (no
+# image was pushed, so there is no digest to pin). Nothing is published.
+#
+# THE TAG IS THE VERSION. A tag must be `v` + the Cargo workspace version ([workspace.package] in
+# Cargo.toml): the infra deploying a release reads the same version (biffix_infra/version.py), so a
+# mismatched tag fails here, before anything is built. To cut a release: bump the workspace version,
+# merge, then push the tag `v<version>` on that commit.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      image: ${{ steps.meta.outputs.image }}
+      publish: ${{ steps.meta.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: meta
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          tag="v${version}"
+          if [ "$EVENT" = push ]; then
+            [ "$REF_NAME" = "$tag" ] || {
+              echo "::error::tag ${REF_NAME} is not the workspace version (Cargo.toml says ${version}, so the tag must be ${tag})"
+              exit 1
+            }
+            publish=true
+          else
+            publish=false
+          fi
+          {
+            echo "tag=${tag}"
+            # Registry names are lowercase; an account name need not be.
+            echo "image=ghcr.io/${OWNER,,}/biffix-coordinator"
+            echo "publish=${publish}"
+          } >> "$GITHUB_OUTPUT"
+
+  lambdas:
+    needs: meta
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # rustup honors rust-toolchain.toml on the first cargo invocation.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      # cargo-lambda from PyPI brings the zig it links with (the `ziglang` package, which it runs as
+      # `python3 -m ziglang`), so its venv goes first on PATH.
+      - name: install cargo-lambda
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/cargo-lambda"
+          uv pip install --python "$RUNNER_TEMP/cargo-lambda/bin/python" cargo-lambda==1.9.2
+          echo "$RUNNER_TEMP/cargo-lambda/bin" >> "$GITHUB_PATH"
+      # The same binaries and features as infra/deploy.sh builds.
+      - name: build the Lambdas
+        run: |
+          set -euo pipefail
+          cargo lambda build --release --output-format zip --features aws --bin biffix-backend-lambda
+          cargo lambda build --release --output-format zip --features aws --bin biffix-backend-sweep
+          cargo lambda build --release --output-format zip --features aws --bin biffix-ingest-lambda
+          cargo lambda build --release --output-format zip --features aws --bin biffix-reconcile-lambda
+          mkdir -p dist
+          for bin in biffix-backend-lambda biffix-backend-sweep biffix-ingest-lambda biffix-reconcile-lambda; do
+            cp "target/lambda/${bin}/bootstrap.zip" "dist/${bin}-x86_64.zip"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lambdas
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  ui:
+    needs: meta
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # `generate:api` runs the Rust `biffix-openapi` bin, so this job needs cargo too.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: build the UI
+        working-directory: ui
+        run: |
+          set -euo pipefail
+          npm ci
+          # The UI ships with the Lambdas built from this same tree, so its API types come from it.
+          npm run generate:api
+          git diff --exit-code -- src/lib/generated/
+          npm run build
+      # Sorted, owner-free, dated to the commit and with no gzip timestamp, so the same commit makes
+      # the same bytes.
+      - name: pack the UI
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          epoch="$(git log -1 --format=%ct)"
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@${epoch}" \
+            -C ui/build -cf - . | gzip -n > dist/biffix-ui.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ui
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Each architecture on its own native runner (coordinator-image.yml), pushed by digest only;
+  # image-index joins them under the tag.
+  image:
+    needs: meta
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io/<owner>/biffix-coordinator
+    uses: ./.github/workflows/coordinator-image.yml
+    with:
+      registry: ghcr
+      image: ${{ needs.meta.outputs.image }}
+      tag: ${{ needs.meta.outputs.tag }}
+      push: ${{ needs.meta.outputs.publish == 'true' }}
+
+  image-index:
+    needs: [meta, image]
+    if: needs.meta.outputs.publish == 'true'
+    # Add required reviewers to this environment to gate every publish on an approval.
+    environment: release
+    permissions:
+      contents: read
+      packages: write # tag the index
+      id-token: write # sign the provenance attestation
+      attestations: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      digest: ${{ steps.index.outputs.digest }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - name: log in to GHCR
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+      # A manifest list missing an architecture only fails later, on a worker of the missing arch,
+      # as an exec-format error far from the cause. Assert both are present.
+      - id: index
+        name: join the architectures under the tag
+        env:
+          IMAGE: ${{ needs.meta.outputs.image }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          DIGESTS: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create --tag "${IMAGE}:${TAG}" \
+            "${IMAGE}@$(cat "${DIGESTS}/amd64")" "${IMAGE}@$(cat "${DIGESTS}/arm64")"
+          docker buildx imagetools inspect "${IMAGE}:${TAG}" > "$RUNNER_TEMP/manifest.txt"
+          cat "$RUNNER_TEMP/manifest.txt"
+          for want in linux/amd64 linux/arm64; do
+            grep -q "${want}" "$RUNNER_TEMP/manifest.txt" || { echo "::error::missing ${want}"; exit 1; }
+          done
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{json .Manifest}}' | jq -r .digest)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no index digest: ${digest}"; exit 1; }
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ needs.meta.outputs.image }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
+
+  # The release's files, checksummed. Runs on a dry run too (without an image to pin).
+  assemble:
+    needs: [meta, lambdas, ui, image, image-index]
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: lambdas
+          path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ui
+          path: dist
+      # The shape biffix_infra/release.py reads (MANIFEST_SCHEMA).
+      - name: write release.json and SHA256SUMS
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
+          SHA: ${{ github.sha }}
+          IMAGE: ${{ needs.meta.outputs.image }}
+          DIGEST: ${{ needs.image-index.outputs.digest }}
+        run: |
+          set -euo pipefail
+          jq -n --arg version "$TAG" --arg commit "$SHA" --arg image "$IMAGE" --arg digest "$DIGEST" '{
+            schema: 1,
+            version: $version,
+            commit: $commit,
+            lambda_architecture: "x86_64",
+            coordinator_image: (if $digest == "" then null else {
+              image: $image,
+              digest: $digest,
+              platforms: ["linux/amd64", "linux/arm64"]
+            } end)
+          }' > dist/release.json
+          (cd dist && sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS")
+          mv "$RUNNER_TEMP/SHA256SUMS" dist/SHA256SUMS
+          cat dist/release.json dist/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [meta, image-index, assemble]
+    if: needs.meta.outputs.publish == 'true'
+    environment: release
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the provenance attestation
+      attestations: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          IMAGE: ${{ needs.meta.outputs.image }}
+          DIGEST: ${{ needs.image-index.outputs.digest }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Deploy it from a checkout of this tag:"
+            echo
+            echo '```sh'
+            echo "git checkout ${TAG}"
+            echo "infra/deploy.sh --config <your deploy config> --account <account id> --release ${TAG}"
+            echo '```'
+            echo
+            echo "Coordinator image: \`${IMAGE}@${DIGEST}\` (linux/amd64, linux/arm64)."
+            echo
+            echo "Verify an asset's provenance: \`gh attestation verify <file> --repo ${REPO}\`."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" dist/* --repo "$REPO" --verify-tag \
+            --title "biffix ${TAG}" --notes-file "$RUNNER_TEMP/notes.md"

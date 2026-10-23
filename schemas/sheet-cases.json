@@ -1,0 +1,673 @@
+[
+  {
+    "name": "a valid sheet, single- and paired-end",
+    "spec": {
+      "columns": [
+        {
+          "name": "sample",
+          "role": "sample_id",
+          "required": true,
+          "file": false
+        },
+        {
+          "name": "fastq_1",
+          "role": "read1",
+          "required": true,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "fastq_2",
+          "role": "read2",
+          "required": false,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "strandedness",
+          "required": true,
+          "file": false,
+          "enum_values": [
+            "auto",
+            "forward"
+          ],
+          "default": "auto"
+        }
+      ],
+      "format": "csv",
+      "paired_only": false,
+      "lanes": "merge"
+    },
+    "rows": [
+      {
+        "fastq_1": "s3://b/A_R1.fastq.gz",
+        "fastq_2": "s3://b/A_R2.fastq.gz",
+        "sample": "A",
+        "strandedness": "auto"
+      },
+      {
+        "fastq_1": "s3://b/B_R1.fastq.gz",
+        "sample": "B",
+        "strandedness": "forward"
+      }
+    ],
+    "problems": [],
+    "rendered": "sample,fastq_1,fastq_2,strandedness\nA,s3://b/A_R1.fastq.gz,s3://b/A_R2.fastq.gz,auto\nB,s3://b/B_R1.fastq.gz,,forward\n",
+    "sample_count": 2
+  },
+  {
+    "name": "no rows",
+    "spec": {
+      "columns": [
+        {
+          "name": "sample",
+          "role": "sample_id",
+          "required": true,
+          "file": false
+        },
+        {
+          "name": "fastq_1",
+          "role": "read1",
+          "required": true,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "fastq_2",
+          "role": "read2",
+          "required": false,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "strandedness",
+          "required": true,
+          "file": false,
+          "enum_values": [
+            "auto",
+            "forward"
+          ],
+          "default": "auto"
+        }
+      ],
+      "format": "csv",
+      "paired_only": false,
+      "lanes": "merge"
+    },
+    "rows": [],
+    "problems": [
+      {
+        "message": "no samples"
+      }
+    ],
+    "rendered": "sample,fastq_1,fastq_2,strandedness\n",
+    "sample_count": 0
+  },
+  {
+    "name": "each cell rule, unknown columns first",
+    "spec": {
+      "columns": [
+        {
+          "name": "sample",
+          "role": "sample_id",
+          "required": true,
+          "file": false
+        },
+        {
+          "name": "fastq_1",
+          "role": "read1",
+          "required": true,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "fastq_2",
+          "role": "read2",
+          "required": false,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "strandedness",
+          "required": true,
+          "file": false,
+          "enum_values": [
+            "auto",
+            "forward"
+          ],
+          "default": "auto"
+        }
+      ],
+      "format": "csv",
+      "paired_only": true,
+      "lanes": "merge"
+    },
+    "rows": [
+      {
+        "fastq_1": "local/a.fastq.gz",
+        "sample": " ",
+        "strandedness": "sideways"
+      },
+      {
+        "batch": "7",
+        "fastq_1": "s3://b/B.txt",
+        "fastq_2": "s3://b/B_R2.FASTQ.GZ",
+        "sample": "B",
+        "strandedness": "forward"
+      }
+    ],
+    "problems": [
+      {
+        "row": 0,
+        "column": "sample",
+        "message": "required"
+      },
+      {
+        "row": 0,
+        "column": "fastq_1",
+        "message": "must be an s3:// path"
+      },
+      {
+        "row": 0,
+        "column": "strandedness",
+        "message": "not one of auto, forward"
+      },
+      {
+        "row": 0,
+        "column": "fastq_2",
+        "message": "this workflow needs paired-end reads"
+      },
+      {
+        "row": 1,
+        "column": "batch",
+        "message": "not a column of this samplesheet"
+      },
+      {
+        "row": 1,
+        "column": "fastq_1",
+        "message": "must end in .fastq.gz"
+      }
+    ],
+    "rendered": "sample,fastq_1,fastq_2,strandedness\n,local/a.fastq.gz,,sideways\nB,s3://b/B.txt,s3://b/B_R2.FASTQ.GZ,forward\n",
+    "sample_count": 1
+  },
+  {
+    "name": "each repeat of a file names the row before it",
+    "spec": {
+      "columns": [
+        {
+          "name": "sample",
+          "role": "sample_id",
+          "required": true,
+          "file": false
+        },
+        {
+          "name": "fastq_1",
+          "role": "read1",
+          "required": true,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "fastq_2",
+          "role": "read2",
+          "required": false,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "strandedness",
+          "required": true,
+          "file": false,
+          "enum_values": [
+            "auto",
+            "forward"
+          ],
+          "default": "auto"
+        }
+      ],
+      "format": "csv",
+      "paired_only": false,
+      "lanes": "merge"
+    },
+    "rows": [
+      {
+        "fastq_1": "s3://b/x.fastq.gz",
+        "sample": "A",
+        "strandedness": "auto"
+      },
+      {
+        "fastq_1": "s3://b/x.fastq.gz",
+        "sample": "B",
+        "strandedness": "auto"
+      },
+      {
+        "fastq_1": "s3://b/x.fastq.gz",
+        "sample": "C",
+        "strandedness": "auto"
+      }
+    ],
+    "problems": [
+      {
+        "row": 1,
+        "column": "fastq_1",
+        "message": "the same file as row 1"
+      },
+      {
+        "row": 2,
+        "column": "fastq_1",
+        "message": "the same file as row 2"
+      }
+    ],
+    "rendered": "sample,fastq_1,fastq_2,strandedness\nA,s3://b/x.fastq.gz,,auto\nB,s3://b/x.fastq.gz,,auto\nC,s3://b/x.fastq.gz,,auto\n",
+    "sample_count": 3
+  },
+  {
+    "name": "one file as both reads of a row",
+    "spec": {
+      "columns": [
+        {
+          "name": "sample",
+          "role": "sample_id",
+          "required": true,
+          "file": false
+        },
+        {
+          "name": "fastq_1",
+          "role": "read1",
+          "required": true,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "fastq_2",
+          "role": "read2",
+          "required": false,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "strandedness",
+          "required": true,
+          "file": false,
+          "enum_values": [
+            "auto",
+            "forward"
+          ],
+          "default": "auto"
+        }
+      ],
+      "format": "csv",
+      "paired_only": false,
+      "lanes": "merge"
+    },
+    "rows": [
+      {
+        "fastq_1": "s3://b/x.fastq.gz",
+        "fastq_2": "s3://b/x.fastq.gz",
+        "sample": "A",
+        "strandedness": "auto"
+      }
+    ],
+    "problems": [
+      {
+        "row": 0,
+        "column": "fastq_2",
+        "message": "the same file as fastq_1"
+      }
+    ],
+    "rendered": "sample,fastq_1,fastq_2,strandedness\nA,s3://b/x.fastq.gz,s3://b/x.fastq.gz,auto\n",
+    "sample_count": 1
+  },
+  {
+    "name": "a shared file repeats freely; a read file used as read 1 and read 2 does not",
+    "spec": {
+      "columns": [
+        {
+          "name": "sample",
+          "role": "sample_id",
+          "required": false,
+          "file": false
+        },
+        {
+          "name": "fastq_1",
+          "role": "read1",
+          "required": true,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "fastq_2",
+          "role": "read2",
+          "required": false,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "panel",
+          "required": false,
+          "file": true
+        }
+      ],
+      "format": "csv",
+      "paired_only": false,
+      "lanes": "merge"
+    },
+    "rows": [
+      {
+        "fastq_1": "s3://b/x.fastq.gz",
+        "panel": "s3://b/p.bed",
+        "sample": "A"
+      },
+      {
+        "fastq_1": "s3://b/y.fastq.gz",
+        "fastq_2": "s3://b/x.fastq.gz",
+        "panel": "s3://b/p.bed",
+        "sample": "B"
+      }
+    ],
+    "problems": [
+      {
+        "row": 1,
+        "column": "fastq_2",
+        "message": "the same file as row 1"
+      }
+    ],
+    "rendered": "sample,fastq_1,fastq_2,panel\nA,s3://b/x.fastq.gz,,s3://b/p.bed\nB,s3://b/y.fastq.gz,s3://b/x.fastq.gz,s3://b/p.bed\n",
+    "sample_count": 2
+  },
+  {
+    "name": "ids count trimmed, as they are written, and empty rows are left out",
+    "spec": {
+      "columns": [
+        {
+          "name": "sample",
+          "role": "sample_id",
+          "required": false,
+          "file": false
+        },
+        {
+          "name": "note",
+          "required": false,
+          "file": false
+        }
+      ],
+      "format": "csv",
+      "paired_only": false,
+      "lanes": "merge"
+    },
+    "rows": [
+      {
+        "sample": "A"
+      },
+      {
+        "sample": "A "
+      },
+      {
+        "sample": " "
+      },
+      {
+        "note": "no id",
+        "sample": " "
+      },
+      {
+        "sample": "B"
+      }
+    ],
+    "problems": [],
+    "rendered": "sample,note\nA,\nA,\n,no id\nB,\n",
+    "sample_count": 2
+  },
+  {
+    "name": "a sheet of only empty rows has no samples",
+    "spec": {
+      "columns": [
+        {
+          "name": "sample",
+          "role": "sample_id",
+          "required": true,
+          "file": false
+        },
+        {
+          "name": "fastq_1",
+          "role": "read1",
+          "required": true,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "fastq_2",
+          "role": "read2",
+          "required": false,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "strandedness",
+          "required": true,
+          "file": false,
+          "enum_values": [
+            "auto",
+            "forward"
+          ],
+          "default": "auto"
+        }
+      ],
+      "format": "csv",
+      "paired_only": false,
+      "lanes": "merge"
+    },
+    "rows": [
+      {
+        "fastq_1": " ",
+        "fastq_2": "",
+        "sample": "",
+        "strandedness": ""
+      },
+      {}
+    ],
+    "problems": [
+      {
+        "message": "no samples"
+      }
+    ],
+    "rendered": "sample,fastq_1,fastq_2,strandedness\n",
+    "sample_count": 0
+  },
+  {
+    "name": "an empty row among samples is left out, with no problems of its own",
+    "spec": {
+      "columns": [
+        {
+          "name": "sample",
+          "role": "sample_id",
+          "required": true,
+          "file": false
+        },
+        {
+          "name": "fastq_1",
+          "role": "read1",
+          "required": true,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "fastq_2",
+          "role": "read2",
+          "required": false,
+          "file": true,
+          "suffixes": [
+            ".fastq.gz"
+          ]
+        },
+        {
+          "name": "strandedness",
+          "required": true,
+          "file": false,
+          "enum_values": [
+            "auto",
+            "forward"
+          ],
+          "default": "auto"
+        }
+      ],
+      "format": "csv",
+      "paired_only": false,
+      "lanes": "merge"
+    },
+    "rows": [
+      {
+        "fastq_1": "s3://b/A_R1.fastq.gz",
+        "sample": "A",
+        "strandedness": "auto"
+      },
+      {
+        "fastq_1": "",
+        "sample": " ",
+        "strandedness": ""
+      },
+      {
+        "sample": "B",
+        "strandedness": "auto"
+      }
+    ],
+    "problems": [
+      {
+        "row": 2,
+        "column": "fastq_1",
+        "message": "required"
+      }
+    ],
+    "rendered": "sample,fastq_1,fastq_2,strandedness\nA,s3://b/A_R1.fastq.gz,,auto\nB,,,auto\n",
+    "sample_count": 2
+  },
+  {
+    "name": "CSV quotes a cell with a comma, quote or newline, and trims cells",
+    "spec": {
+      "columns": [
+        {
+          "name": "sample",
+          "role": "sample_id",
+          "required": false,
+          "file": false
+        },
+        {
+          "name": "note",
+          "required": false,
+          "file": false
+        }
+      ],
+      "format": "csv",
+      "paired_only": false,
+      "lanes": "merge"
+    },
+    "rows": [
+      {
+        "note": "say \"hi\"",
+        "sample": "a,b"
+      },
+      {
+        "note": "two\nlines",
+        "sample": "c"
+      },
+      {
+        "note": "plain",
+        "sample": "  d  "
+      }
+    ],
+    "problems": [],
+    "rendered": "sample,note\n\"a,b\",\"say \"\"hi\"\"\"\nc,\"two\nlines\"\nd,plain\n",
+    "sample_count": 3
+  },
+  {
+    "name": "TSV quotes a cell with a tab, quote or newline, as Python's csv writer does",
+    "spec": {
+      "columns": [
+        {
+          "name": "sample",
+          "role": "sample_id",
+          "required": false,
+          "file": false
+        },
+        {
+          "name": "note",
+          "required": false,
+          "file": false
+        }
+      ],
+      "format": "tsv",
+      "paired_only": false,
+      "lanes": "merge"
+    },
+    "rows": [
+      {
+        "note": "x\ty\nz",
+        "sample": "a,b"
+      },
+      {
+        "note": "\"q\"",
+        "sample": "q"
+      }
+    ],
+    "problems": [],
+    "rendered": "sample\tnote\na,b\t\"x\ty\nz\"\nq\t\"\"\"q\"\"\"\n",
+    "sample_count": 2
+  },
+  {
+    "name": "without a sample-id column every row that is not empty is a sample",
+    "spec": {
+      "columns": [
+        {
+          "name": "file",
+          "required": false,
+          "file": true
+        }
+      ],
+      "format": "csv",
+      "paired_only": false,
+      "lanes": "merge"
+    },
+    "rows": [
+      {
+        "file": "s3://b/1"
+      },
+      {
+        "file": "s3://b/2"
+      },
+      {}
+    ],
+    "problems": [],
+    "rendered": "file\ns3://b/1\ns3://b/2\n",
+    "sample_count": 2
+  }
+]

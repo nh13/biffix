@@ -1,0 +1,1747 @@
+[
+  {
+    "name": "required field missing",
+    "fields": [
+      {
+        "name": "reads",
+        "widget": "text",
+        "required": true,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false
+      }
+    ],
+    "params": {},
+    "inactive": [],
+    "errors": [
+      [
+        "reads",
+        "required"
+      ]
+    ]
+  },
+  {
+    "name": "null counts as missing",
+    "fields": [
+      {
+        "name": "reads",
+        "widget": "text",
+        "required": true,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false
+      }
+    ],
+    "params": {
+      "reads": null
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "reads",
+        "required"
+      ]
+    ]
+  },
+  {
+    "name": "gate off hides and relaxes required sub-fields",
+    "fields": [
+      {
+        "name": "with_umi",
+        "widget": "enum",
+        "required": false,
+        "enum_values": [
+          "true",
+          "false"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "default": false
+      },
+      {
+        "name": "umi_method",
+        "widget": "enum",
+        "required": true,
+        "enum_values": [
+          "string",
+          "regex"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "show_if": [
+          {
+            "field": "with_umi",
+            "values": [
+              true
+            ]
+          }
+        ]
+      },
+      {
+        "name": "umi_regex",
+        "widget": "text",
+        "required": true,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "show_if": [
+          {
+            "field": "umi_method",
+            "values": [
+              "regex"
+            ]
+          }
+        ]
+      }
+    ],
+    "params": {
+      "umi_regex": "x"
+    },
+    "inactive": [
+      "umi_method",
+      "umi_regex"
+    ],
+    "errors": []
+  },
+  {
+    "name": "gate on requires the sub-field, transitively hiding its own sub-field",
+    "fields": [
+      {
+        "name": "with_umi",
+        "widget": "enum",
+        "required": false,
+        "enum_values": [
+          "true",
+          "false"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "default": false
+      },
+      {
+        "name": "umi_method",
+        "widget": "enum",
+        "required": true,
+        "enum_values": [
+          "string",
+          "regex"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "show_if": [
+          {
+            "field": "with_umi",
+            "values": [
+              true
+            ]
+          }
+        ]
+      },
+      {
+        "name": "umi_regex",
+        "widget": "text",
+        "required": true,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "show_if": [
+          {
+            "field": "umi_method",
+            "values": [
+              "regex"
+            ]
+          }
+        ]
+      }
+    ],
+    "params": {
+      "with_umi": true
+    },
+    "inactive": [
+      "umi_regex"
+    ],
+    "errors": [
+      [
+        "umi_method",
+        "required"
+      ]
+    ]
+  },
+  {
+    "name": "string spelling of a boolean opens the gate",
+    "fields": [
+      {
+        "name": "with_umi",
+        "widget": "enum",
+        "required": false,
+        "enum_values": [
+          "true",
+          "false"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "default": false
+      },
+      {
+        "name": "umi_method",
+        "widget": "enum",
+        "required": true,
+        "enum_values": [
+          "string",
+          "regex"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "show_if": [
+          {
+            "field": "with_umi",
+            "values": [
+              true
+            ]
+          }
+        ]
+      },
+      {
+        "name": "umi_regex",
+        "widget": "text",
+        "required": true,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "show_if": [
+          {
+            "field": "umi_method",
+            "values": [
+              "regex"
+            ]
+          }
+        ]
+      }
+    ],
+    "params": {
+      "umi_method": "regex",
+      "with_umi": "true"
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "umi_regex",
+        "required"
+      ]
+    ]
+  },
+  {
+    "name": "gate uses the default when the param is absent",
+    "fields": [
+      {
+        "name": "mode",
+        "widget": "enum",
+        "required": false,
+        "enum_values": [
+          "fast",
+          "slow"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "default": "fast"
+      },
+      {
+        "name": "depth",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "show_if": [
+          {
+            "field": "mode",
+            "values": [
+              "slow"
+            ]
+          }
+        ]
+      }
+    ],
+    "params": {},
+    "inactive": [
+      "depth"
+    ],
+    "errors": []
+  },
+  {
+    "name": "number range and integer checks",
+    "fields": [
+      {
+        "name": "threads",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "min": 1.0,
+        "max": 64.0,
+        "step": 1.0
+      }
+    ],
+    "params": {
+      "threads": 100
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "threads",
+        "must be between 1 and 64"
+      ]
+    ]
+  },
+  {
+    "name": "numeric string is a number",
+    "fields": [
+      {
+        "name": "threads",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "min": 1.0,
+        "max": 64.0,
+        "step": 1.0
+      }
+    ],
+    "params": {
+      "threads": "8"
+    },
+    "inactive": [],
+    "errors": []
+  },
+  {
+    "name": "fraction where a whole number is required",
+    "fields": [
+      {
+        "name": "threads",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "min": 1.0,
+        "max": 64.0,
+        "step": 1.0
+      }
+    ],
+    "params": {
+      "threads": 2.5
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "threads",
+        "must be a whole number"
+      ]
+    ]
+  },
+  {
+    "name": "whole numbers follow the param's type, not its step hint",
+    "fields": [
+      {
+        "name": "depth",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "json_type": "integer",
+        "step": 5.0
+      },
+      {
+        "name": "ratio",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "json_type": "number",
+        "step": 1.0
+      }
+    ],
+    "params": {
+      "depth": 7.5,
+      "ratio": 2.5
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "depth",
+        "must be a whole number"
+      ]
+    ]
+  },
+  {
+    "name": "a blank string does not satisfy required",
+    "fields": [
+      {
+        "name": "reads",
+        "widget": "text",
+        "required": true,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false
+      },
+      {
+        "name": "genome",
+        "widget": "text",
+        "required": true,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "default": "hg38"
+      },
+      {
+        "name": "note",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false
+      }
+    ],
+    "params": {
+      "genome": "",
+      "note": "",
+      "reads": " \t"
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "reads",
+        "required"
+      ]
+    ]
+  },
+  {
+    "name": "text in a number field",
+    "fields": [
+      {
+        "name": "threads",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "min": 1.0,
+        "max": 64.0,
+        "step": 1.0
+      }
+    ],
+    "params": {
+      "threads": "many"
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "threads",
+        "must be a number"
+      ]
+    ]
+  },
+  {
+    "name": "only a minimum",
+    "fields": [
+      {
+        "name": "frac",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "min": 0.5
+      }
+    ],
+    "params": {
+      "frac": 0.25
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "frac",
+        "must be at least 0.5"
+      ]
+    ]
+  },
+  {
+    "name": "pattern rule",
+    "fields": [
+      {
+        "name": "adapter",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^[ACGT]+$",
+            "message": "must be a DNA sequence"
+          }
+        ]
+      }
+    ],
+    "params": {
+      "adapter": "ACGN"
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "adapter",
+        "must be a DNA sequence"
+      ]
+    ]
+  },
+  {
+    "name": "enum and boolean",
+    "fields": [
+      {
+        "name": "choice",
+        "widget": "enum",
+        "required": false,
+        "enum_values": [
+          "a",
+          "b"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false
+      },
+      {
+        "name": "flag",
+        "widget": "enum",
+        "required": false,
+        "enum_values": [
+          "true",
+          "false"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false
+      }
+    ],
+    "params": {
+      "choice": "c",
+      "flag": "yes"
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "choice",
+        "not one of a, b"
+      ],
+      [
+        "flag",
+        "must be true or false"
+      ]
+    ]
+  },
+  {
+    "name": "a numeric choice matches by value, however it is spelled",
+    "fields": [
+      {
+        "name": "two",
+        "widget": "enum",
+        "required": false,
+        "enum_values": [
+          "1",
+          "2",
+          "4"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "json_type": "integer"
+      },
+      {
+        "name": "two_text",
+        "widget": "enum",
+        "required": false,
+        "enum_values": [
+          "1",
+          "2",
+          "4"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "json_type": "integer"
+      },
+      {
+        "name": "two_float",
+        "widget": "enum",
+        "required": false,
+        "enum_values": [
+          "1",
+          "2",
+          "4"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "json_type": "integer"
+      },
+      {
+        "name": "five",
+        "widget": "enum",
+        "required": false,
+        "enum_values": [
+          "1",
+          "2",
+          "4"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "json_type": "integer"
+      },
+      {
+        "name": "listed",
+        "widget": "enum",
+        "required": false,
+        "enum_values": [
+          "1",
+          "2",
+          "4"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "json_type": "integer"
+      }
+    ],
+    "params": {
+      "five": 5,
+      "listed": [
+        2
+      ],
+      "two": 2,
+      "two_float": 2.0,
+      "two_text": "2"
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "five",
+        "not one of 1, 2, 4"
+      ],
+      [
+        "listed",
+        "not one of 1, 2, 4"
+      ]
+    ]
+  },
+  {
+    "name": "a string param with true/false choices is not a boolean",
+    "fields": [
+      {
+        "name": "word",
+        "widget": "enum",
+        "required": false,
+        "enum_values": [
+          "true",
+          "false"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "json_type": "string"
+      },
+      {
+        "name": "flag",
+        "widget": "enum",
+        "required": false,
+        "enum_values": [
+          "true",
+          "false"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "json_type": "boolean"
+      },
+      {
+        "name": "legacy",
+        "widget": "enum",
+        "required": false,
+        "enum_values": [
+          "true",
+          "false"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false
+      }
+    ],
+    "params": {
+      "flag": "yes",
+      "legacy": "yes",
+      "word": "yes"
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "word",
+        "not one of true, false"
+      ],
+      [
+        "flag",
+        "must be true or false"
+      ],
+      [
+        "legacy",
+        "must be true or false"
+      ]
+    ]
+  },
+  {
+    "name": "path input must be a string",
+    "fields": [
+      {
+        "name": "fasta",
+        "widget": "s3_file",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": true
+      },
+      {
+        "name": "listed",
+        "widget": "s3_file",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": true
+      }
+    ],
+    "params": {
+      "fasta": 3,
+      "listed": [
+        "s3://b/a.fa"
+      ]
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "fasta",
+        "must be a string path"
+      ],
+      [
+        "listed",
+        "must be a string path"
+      ]
+    ]
+  },
+  {
+    "name": "a multiple path input takes a list of paths, each checked",
+    "fields": [
+      {
+        "name": "reads",
+        "widget": "s3_file",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": true,
+        "multiple": true,
+        "rules": [
+          {
+            "pattern": "\\.fq\\.gz$",
+            "message": "must be a .fq.gz file"
+          }
+        ]
+      },
+      {
+        "name": "one",
+        "widget": "s3_file",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": true,
+        "multiple": true,
+        "rules": [
+          {
+            "pattern": "\\.fq\\.gz$",
+            "message": "must be a .fq.gz file"
+          }
+        ]
+      },
+      {
+        "name": "bad_suffix",
+        "widget": "s3_file",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": true,
+        "multiple": true,
+        "rules": [
+          {
+            "pattern": "\\.fq\\.gz$",
+            "message": "must be a .fq.gz file"
+          }
+        ]
+      },
+      {
+        "name": "empty",
+        "widget": "s3_file",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": true,
+        "multiple": true,
+        "rules": [
+          {
+            "pattern": "\\.fq\\.gz$",
+            "message": "must be a .fq.gz file"
+          }
+        ]
+      },
+      {
+        "name": "mixed",
+        "widget": "s3_file",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": true,
+        "multiple": true,
+        "rules": [
+          {
+            "pattern": "\\.fq\\.gz$",
+            "message": "must be a .fq.gz file"
+          }
+        ]
+      },
+      {
+        "name": "scalar",
+        "widget": "s3_file",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": true,
+        "multiple": true,
+        "rules": [
+          {
+            "pattern": "\\.fq\\.gz$",
+            "message": "must be a .fq.gz file"
+          }
+        ]
+      }
+    ],
+    "params": {
+      "bad_suffix": [
+        "s3://b/a.fq.gz",
+        "s3://b/b.txt"
+      ],
+      "empty": [],
+      "mixed": [
+        "s3://b/a.fq.gz",
+        3
+      ],
+      "one": "s3://b/a.fq.gz",
+      "reads": [
+        "s3://b/a.fq.gz",
+        "s3://b/b.fq.gz"
+      ],
+      "scalar": 3
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "bad_suffix",
+        "path 2: must be a .fq.gz file"
+      ],
+      [
+        "empty",
+        "must list at least one path"
+      ],
+      [
+        "mixed",
+        "must be a list of string paths"
+      ],
+      [
+        "scalar",
+        "must be a string path"
+      ]
+    ]
+  },
+  {
+    "name": "a pattern checks a number or a boolean as its text, never a list",
+    "fields": [
+      {
+        "name": "short",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^\\d{3}$",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "long",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^\\d{3}$",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "listed",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^\\d{3}$",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "flag",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^\\d{3}$",
+            "message": "must match"
+          }
+        ]
+      }
+    ],
+    "params": {
+      "flag": true,
+      "listed": [
+        "123"
+      ],
+      "long": 12345,
+      "short": 123
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "long",
+        "must match"
+      ],
+      [
+        "listed",
+        "must be text"
+      ],
+      [
+        "flag",
+        "must match"
+      ]
+    ]
+  },
+  {
+    "name": "a default satisfies required",
+    "fields": [
+      {
+        "name": "genome",
+        "widget": "text",
+        "required": true,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "default": "hg38"
+      },
+      {
+        "name": "skip_qc",
+        "widget": "enum",
+        "required": true,
+        "enum_values": [
+          "true",
+          "false"
+        ],
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "default": false
+      },
+      {
+        "name": "reads",
+        "widget": "text",
+        "required": true,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false
+      }
+    ],
+    "params": {
+      "skip_qc": null
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "reads",
+        "required"
+      ]
+    ]
+  },
+  {
+    "name": "a show_if cycle is always shown",
+    "fields": [
+      {
+        "name": "a",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "show_if": [
+          {
+            "field": "b",
+            "values": [
+              "x"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "b",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "show_if": [
+          {
+            "field": "a",
+            "values": [
+              "y"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "on",
+        "widget": "text",
+        "required": true,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "show_if": [
+          {
+            "field": "a",
+            "values": [
+              "1"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "off",
+        "widget": "text",
+        "required": true,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "show_if": [
+          {
+            "field": "a",
+            "values": [
+              "nope"
+            ]
+          }
+        ]
+      }
+    ],
+    "params": {
+      "a": "1",
+      "b": "2"
+    },
+    "inactive": [
+      "off"
+    ],
+    "errors": [
+      [
+        "on",
+        "required"
+      ]
+    ]
+  },
+  {
+    "name": "a show_if cycle is shown in any field order",
+    "fields": [
+      {
+        "name": "b",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "show_if": [
+          {
+            "field": "a",
+            "values": [
+              "y"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "a",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "show_if": [
+          {
+            "field": "c",
+            "values": [
+              "z"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "c",
+        "widget": "text",
+        "required": true,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "show_if": [
+          {
+            "field": "b",
+            "values": [
+              "x"
+            ]
+          }
+        ]
+      }
+    ],
+    "params": {
+      "a": "y",
+      "b": "z"
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "c",
+        "required"
+      ]
+    ]
+  },
+  {
+    "name": "only a maximum, and a step other than 1 is not enforced",
+    "fields": [
+      {
+        "name": "cap",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "max": 10.0
+      },
+      {
+        "name": "half",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "step": 0.5
+      }
+    ],
+    "params": {
+      "cap": 11,
+      "half": 0.3
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "cap",
+        "must be at most 10"
+      ]
+    ]
+  },
+  {
+    "name": "exclusive bounds and multipleOf",
+    "fields": [
+      {
+        "name": "fraction",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "exclusive_min": 0.0,
+        "exclusive_max": 1.0
+      },
+      {
+        "name": "positive",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "exclusive_min": 0.0
+      },
+      {
+        "name": "tenths",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "multiple_of": 0.1
+      },
+      {
+        "name": "by_four",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "multiple_of": 4.0
+      }
+    ],
+    "params": {
+      "by_four": 6,
+      "fraction": 1,
+      "positive": 0,
+      "tenths": 0.3
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "fraction",
+        "must be less than 1"
+      ],
+      [
+        "positive",
+        "must be greater than 0"
+      ],
+      [
+        "by_four",
+        "must be a multiple of 4"
+      ]
+    ]
+  },
+  {
+    "name": "a number that is not finite is not a number",
+    "fields": [
+      {
+        "name": "bounded",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "min": 1.0,
+        "max": 64.0
+      },
+      {
+        "name": "min_only",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "min": 1.0
+      },
+      {
+        "name": "max_only",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "max": 1.0
+      },
+      {
+        "name": "unbounded",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false
+      }
+    ],
+    "params": {
+      "bounded": "NaN",
+      "max_only": "-Infinity",
+      "min_only": "inf",
+      "unbounded": "nan"
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "bounded",
+        "must be a number"
+      ],
+      [
+        "min_only",
+        "must be a number"
+      ],
+      [
+        "max_only",
+        "must be a number"
+      ],
+      [
+        "unbounded",
+        "must be a number"
+      ]
+    ]
+  },
+  {
+    "name": "a preset value validates as the field",
+    "fields": [
+      {
+        "name": "min_reads",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "min": 1.0,
+        "presets": [
+          {
+            "label": "Duplex",
+            "value": 3
+          }
+        ]
+      }
+    ],
+    "params": {
+      "min_reads": 3
+    },
+    "inactive": [],
+    "errors": []
+  },
+  {
+    "name": "number spellings the server reads",
+    "fields": [
+      {
+        "name": "hex",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "min": 1.0,
+        "max": 64.0,
+        "step": 1.0
+      },
+      {
+        "name": "exponent",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "min": 1.0,
+        "max": 64.0,
+        "step": 1.0
+      },
+      {
+        "name": "infinite",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "min": 1.0,
+        "max": 64.0,
+        "step": 1.0
+      },
+      {
+        "name": "fraction",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "min": 1.0,
+        "max": 64.0,
+        "step": 1.0
+      },
+      {
+        "name": "separated",
+        "widget": "number",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "min": 1.0,
+        "max": 64.0,
+        "step": 1.0
+      }
+    ],
+    "params": {
+      "exponent": "1e1",
+      "fraction": ".5",
+      "hex": "0x10",
+      "infinite": "inf",
+      "separated": "1_0"
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "hex",
+        "must be a number"
+      ],
+      [
+        "infinite",
+        "must be a number"
+      ],
+      [
+        "fraction",
+        "must be a whole number"
+      ],
+      [
+        "separated",
+        "must be a number"
+      ]
+    ]
+  },
+  {
+    "name": "a Unicode category reads alike in both regex dialects",
+    "fields": [
+      {
+        "name": "word",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^\\p{L}+$",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "not_word",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^\\p{L}+$",
+            "message": "must match"
+          }
+        ]
+      }
+    ],
+    "params": {
+      "not_word": "ab1",
+      "word": "abc"
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "not_word",
+        "must match"
+      ]
+    ]
+  },
+  {
+    "name": "regex-crate-only syntax is left to the server",
+    "fields": [
+      {
+        "name": "anchored",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "\\A[ACGT]+\\z",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "not_anchored",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "\\A[ACGT]+\\z",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "flagged",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "(?i)^[acgt]+$",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "not_flagged",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "(?i)^[acgt]+$",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "posix",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^[[:upper:]]+$",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "not_posix",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^[[:upper:]]+$",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "intersected",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^[a-z&&[^aeiou]]+$",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "not_intersected",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^[a-z&&[^aeiou]]+$",
+            "message": "must match"
+          }
+        ]
+      }
+    ],
+    "params": {
+      "anchored": "ACGT",
+      "flagged": "ACGT",
+      "intersected": "xyz",
+      "not_anchored": "ACGN",
+      "not_flagged": "hello",
+      "not_intersected": "abc",
+      "not_posix": "acgt",
+      "posix": "ACGT"
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "not_anchored",
+        "must match"
+      ],
+      [
+        "not_flagged",
+        "must match"
+      ],
+      [
+        "not_posix",
+        "must match"
+      ],
+      [
+        "not_intersected",
+        "must match"
+      ]
+    ],
+    "ui_errors": []
+  },
+  {
+    "name": "text outside ASCII is left to the server",
+    "fields": [
+      {
+        "name": "digits",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^\\d+$",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "not_digits",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^\\d+$",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "any",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^a.b$",
+            "message": "must match"
+          }
+        ]
+      }
+    ],
+    "params": {
+      "any": "a\rb",
+      "digits": "٠١٢",
+      "not_digits": "12x"
+    },
+    "inactive": [],
+    "errors": [
+      [
+        "not_digits",
+        "must match"
+      ]
+    ]
+  },
+  {
+    "name": "a pattern the regex crate refuses is skipped",
+    "fields": [
+      {
+        "name": "lookahead",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^(?!tmp)",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "backreference",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^(a)\\1$",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "backspace",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^[\\b]$",
+            "message": "must match"
+          }
+        ]
+      },
+      {
+        "name": "too_big",
+        "widget": "text",
+        "required": false,
+        "is_output": false,
+        "is_secret": false,
+        "is_path_input": false,
+        "rules": [
+          {
+            "pattern": "^\\W{1,100}\\W{1,100}\\W{1,100}$",
+            "message": "must match"
+          }
+        ]
+      }
+    ],
+    "params": {
+      "backreference": "ab",
+      "backspace": "x",
+      "lookahead": "tmpx",
+      "too_big": "abc"
+    },
+    "inactive": [],
+    "errors": []
+  }
+]

@@ -1,0 +1,328 @@
+/* Shared UI styles for the biffix monitor (imported once by +layout.svelte).
+   Everything is token-driven so light/dark theming is automatic: the colour tokens are defined in
+   +layout.svelte (they change with the theme), the size tokens below (they do not).
+   Palette + patterns matched to Open WebUI's real source (neutral gray scale, hairline borders,
+   soft hovers, Inter). */
+
+/* Spacing, corner and type sizes, named so components share one scale. The values are the ones
+   the components already used most, so moving a rule onto a token does not move anything. */
+:root {
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+
+  /* Compact controls (inputs, the dense buttons of forms and pickers). */
+  --radius-sm: 0.4rem;
+  /* Buttons. */
+  --radius-md: 0.45rem;
+  /* Tables and panels. */
+  --radius-lg: 0.5rem;
+  /* Cards. */
+  --radius-xl: 0.6rem;
+  --radius-pill: 999px;
+
+  --font-size-2xs: 0.72rem;
+  --font-size-xs: 0.75rem;
+  --font-size-md: 0.85rem;
+  /* Text in compact controls: tabs, compact buttons, and small buttons. */
+  --font-size-control: 0.82rem;
+  --font-size-control-sm: 0.76rem;
+}
+
+/* ── headings & links ── */
+h1 {
+  font-size: 1.35rem;
+  font-weight: 600;
+  margin: 0 0 1rem;
+  color: var(--text);
+}
+h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 1.5rem 0 0.5rem;
+  color: var(--text);
+}
+a {
+  color: var(--text-nav);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* ── filter tabs (pills) ── */
+.tabs {
+  display: flex;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-4);
+  flex-wrap: wrap;
+}
+.tabs button {
+  border: none;
+  background: var(--tab-bg);
+  color: var(--text-nav);
+  border-radius: var(--radius-pill);
+  padding: 0.3rem var(--space-3);
+  font-size: var(--font-size-control);
+  cursor: pointer;
+  text-transform: capitalize;
+}
+.tabs button:hover {
+  background: var(--tab-hover);
+}
+.tabs button.active {
+  background: var(--tab-active-bg);
+  color: var(--tab-active-fg);
+}
+
+/* ── tables: hairline border, subtle header, soft row hover ── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+  background: var(--bg-content);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+th {
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  background: var(--th-bg);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+td {
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+tbody tr:hover {
+  background: var(--th-bg);
+}
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* ── inline state text ── */
+.muted {
+  color: var(--text-muted);
+}
+.error,
+.bad {
+  color: var(--fg-fail);
+}
+.ok {
+  color: var(--fg-ok);
+}
+/* Small print under or beside a control: what it means, or what happens next. */
+.hint {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+/* Paths, ids, URIs and other text read character by character. */
+.mono {
+  font-family: var(--mono);
+}
+
+/* A button that reads as a link: an action inside running text. */
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Buttons. `.btn` is the standard one; `.btn-compact` is the denser one forms, pickers and tool
+   rows use, and `.btn-small` the one inside a table row or a cell. `.btn-primary` marks the one
+   action a place leads to, `.btn-danger` one that removes or stops something. An `<a>` can be a
+   `.btn` too. */
+.btn {
+  display: inline-block;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-content);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-size-md);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.btn:hover:not(:disabled, [aria-disabled='true']) {
+  background: var(--hover);
+  text-decoration: none;
+}
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.btn:disabled,
+.btn[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: default;
+}
+.btn-compact {
+  padding: 0.35rem 0.75rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-control);
+}
+.btn-small {
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-control-sm);
+}
+.btn-primary,
+.btn-primary:hover:not(:disabled, [aria-disabled='true']) {
+  background: var(--tab-active-bg);
+  border-color: var(--tab-active-bg);
+  color: var(--tab-active-fg);
+}
+.btn-danger {
+  color: var(--fg-fail);
+}
+/* A borderless square button holding one <Icon> (the app shell's menu and sidebar buttons). */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.icon-btn:hover {
+  background: var(--hover);
+  color: var(--text-nav);
+}
+.icon-btn svg {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+/* A row of buttons or links. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* A bordered panel that groups one thing's content. */
+.card {
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-xl);
+  background: var(--bg-content);
+}
+
+/* A small rounded label: a tag, a count, a state. */
+.chip {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-2xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Text for screen readers only: out of sight, still read out. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* A "← Runs"-style link above a page, back to the list it came from. */
+.back-link {
+  display: inline-block;
+  margin-bottom: var(--space-3);
+  font-size: var(--font-size-md);
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+/* ── status badges: one class per RunState/TaskState (light + dark fills) ── */
+.badge {
+  padding: 0.1rem var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: 0.85em;
+  background: var(--tab-bg);
+  color: var(--text);
+  text-transform: capitalize;
+}
+.badge.submitted {
+  background: #eef2f7;
+  color: #334155;
+}
+.badge.preparing_images {
+  background: #fff4d6;
+  color: #7a5b00;
+}
+.badge.running {
+  background: #e3f0ff;
+  color: #1e56a0;
+}
+/* Queued task: live Batch attempts awaiting capacity (RUNNABLE) — amber, distinct from running. */
+.badge.queued {
+  background: #fff4d6;
+  color: #7a5b00;
+}
+.badge.succeeded {
+  background: #e3f9e5;
+  color: #1a7f37;
+}
+.badge.failed,
+.badge.cancelled {
+  background: #fde8e8;
+  color: #b42318;
+}
+
+/* Dark-mode badge fills: muted, translucent tints so they read on gray-900 without glowing. */
+html.dark .badge.submitted {
+  background: #26313f;
+  color: #b9c7d9;
+}
+html.dark .badge.preparing_images {
+  background: #3a3113;
+  color: #e6cf7a;
+}
+html.dark .badge.running {
+  background: #16324f;
+  color: #8fbcf2;
+}
+html.dark .badge.queued {
+  background: #3a3113;
+  color: #e6cf7a;
+}
+html.dark .badge.succeeded {
+  background: #143121;
+  color: #7bd69a;
+}
+html.dark .badge.failed,
+html.dark .badge.cancelled {
+  background: #3a1a1a;
+  color: #f2a5a0;
+}

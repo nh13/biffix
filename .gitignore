@@ -1,0 +1,43 @@
+# scratch / handoffs — never committed
+ephemeral/
+scratchpad/
+
+# OS / editor cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pixi/
+
+# rust
+/target/
+
+# per-tenant deploy configs — real deployment inputs carrying account/tenant/bucket names, kept
+# local (only the documented infra/biffix-deploy.example.yaml is tracked). Never commit a real one.
+infra/biffix-deploy.yaml
+infra/biffix-deploy-*.yaml
+
+# cdk / node
+infra/cdk.out/
+# releases infra/deploy.sh --release downloaded (biffix_infra.release)
+infra/.release/
+node_modules/
+
+# svelte / ui
+ui/build/
+ui/.svelte-kit/
+
+# python tooling caches
+.pytest_cache/
+.ruff_cache/
+
+# ui dev-local env (points at the local mock; not committed)
+ui/.env
+
+# docker/coordinator/build-wheels.sh output (the base coordinator image build context)
+/build/

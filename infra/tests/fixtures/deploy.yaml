@@ -1,0 +1,32 @@
+# The deploy config the tests synthesize and load. Frozen: tests assert on the names and values it
+# yields, so change it only together with those tests. (The documented example for deployers is
+# infra/biffix-deploy.example.yaml; tests only check that it is complete and its defaults true.)
+tenant: acme
+region: us-east-1
+nat_mode: instance
+coordinator_image_tag: v1
+
+projects:
+  - id: demo
+
+retention:
+  intermediates_days: 30
+  snakemake_cache_days: 90
+  noncurrent_versions_days: 30
+
+queue_classes:
+  - name: cpu-spot
+    capacity: SPOT
+    instances: ["c", "m", "r"]
+  - name: cpu-ondemand
+    capacity: ON_DEMAND
+    instances: ["c", "m", "r"]
+  - name: coordinator
+    capacity: ON_DEMAND
+    coordinator: true
+
+authorization:
+  authenticated_default_role: viewer
+
+registration:
+  github_subjects: []

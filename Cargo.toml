@@ -1,0 +1,120 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.98"
+authors = ["Nils Homer"]
+repository = "https://github.com/nh13/biffix"
+homepage = "https://github.com/nh13/biffix"
+# Shipped as release binaries and Lambda artifacts, not to crates.io.
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+utoipa = { version = "6", features = ["axum_extras"] }
+tower = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+async-trait = "0.1"
+# The maintained drop-in fork of the archived serde_yaml 0.9: the same API, the same libyaml-based
+# parser (YAML 1.2 core schema: `yes`/`on` are strings), and the same errors.
+serde_norway = "0.9"
+regex = "1"
+sha2 = "0.11"
+hmac = "0.13"
+hex = "0.4"
+tar = "0.4"
+flate2 = "1"
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "json"] }
+# The SDK crates' default `rustls` feature is the legacy HTTPS client (hyper 0.14, rustls 0.21),
+# compiled in beside the default client and never used; its rustls-webpki 0.101 and h2 0.3 carry
+# advisories (RUSTSEC-2026-0098, RUSTSEC-2026-0258 and others). Each takes only the default client.
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-sqs = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-batch = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-ecr = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-cognitoidentityprovider = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-cloudwatchlogs = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-cloudwatch = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-sns = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-ec2 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-codebuild = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-ssm = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-pricing = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+# The `aws_lc_rs` backend keeps jsonwebtoken 9's (ring's) RS256 key policy, 2048-8192-bit moduli,
+# and aws-lc-rs is already in every binary through rustls. `rust_crypto` would put the `rsa` crate
+# in production and change the accepted key sizes. No PEM: keys come from the JWKS.
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "form", "query"] }
+urlencoding = "2"
+lambda_runtime = "1"
+lambda_http = "1"
+aws_lambda_events = "1"
+futures = "0.3"
+# RFC 3339 parsing in core's EventBridge decoders.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+# Time-zone rules (with the tz database built in, so a Lambda needs no system zoneinfo): the
+# samples CSV names an analysis by its start time in the downloader's zone, as the UI does.
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
+biffix-core = { path = "crates/biffix-core" }
+biffix-workflow = { path = "crates/biffix-workflow" }
+biffix-api = { path = "crates/biffix-api" }
+biffix-db = { path = "crates/biffix-db" }
+uuid = { version = "1", features = ["v4"] }
+# S3 keeps its other defaults (SigV4a, http 1.x request types); only the legacy client goes.
+aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio", "sigv4a", "http-1x"] }
+# CLI (`biffix`) — the scriptable OAuth public client.
+clap = { version = "4", features = ["derive", "env"] }
+open = "5"
+rand = "0.10"
+base64 = "0.23"
+url = "2"
+toml = "1"
+proptest = "1"
+# Reading a pipeline's FastQC zip (only its `fastqc_data.txt`): deflate only, no crypto or other
+# codecs, through the workspace's own flate2 (its default miniz_oxide backend).
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+bytes = "1"
+libc = "0.2"
+tempfile = "3"
+rsa = "0.9"
+aws-smithy-runtime-api = { version = "1.16", features = ["client"] }
+aws-smithy-types = "1.6"
+
+# Every crate opts in with `[lints] workspace = true`. CI runs clippy with `-D warnings`, so a
+# warning here fails the build.
+[workspace.lints.rust]
+# A `pub` item no other crate can reach is `pub(crate)`: `pub` marks the crate's real API.
+unreachable_pub = "warn"
+
+# A small pedantic subset, each with a mechanical fix.
+[workspace.lints.clippy]
+cloned_instead_of_copied = "warn"
+explicit_iter_loop = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+manual_let_else = "warn"
+needless_raw_string_hashes = "warn"
+redundant_closure_for_method_calls = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+unnested_or_patterns = "warn"
+
+# Release builds are the Lambdas and the `biffix` CLI. Thin LTO across crates and one codegen unit
+# make a smaller binary that loads faster on a Lambda cold start (the backend Lambda: 37.2 MB,
+# against 39.0 MB without); fat LTO saves another 8% but more than doubles the link time. cargo
+# lambda applies these two itself when Cargo.toml leaves them unset (with `strip` and
+# `panic = "abort"`, which stay its own); set here, every release build, the CLI's too, gets them.
+[profile.release]
+lto = "thin"
+codegen-units = 1

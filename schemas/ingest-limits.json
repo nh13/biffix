@@ -1,0 +1,30 @@
+{
+  "poster": {
+    "close_timeout_ms": 30000,
+    "drop_warn_interval_ms": 30000,
+    "flush_interval_ms": 1000,
+    "keep_under_pressure": [
+      "task_submitted",
+      "task_succeeded",
+      "task_failed",
+      "task_retrying",
+      "task_cached",
+      "run_started",
+      "run_succeeded",
+      "run_failed",
+      "engine_task_verdict"
+    ],
+    "max_attempts": 3,
+    "max_batch_bytes": 4194304,
+    "max_buffered_events": 20000,
+    "max_outputs_per_event": 1000,
+    "max_retry_after_ms": 30000,
+    "request_timeout_ms": 5000,
+    "retry_backoff_ms": 500,
+    "split_post_budget": 64
+  },
+  "route": {
+    "max_batch_events": 500,
+    "max_body_bytes": 5242880
+  }
+}

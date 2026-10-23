@@ -1,0 +1,59 @@
+[package]
+name = "biffix-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "biffix — a scriptable OAuth public client for the control-plane API (register + run)."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "biffix"
+path = "src/main.rs"
+
+[dependencies]
+biffix-core.workspace = true
+biffix-workflow.workspace = true
+# The shared HTTP wire contract (request/response DTOs), consumed without the `openapi` feature so
+# the CLI never compiles utoipa.
+biffix-api = { workspace = true, features = ["clap"] }
+clap.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_norway.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tar.workspace = true
+flate2.workspace = true
+thiserror.workspace = true
+open.workspace = true
+rand.workspace = true
+base64.workspace = true
+url.workspace = true
+urlencoding.workspace = true
+toml.workspace = true
+# A presigned upload's body as a refcounted buffer, so a retry never copies it (already in the tree
+# via reqwest).
+bytes.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# The binary restores the default SIGPIPE disposition so `biffix … | head` ends quietly.
+libc.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tempfile.workspace = true
+proptest.workspace = true
+# The e2e test drives the CLI against the REAL backend router instead of a hand-written fake, so a
+# wrong endpoint/param/shape is caught by the real handlers. Its doubles are the backend's own
+# (`biffix_backend::testing`, under `test-support`), so they behave as the backend's tests pin them.
+# No sqlx/aws.
+biffix-backend = { path = "../biffix-backend", features = ["test-support"] }

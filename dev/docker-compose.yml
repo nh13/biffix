@@ -1,0 +1,20 @@
+# The local Postgres for biffix's Postgres-backed integration tests and for running the API server
+# locally (see README.md). Not for production: a test fixture.
+#
+# The project name fixes the container's name (biffix-dev-postgres-1).
+name: biffix-dev
+
+services:
+  postgres:
+    image: postgres:16
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_USER=biffix
+      - POSTGRES_PASSWORD=biffix
+      - POSTGRES_DB=biffix
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U biffix"]
+      interval: 5s
+      timeout: 5s
+      retries: 20

@@ -1,0 +1,25 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "biffix repository tooling: writes and drift-checks the schemas/ artifacts (cargo xtask)."
+
+[lints]
+workspace = true
+
+[dependencies]
+biffix-api.workspace = true
+biffix-core.workspace = true
+biffix-workflow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

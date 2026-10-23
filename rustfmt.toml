@@ -1,0 +1,2 @@
+# Use the full line width before breaking a call, chain or struct literal across lines.
+use_small_heuristics = "Max"

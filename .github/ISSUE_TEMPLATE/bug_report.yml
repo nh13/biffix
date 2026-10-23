@@ -1,0 +1,62 @@
+name: Bug report
+description: Something in biffix does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report security vulnerabilities here; see SECURITY.md. Remove account ids, bucket names, domains and other details of your deployment that you do not want public.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The commands, the workflow (or a minimal one) and the parameters, if they matter.
+    validations:
+      required: false
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      multiple: true
+      options:
+        - Web UI
+        - CLI
+        - Backend API
+        - Ingest / run tracking
+        - Snakemake plugin or runs
+        - Nextflow plugin or runs
+        - Coordinator image
+        - Deploy / CDK app
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: biffix version
+      description: The release tag you deployed (for example v0.1.0), or the commit for a deploy from source.
+    validations:
+      required: true
+  - type: input
+    id: engine
+    attributes:
+      label: Engine and release
+      description: For a run problem, the workflow's engine and release (for example Snakemake 9.27.0).
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and errors
+      description: Error messages, the run page's failure summary, or relevant log lines.
+      render: text
+    validations:
+      required: false

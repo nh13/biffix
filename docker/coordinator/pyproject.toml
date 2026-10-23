@@ -1,0 +1,73 @@
+# The coordinator image's tests: the entrypoint and its helpers, run for real against stand-ins
+# (tests/). Not a package and not part of the image (the Dockerfile copies files by name).
+[project]
+name = "biffix-coordinator-tests"
+version = "0.1.0"
+description = "Tests for the biffix coordinator image's entrypoint."
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    # Pinned exactly, to the same versions in infra/, docker/coordinator/ and
+    # plugins/snakemake-logger-plugin-biffix/, so every project lints alike locally and in CI.
+    # Dependabot bumps the three together (.github/dependabot.yml).
+    "mypy==2.4.0",
+    "pytest==9.1.1",
+    "ruff==0.17.1",
+    "validate-pyproject[all]==0.26",
+    # Types for the helpers' boto3 S3 calls (the image installs boto3 itself; see the Dockerfile).
+    "boto3-stubs[s3]==1.43.114",
+]
+
+[tool.uv]
+package = false
+# Resolve only releases at least a week old, so a compromised release has time to be caught before
+# it is locked. Keep it >= the Dependabot cooldown (7 days, .github/dependabot.yml), or Dependabot
+# proposes versions this project refuses to lock.
+exclude-newer = "1 week"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ARG", "N", "LOG", "RUF008", "RUF012", "RUF024"]
+
+[tool.ruff.lint.per-file-ignores]
+# The stand-in boto3 takes boto3's own parameter names (Bucket, Key, ...).
+"tests/fakes/py/boto3/*" = ["N803"]
+
+[tool.mypy]
+files = ["lib", "tests"]
+# The stand-in boto3 and botocore (tests/fakes/py) would shadow the stubs the helpers are checked
+# against, so they are checked in a second run of their own, with them first on the search path:
+#   MYPYPATH=tests/fakes/py uv run mypy --no-warn-unused-configs -p boto3 -p botocore
+# (that run reads this section too; the snakemake override below is unused there).
+exclude = ["^tests/fakes/"]
+python_version = "3.11"
+strict_optional = true
+strict_equality = true
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+warn_no_return = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unreachable = true
+warn_unused_configs = true
+warn_unused_ignores = true
+enable_error_code = ["ignore-without-code", "possibly-undefined", "exhaustive-match"]
+
+# Snakemake and its AWS Batch executor are the engine runtime's, installed in the image, not in
+# this test project.
+[[tool.mypy.overrides]]
+module = ["snakemake.*", "snakemake_executor_plugin_aws_batch"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

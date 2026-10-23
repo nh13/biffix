@@ -1,0 +1,744 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FormSchema",
+  "type": "object",
+  "properties": {
+    "cache": {
+      "description": "Snakemake: reuse the results of the workflow's `cache: True` rules across runs, from a\nper-project S3 cache (`cache: true` in `biffix.yaml`).",
+      "type": "boolean"
+    },
+    "catalog": {
+      "description": "How the version is listed in the Lab's pipeline catalog (`catalog:` in `biffix.yaml`),\nnormalized at registration (see [`normalize_catalog`]).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FormCatalog"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "curated": {
+      "description": "True when the author curated this form (`biffix.yaml` has a `form:` block).",
+      "type": "boolean"
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "examples": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/FormExample"
+      }
+    },
+    "fields": {
+      "description": "Fields in display order: grouped by section, in the source schema's order within one.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/FormField"
+      }
+    },
+    "references": {
+      "description": "A reference-bundle dropdown that fills several params, when the author declared one.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FormReferences"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reports": {
+      "description": "Reports the workflow's runs write, shown on a run's Reports tab (`reports:` in\n`biffix.yaml`). Frozen with the form so every run of the version resolves the same\ndeclarations.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/FormReport"
+      }
+    },
+    "run_name": {
+      "description": "A run-name template; `{date}` and `{workflow}` are filled by the UI.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "samples": {
+      "description": "How to match the workflow's tasks to samples (`samples:` in `biffix.yaml`), frozen with the\nform so every run of the version attributes its tasks the same way.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SampleHint"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sections": {
+      "description": "Sections in display order. Empty for a form frozen before sections existed.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/FormSection"
+      }
+    },
+    "title": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "warnings": {
+      "description": "Non-fatal issues encountered while adapting (lenient skip-and-warn).",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "fields",
+    "warnings"
+  ],
+  "$defs": {
+    "ColumnRole": {
+      "description": "What a samplesheet column holds, so detected samples fill it.",
+      "type": "string",
+      "enum": [
+        "sample_id",
+        "read1",
+        "read2"
+      ]
+    },
+    "Contact": {
+      "description": "A person (or team) to ask for help: a workflow's `catalog.contact`, or the site's support\ncontact.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "description": "A plausible email address (the *Ask* button's `mailto:`).",
+          "type": "string"
+        },
+        "name": {
+          "description": "Shown as \"Ask `<name>`\": 1 to [`MAX_CONTACT_NAME_CHARS`] characters.",
+          "type": "string"
+        },
+        "url": {
+          "description": "A help page (a ticket form, a chat channel): an `http(s)` URL of at most\n[`MAX_CONTACT_URL_CHARS`] characters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "email"
+      ]
+    },
+    "FormCatalog": {
+      "description": "How a version is listed in the Lab's pipeline catalog (`catalog:` in `biffix.yaml`).",
+      "type": "object",
+      "properties": {
+        "contact": {
+          "description": "Who Lab users ask when one of the workflow's runs needs attention; wins over the site's\nsupport contact for its runs. Checked by [`normalize_contact`].",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Contact"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "description": "A plain-language description for the pipeline's card, trimmed and at most\n[`MAX_CATALOG_DESCRIPTION_CHARS`] characters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags": {
+          "description": "Tags the catalog filters on: trimmed, non-empty, unique ignoring case (the first spelling\nkept), at most [`MAX_CATALOG_TAGS`] of at most [`MAX_CATALOG_TAG_CHARS`] characters.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "verified": {
+          "description": "The author vouches for the workflow (a *Verified* badge). Author-declared, not reviewed.",
+          "type": "boolean"
+        }
+      }
+    },
+    "FormExample": {
+      "description": "A named, known-good set of inputs the author offers (*Start from example*).",
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "params": {
+          "description": "Param values keyed by field name.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "reference": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "samplesheet_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "FormField": {
+      "type": "object",
+      "properties": {
+        "accepts_folder": {
+          "description": "A path input that may name a file **or** a folder (nf-schema `format: path`): the server\nchecks it exists as an object, else as a prefix. Rendered as an `s3_file` field.",
+          "type": "boolean"
+        },
+        "default": {
+          "description": "The value the engine uses when the param is not given (the engine schema's `default`). It is\nwhat `show_if` gating assumes for an omitted param on every surface (server, CLI, UI), so it\nis never the author's form prefill: that is [`FormField::prefill`]."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enum_values": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclusive_max": {
+          "description": "Exclusive upper bound (JSON Schema `exclusiveMaximum`): a value must be less.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "exclusive_min": {
+          "description": "Exclusive lower bound (JSON Schema `exclusiveMinimum`): a value must be greater.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "help": {
+          "description": "A help paragraph (nf-schema `help_text`, or the author's), longer than `description`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hidden": {
+          "description": "Shown only under *Show all parameters*.",
+          "type": "boolean"
+        },
+        "is_output": {
+          "description": "Marks an output path — the validator skips existence-checking it.",
+          "type": "boolean"
+        },
+        "is_path_input": {
+          "description": "True for path-typed inputs that should be HEAD-checked.",
+          "type": "boolean"
+        },
+        "is_secret": {
+          "description": "Stored encrypted; never echoed/logged.",
+          "type": "boolean"
+        },
+        "json_type": {
+          "description": "The param's JSON Schema `type` (`boolean`, `integer`, `string`…), when the schema declares\none; absent on forms frozen before it was recorded.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "description": "The author's label; absent ⇒ the UI humanizes `name`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max": {
+          "description": "Inclusive upper bound (JSON Schema `maximum`).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "min": {
+          "description": "Inclusive lower bound (JSON Schema `minimum`).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "multiline": {
+          "type": "boolean"
+        },
+        "multiple": {
+          "description": "The param takes a list of paths (`multiple: true` in biffix.yaml)",
+          "type": "boolean"
+        },
+        "multiple_of": {
+          "description": "A value must be a whole multiple of this (JSON Schema `multipleOf`).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "name": {
+          "type": "string"
+        },
+        "placeholder": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefill": {
+          "description": "The value a fresh launch form starts with (the `form.params.<name>.default` overlay). The UI\nfills it in as an entered value, so it is submitted explicitly; a CLI/API submit that omits\nthe param gets [`FormField::default`], exactly as the engine would."
+        },
+        "presets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Preset"
+          }
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Rule"
+          }
+        },
+        "samplesheet": {
+          "description": "A samplesheet field's columns (from nf-core's row schema or the author's `form:` block), so\nthe form can build the sheet from files and the server can write it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SheetSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "section": {
+          "description": "The id of the [`FormSection`] the field belongs to.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "show_if": {
+          "description": "All must hold for the field to be active; an inactive field is dropped before validation.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ShowIf"
+          }
+        },
+        "step": {
+          "description": "The number input's increment, a UI hint only: `1` for an integer param unless the overlay\nsets another. Whole numbers are enforced by `json_type` (`integer`), not by this; a form\nfrozen before `json_type` was recorded falls back to `step: 1` as the integer marker.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "suffixes": {
+          "description": "File-name endings a path input accepts (`.fastq.gz`), from the `suffix` hint; the file\npicker filters by them.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unit": {
+          "description": "A unit shown with the label (`bp`, `reads`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "widget": {
+          "$ref": "#/$defs/WidgetHint"
+        }
+      },
+      "required": [
+        "name",
+        "widget",
+        "required",
+        "is_output",
+        "is_secret",
+        "is_path_input"
+      ]
+    },
+    "FormReferences": {
+      "description": "A reference-bundle dropdown: picking a bundle fills each `fill` param from\nthe bundle's key of the same mapping; only bundles with every `required` key are offered.",
+      "type": "object",
+      "properties": {
+        "custom": {
+          "description": "Offer *Use my own files…*: the filled params' own fields instead of a bundle.",
+          "type": "boolean"
+        },
+        "fill": {
+          "description": "Param name → bundle key.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "help": {
+          "description": "A help paragraph for the dropdown's ⓘ (which reference suits which samples).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "Offer only bundles of this kind.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "required": {
+          "description": "Bundle keys a bundle must have to be offered.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "section": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "fill",
+        "required",
+        "label"
+      ]
+    },
+    "FormReport": {
+      "description": "A report the workflow's runs write.",
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "How the report is shown, as the author declared it (one of [`REPORT_KINDS`]); `None` ⇒ from\nthe file's name ([`report_format`]).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "description": "A path or glob relative to the run's output prefix (see [`crate::glob`]). A `per_sample`\nreport's path holds `{sample}`.",
+          "type": "string"
+        },
+        "per_sample": {
+          "description": "One report per sample: `{sample}` in `path` is each of the run's sample ids in turn.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ]
+    },
+    "FormSection": {
+      "description": "A titled group of fields. Non-advanced sections are cards; advanced ones collapse together under\none *Advanced* disclosure.",
+      "type": "object",
+      "properties": {
+        "advanced": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ]
+    },
+    "Lanes": {
+      "description": "What to do with one sample's files from several lanes.",
+      "oneOf": [
+        {
+          "description": "One sample with every lane's files (technical replicates).",
+          "type": "string",
+          "const": "merge"
+        },
+        {
+          "description": "One sample per lane (`<id>_L001`).",
+          "type": "string",
+          "const": "separate"
+        },
+        {
+          "description": "A problem to fix: the workflow takes one file per read.",
+          "type": "string",
+          "const": "error"
+        }
+      ]
+    },
+    "Preset": {
+      "description": "A named value for a field, shown as a chip (`Duplex (3)` → `3`).",
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": true
+      },
+      "required": [
+        "label",
+        "value"
+      ]
+    },
+    "Rule": {
+      "description": "A pattern a string value must match, with the message shown when it does not.",
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern",
+        "message"
+      ]
+    },
+    "SampleHint": {
+      "description": "The author's hint for attributing tasks to samples (`samples:` in `biffix.yaml`), frozen with\nthe version's form. Every key is optional; without one the default rules apply.",
+      "type": "object",
+      "properties": {
+        "labels": {
+          "description": "Display names for steps, e.g. `STAR_ALIGN: \"Align (STAR)\"`, named as in `steps`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "steps": {
+          "description": "Steps forced to one scope, e.g. `joint_call: study`. A step is named by its full group name\nor, for a Nextflow process path, its last `:`-separated part (`STAR_ALIGN` names\n`NFCORE_RNASEQ:RNASEQ:STAR_ALIGN`); the full name wins when both are given.",
+          "type": "object",
+          "additionalProperties": {
+            "description": "Whether a step runs once per sample or once for the whole study (open enum).",
+            "type": "string",
+            "examples": [
+              "sample",
+              "study"
+            ]
+          }
+        },
+        "tag": {
+          "description": "Nextflow: a regex over the task's tag whose `sample` group is the sample id. Trusted as\ngiven (its match is the sample even when the sheet does not list it), and it overrides the\ndefault rules, file-name tags included.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wildcard": {
+          "description": "Snakemake: the wildcard that names the sample. Trusted as given: its value is the sample\neven when the run's sheet does not list it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "SheetColumn": {
+      "description": "One column of a samplesheet.",
+      "type": "object",
+      "properties": {
+        "accepts_folder": {
+          "description": "A file column whose cells may also name a folder (a row schema's `format: path`): a cell\nwith no object there is checked again as a prefix.",
+          "type": "boolean"
+        },
+        "default": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enum_values": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "file": {
+          "description": "A file path (`s3://`), existence-checked at submit.",
+          "type": "boolean",
+          "default": false
+        },
+        "name": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ColumnRole"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "suffixes": {
+          "description": "File-name endings a file column accepts.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "SheetFormat": {
+      "description": "The file format a samplesheet is written in.",
+      "type": "string",
+      "enum": [
+        "csv",
+        "tsv"
+      ]
+    },
+    "SheetSpec": {
+      "description": "A samplesheet as the workflow declares it.",
+      "type": "object",
+      "properties": {
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SheetColumn"
+          }
+        },
+        "format": {
+          "$ref": "#/$defs/SheetFormat",
+          "default": "csv"
+        },
+        "lanes": {
+          "description": "How detection treats several lanes of one sample.",
+          "$ref": "#/$defs/Lanes",
+          "default": "merge"
+        },
+        "paired_only": {
+          "description": "Every sample must have read 2.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "columns"
+      ]
+    },
+    "ShowIf": {
+      "description": "One condition of a field's `show_if`: the field is shown only while `field`'s value is one of\n`values` (compared by [`value_key`]).",
+      "type": "object",
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "values": {
+          "type": "array",
+          "items": true
+        }
+      },
+      "required": [
+        "field",
+        "values"
+      ]
+    },
+    "WidgetHint": {
+      "description": "The semantic widget hint. Keeps the UI decoupled from schema dialects.",
+      "type": "string",
+      "enum": [
+        "text",
+        "number",
+        "enum",
+        "s3_file",
+        "s3_dir",
+        "reference_bundle",
+        "samplesheet"
+      ]
+    }
+  }
+}

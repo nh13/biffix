@@ -1,0 +1,161 @@
+# The base coordinator image's native two-architecture build, shared by release.yml (GHCR) and
+# build-coordinator-image.yml (the deployer's own ECR). Compute environments run both x86 and
+# Graviton instances, so the image is built for linux/amd64 and linux/arm64, each on its own native
+# runner (ubuntu-24.04, ubuntu-24.04-arm) rather than one half under QEMU. Each caller joins the two
+# into one tag afterwards.
+#
+# What each architecture's build pushes, by `registry`:
+#   ghcr  <image> by digest only; the digest is uploaded as the artifact `digest-<arch>` for the
+#         caller's join. Nothing is pushed (and no artifact uploaded) when `push` is false.
+#   ecr   <coordinator repo>:<tag>-<arch>, into the tenant's coordinator repository, which
+#         docker/coordinator/resolve-repo.sh finds from the repository variables AWS_REGION and
+#         BIFFIX_TENANT or COORDINATOR_REPO, with the role AWS_IMAGE_BUILD_ROLE_ARN (see
+#         build-coordinator-image.yml).
+name: coordinator-image
+
+on:
+  workflow_call:
+    inputs:
+      registry:
+        description: "ghcr or ecr"
+        type: string
+        required: true
+      image:
+        description: "The GHCR image name (ghcr only)."
+        type: string
+        default: ""
+      tag:
+        description: "The version the image is labelled with; ecr also tags each architecture <tag>-<arch>."
+        type: string
+        required: true
+      push:
+        description: "Push the images (ghcr: false builds without pushing)."
+        type: boolean
+        default: true
+      environment:
+        description: "The environment the builds run in (the ECR role trusts one environment's OIDC subject)."
+        type: string
+        default: ""
+
+# No `permissions:` here: a called workflow can only narrow what its caller's job grants, so the
+# job runs with the caller's (ghcr: `packages: write`; ecr: `id-token: write`, to mint the OIDC
+# token the image-build role trusts).
+jobs:
+  build:
+    # An empty name (the default) is no environment.
+    environment: ${{ inputs.environment }}
+    strategy:
+      fail-fast: false # one arch failing should not hide the other's result
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    # Read by docker/coordinator/resolve-repo.sh and the AWS steps. Repository variables, never
+    # inputs: what a dispatch can type must not choose where credentials push.
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      BIFFIX_TENANT: ${{ vars.BIFFIX_TENANT }}
+      COORDINATOR_REPO: ${{ vars.COORDINATOR_REPO }}
+    steps:
+      - name: check the registry
+        if: inputs.registry != 'ghcr' && inputs.registry != 'ecr'
+        env:
+          REGISTRY: ${{ inputs.registry }}
+        run: |
+          echo "::error::registry must be ghcr or ecr, not ${REGISTRY}"
+          exit 1
+      # Before any build work: without these the job could only fail later, at assume-role or at
+      # the repository lookup.
+      - name: require the repository variables
+        if: >-
+          inputs.registry == 'ecr' && (vars.AWS_IMAGE_BUILD_ROLE_ARN == '' || vars.AWS_REGION == '' ||
+          (vars.BIFFIX_TENANT == '' && vars.COORDINATOR_REPO == ''))
+        run: |
+          echo "::error::set the repository variables AWS_IMAGE_BUILD_ROLE_ARN, AWS_REGION, and BIFFIX_TENANT or COORDINATOR_REPO (see build-coordinator-image.yml's header)"
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # This job may go on to hold registry credentials; do not leave a token in .git/config.
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      # The image ships the nf-biffix Nextflow plugin zip in /opt/biffix/wheels/ (for the runtime
+      # build). That artifact is not committed, so it is built here before build-wheels.sh collects
+      # it. Java 17 + temurin matches the plugin-nextflow job in ci.yml.
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: build the nf-biffix plugin
+        working-directory: plugins/nf-biffix
+        run: ./gradlew --no-daemon assemble
+      # The executor fork (at the sha in docker/coordinator/wheels.env), the logger and nf-biffix,
+      # collected into the Dockerfile's build context with a manifest the runtime build checks.
+      - name: build the engine plugin wheels
+        run: docker/coordinator/build-wheels.sh build/coordinator-wheels
+      - name: log in to GHCR
+        if: inputs.registry == 'ghcr' && inputs.push
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+      - if: inputs.registry == 'ecr'
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_IMAGE_BUILD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        if: inputs.registry == 'ecr'
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2.1.6
+      # No buildx provenance or SBOM manifests in the image itself: each architecture is then one
+      # plain image for the caller to join. Every workflow-controlled value reaches the shell
+      # through `env:` rather than `${{ }}` interpolation: this step may hold live registry
+      # credentials, and interpolation pastes text into the script before bash parses it.
+      - name: build ${{ matrix.platform }}
+        env:
+          REGISTRY_KIND: ${{ inputs.registry }}
+          PUSH: ${{ inputs.push }}
+          GHCR_IMAGE: ${{ inputs.image }}
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ inputs.tag }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$REGISTRY_KIND" = ecr ]; then
+            coord="$(docker/coordinator/resolve-repo.sh)"
+            output="type=image,name=${ECR_REGISTRY}/${coord}:${TAG}-${ARCH},push=true"
+          elif [ "$PUSH" = true ]; then
+            output="type=image,name=${GHCR_IMAGE},push-by-digest=true,name-canonical=true,push=true"
+          else
+            output="type=cacheonly"
+          fi
+          docker buildx build --platform "$PLATFORM" \
+            -f docker/coordinator/Dockerfile \
+            --provenance=false --sbom=false \
+            --label "org.opencontainers.image.source=${SOURCE}" \
+            --label "org.opencontainers.image.revision=${SHA}" \
+            --label "org.opencontainers.image.version=${TAG}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            --output "$output" \
+            --metadata-file "$RUNNER_TEMP/metadata.json" .
+          mkdir -p "$RUNNER_TEMP/digests"
+          if [ "$REGISTRY_KIND" = ghcr ] && [ "$PUSH" = true ]; then
+            jq -r '."containerimage.digest"' "$RUNNER_TEMP/metadata.json" > "$RUNNER_TEMP/digests/${ARCH}"
+            grep -Eq '^sha256:[0-9a-f]{64}$' "$RUNNER_TEMP/digests/${ARCH}" \
+              || { echo "::error::no image digest in the build metadata"; exit 1; }
+          fi
+      - if: inputs.registry == 'ghcr' && inputs.push
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1

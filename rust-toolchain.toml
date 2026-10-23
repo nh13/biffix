@@ -1,0 +1,5 @@
+# Pin the toolchain so every build (local, CI, Lambda) uses the same rustc. Matches the workspace
+# `rust-version` in Cargo.toml. Bump both together.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]

@@ -1,0 +1,87 @@
+[project]
+name = "snakemake-logger-plugin-biffix"
+version = "0.2.2"
+description = "Snakemake (>=9.0) logger plugin: emits biffix RunEvents to the ingest route + a durable events.jsonl."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Nils Homer" }]
+requires-python = ">=3.11"
+keywords = ["snakemake", "plugin", "logger", "biffix", "workflow", "aws-batch", "bioinformatics"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Plugins",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: System :: Logging",
+    "Typing :: Typed",
+]
+dependencies = [
+    "snakemake-interface-logger-plugins>=2,<3",
+]
+
+[project.urls]
+Homepage = "https://github.com/nh13/biffix"
+Repository = "https://github.com/nh13/biffix"
+Source = "https://github.com/nh13/biffix/tree/main/plugins/snakemake-logger-plugin-biffix"
+Issues = "https://github.com/nh13/biffix/issues"
+
+[dependency-groups]
+dev = [
+    # Pinned exactly, to the same versions in infra/, docker/coordinator/ and
+    # plugins/snakemake-logger-plugin-biffix/, so every project lints alike locally and in CI.
+    # Dependabot bumps the three together (.github/dependabot.yml).
+    "mypy==2.4.0",
+    "pytest==9.1.1",
+    "ruff==0.17.1",
+    "validate-pyproject[all]==0.26",
+    # Required by the producer-conformance guard (test_schema_conformance.py), which fails
+    # rather than skips without it.
+    "jsonschema>=4",
+    "types-jsonschema>=4",
+]
+
+[tool.mypy]
+files = ["src", "tests"]
+python_version = "3.11"
+strict_optional = true
+strict_equality = true
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+warn_no_return = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unreachable = true
+warn_unused_configs = true
+warn_unused_ignores = true
+enable_error_code = ["ignore-without-code", "possibly-undefined", "exhaustive-match"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/snakemake_logger_plugin_biffix"]
+
+[tool.uv]
+# Resolve only releases at least a week old, so a compromised release has time to be caught before
+# it is locked. Keep it >= the Dependabot cooldown (7 days, .github/dependabot.yml), or Dependabot
+# proposes versions this project refuses to lock.
+exclude-newer = "1 week"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ARG", "N", "LOG", "RUF008", "RUF012", "RUF024"]
