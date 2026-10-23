@@ -285,8 +285,7 @@
             aria-invalid={!!error}
             aria-describedby={describedBy}
             oninput={setList}
-            onblur={() => ontouch?.()}
-          ></textarea>
+            onblur={() => ontouch?.()}></textarea>
           <button
             type="button"
             class="browse"
@@ -302,8 +301,7 @@
             aria-invalid={!!error}
             aria-describedby={describedBy}
             oninput={setText}
-            onblur={() => ontouch?.()}
-          ></textarea>
+            onblur={() => ontouch?.()}></textarea>
         {:else}
           <input
             {id}

@@ -29,8 +29,7 @@
     rows="6"
     bind:value={form.importText}
     aria-label="Params YAML"
-    placeholder="aligner: star_salmon&#10;min_trimmed_reads: 10000"
-  ></textarea>
+    placeholder="aligner: star_salmon&#10;min_trimmed_reads: 10000"></textarea>
   <div class="row">
     <input type="file" accept=".yaml,.yml,.json" onchange={importFile} aria-label="Params file" />
     <span class="spacer"></span>
