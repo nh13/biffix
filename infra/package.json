@@ -3,6 +3,6 @@
   "private": true,
   "description": "Pinned AWS CDK CLI matching aws-cdk-lib (invoked by uv run cdk via PATH).",
   "devDependencies": {
-    "aws-cdk": "2.1141.0"
+    "aws-cdk": "2.1145.0"
   }
 }
