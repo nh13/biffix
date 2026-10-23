@@ -28,7 +28,7 @@
     "@types/node": "24.13.6",
     "fast-check": "3.23.2",
     "jsdom": "30.1.1",
-    "json-schema-to-typescript": "15.0.4",
+    "json-schema-to-typescript": "16.0.0",
     "openapi-typescript": "7.6.1",
     "prettier": "^3.3.0",
     "prettier-plugin-svelte": "^3.2.0",
