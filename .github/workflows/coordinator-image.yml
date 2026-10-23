@@ -83,11 +83,11 @@ jobs:
         with:
           # This job may go on to hold registry credentials; do not leave a token in .git/config.
           persist-credentials: false
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # The image ships the nf-biffix Nextflow plugin zip in /opt/biffix/wheels/ (for the runtime
       # build). That artifact is not committed, so it is built here before build-wheels.sh collects
       # it. Java 17 + temurin matches the plugin-nextflow job in ci.yml.
-      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: "17"
@@ -105,13 +105,13 @@ jobs:
           ACTOR: ${{ github.actor }}
         run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
       - if: inputs.registry == 'ecr'
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_IMAGE_BUILD_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       - id: ecr
         if: inputs.registry == 'ecr'
-        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2.1.6
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
       # No buildx provenance or SBOM manifests in the image itself: each architecture is then one
       # plain image for the caller to join. Every workflow-controlled value reaches the shell
       # through `env:` rather than `${{ }}` interpolation: this step may hold live registry
@@ -153,7 +153,7 @@ jobs:
               || { echo "::error::no image digest in the build metadata"; exit 1; }
           fi
       - if: inputs.registry == 'ghcr' && inputs.push
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digest-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/${{ matrix.arch }}
