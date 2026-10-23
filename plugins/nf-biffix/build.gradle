@@ -34,6 +34,9 @@ dependencies {
     // (added by the nextflow-plugin Gradle plugin), with its AWS SDK v2 dependencies.
     compileOnly 'io.nextflow:nf-amazon:3.4.4'
     testImplementation 'io.nextflow:nf-amazon:3.4.4'
+    // Gradle 9 no longer supplies the JUnit Platform launcher to the test runtime; its version comes
+    // from the JUnit BOM Spock brings in.
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     // Spock (Groovy 4, matching Nextflow 25.x) + a JSON-schema validator (draft 2020-12, the draft
     // schemars writes), so the emitted engine events can be checked against the canonical
     // schemas/wire.engine.schema.json.
