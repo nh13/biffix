@@ -4,8 +4,8 @@
   // past runs. On a catalog card and the pipeline's page. Lines with nothing to say are left out.
   // The typical run comes with the workflow list (`WorkflowVersionSummary.typical`, one grouped read
   // for every pipeline), so a card asks the server nothing of its own.
-  import type { CatalogEntry, WorkflowEstimate } from '$lib/api';
-  import { typicalLine } from '$lib/launch/estimate';
+  import type { CatalogEntry, WorkflowEstimate } from '#lib/api/index.js';
+  import { typicalLine } from '#lib/launch/estimate.js';
 
   interface Props {
     catalog: CatalogEntry | null | undefined;

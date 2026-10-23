@@ -2,10 +2,10 @@
   // One experiment. Polled while any of its analyses is running. The Expert view is
   // the same page in its words, with run ids (ExperimentPage).
   import { page } from '$app/state';
-  import { view } from '$lib/state/userPrefs.svelte';
-  import ErrorPage from '$lib/components/ErrorPage.svelte';
-  import { ExperimentLoader } from '$lib/experiments/experimentLoader.svelte';
-  import ExperimentPage from '$lib/experiments/ExperimentPage.svelte';
+  import { view } from '#lib/state/userPrefs.svelte.js';
+  import ErrorPage from '#lib/components/ErrorPage.svelte';
+  import { ExperimentLoader } from '#lib/experiments/experimentLoader.svelte.js';
+  import ExperimentPage from '#lib/experiments/ExperimentPage.svelte';
 
   const id = $derived(page.params.id ?? '');
   const loader = new ExperimentLoader();

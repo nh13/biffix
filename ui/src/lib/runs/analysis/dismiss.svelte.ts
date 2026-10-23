@@ -9,8 +9,8 @@
 // list the next ones at once rather than wait for its poll. Each surface that lists Needs attention
 // keeps its own `Dismissals`.
 
-import { dismissAttention } from '$lib/api';
-import { errorMessage } from '$lib/util/format';
+import { dismissAttention } from '#lib/api/index.js';
+import { errorMessage } from '#lib/util/format.js';
 
 /** A list of analyses as the server counted it. */
 export interface CountedRuns<T extends { run_id: string }> {

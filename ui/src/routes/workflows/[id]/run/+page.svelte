@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { getWorkflowContext } from '$lib/workflows/workflowContext.svelte';
-  import { workflowTabHref } from '$lib/workflows/workflowNav';
-  import { parseSchema } from '$lib/workflows/schema';
-  import { firstParagraph } from '$lib/markdown/markdown';
-  import RunForm from '$lib/launch/RunForm.svelte';
-  import { canRun, readinessOf } from '$lib/workflows/readiness';
-  import { versionLabel } from '$lib/workflows/version';
-  import { view } from '$lib/state/userPrefs.svelte';
+  import { getWorkflowContext } from '#lib/workflows/workflowContext.svelte.js';
+  import { workflowTabHref } from '#lib/workflows/workflowNav.js';
+  import { parseSchema } from '#lib/workflows/schema.js';
+  import { firstParagraph } from '#lib/markdown/markdown.js';
+  import RunForm from '#lib/launch/RunForm.svelte';
+  import { canRun, readinessOf } from '#lib/workflows/readiness.js';
+  import { versionLabel } from '#lib/workflows/version.js';
+  import { view } from '#lib/state/userPrefs.svelte.js';
 
   const wf = getWorkflowContext();
 

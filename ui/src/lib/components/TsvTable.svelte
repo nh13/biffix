@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { sortRows, type ParsedTable } from '$lib/util/tsv';
-  import { plural } from '$lib/util/format';
-  import { ariaSort, sortArrow, type SortDir } from '$lib/util/sort';
+  import { sortRows, type ParsedTable } from '#lib/util/tsv.js';
+  import { plural } from '#lib/util/format.js';
+  import { ariaSort, sortArrow, type SortDir } from '#lib/util/sort.js';
 
   // One parsed delimited-text output (metrics, TSV/CSV, BED, VCF) drawn as sortable, paged
   // tables: its leading comments, then each section with a sticky header.
@@ -44,7 +44,7 @@
     sorts[sectionIndex] = next;
   }
 
-  // The shared indicators (`$lib/util/sort`), by column index; the three-state cycle is this
+  // The shared indicators (`#lib/util/sort.js`), by column index; the three-state cycle is this
   // table's own.
   const sortKey = (si: number) => sorts[si]?.col ?? null;
   const sortDir = (si: number): SortDir => (sorts[si]?.descending ? 'desc' : 'asc');

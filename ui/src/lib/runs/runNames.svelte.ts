@@ -8,7 +8,7 @@
 // updates it at once (`put`).
 
 import { SvelteMap } from 'svelte/reactivity';
-import { listRuns, type RunSummary } from '$lib/api';
+import { listRuns, type RunSummary } from '#lib/api/index.js';
 import { runName } from './runName';
 
 /** The most ids one request names (the backend's page size, `MAX_RUN_PAGE` in

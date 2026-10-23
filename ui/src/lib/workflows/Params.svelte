@@ -3,8 +3,8 @@
   // three groups (required inputs / optional inputs / outputs) + a copyable launch scaffold.
   import { parseSchema, groupFields, summarize, scaffoldYaml } from './schema';
   import ParamField from './ParamField.svelte';
-  import { paramsCommand } from '$lib/launch/form';
-  import { CopiedFlag } from '$lib/util/clipboard.svelte';
+  import { paramsCommand } from '#lib/launch/form.js';
+  import { CopiedFlag } from '#lib/util/clipboard.svelte.js';
 
   interface Props {
     /** Opaque `form_schema` JSON from the workflow detail. */

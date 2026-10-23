@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { LogStreamModel, type FetchLogPage } from './logStreamModel.svelte';
-  import { prefs } from '$lib/state/localPrefs.svelte';
+  import { prefs } from '#lib/state/localPrefs.svelte.js';
 
   // An in-app CloudWatch log viewer, served through biffix (no AWS account needed). Opens at the tail
   // (or, toggled, at the start of the stream), pages on demand, and live-tails while `active`. The

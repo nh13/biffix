@@ -1,9 +1,9 @@
 // The run page's tabs: their order, labels, hrefs, counts, and which one a URL is on. Pure, so the
 // tab strip stays declarative and this is unit-tested.
 
-import type { RunDetail } from '$lib/api';
-import { pricedUsd } from '$lib/runs/cost';
-import { paramEntries } from '$lib/runs/runFacts';
+import type { RunDetail } from '#lib/api/index.js';
+import { pricedUsd } from '#lib/runs/cost.js';
+import { paramEntries } from '#lib/runs/runFacts.js';
 
 export type RunTabId =
   'overview' | 'graph' | 'jobs' | 'outputs' | 'reports' | 'coordinator' | 'cost' | 'params';

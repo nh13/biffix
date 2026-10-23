@@ -2,9 +2,9 @@
 // preview's one-line summary, the sample id the naming rule reads off the example file, the parts
 // of its name chosen as the id, and the merges the server suggests that still apply.
 
-import type { DetectedSamples } from '$lib/api';
-import type { DetectRule, MergeSuggestion } from '$lib/generated/samples';
-import { plural } from '$lib/util/format';
+import type { DetectedSamples } from '#lib/api/index.js';
+import type { DetectRule, MergeSuggestion } from '#lib/generated/samples.js';
+import { plural } from '#lib/util/format.js';
 import type { SheetRow } from './sheet';
 
 /** The rule a fresh pick is detected with: ids read from file names, the common schemes. */

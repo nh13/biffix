@@ -2,15 +2,15 @@
   // One pipeline in the Lab catalog: its name, a Verified badge, what it does, its tags, how much it
   // is used, a pin star and Start. The card is the newest released version (else the newest, a
   // developer version), and says which; counts cover every version.
-  import type { WorkflowSummary } from '$lib/api';
-  import type { VersionGroup } from '$lib/workflows/version';
-  import { workflowTabHref } from '$lib/workflows/workflowNav';
-  import { fmtRelative, plural } from '$lib/util/format';
-  import { togglePin, view } from '$lib/state/userPrefs.svelte';
+  import type { WorkflowSummary } from '#lib/api/index.js';
+  import type { VersionGroup } from '#lib/workflows/version.js';
+  import { workflowTabHref } from '#lib/workflows/workflowNav.js';
+  import { fmtRelative, plural } from '#lib/util/format.js';
+  import { togglePin, view } from '#lib/state/userPrefs.svelte.js';
   import VerifiedBadge from './VerifiedBadge.svelte';
-  import ReleaseBadge from '$lib/workflows/ReleaseBadge.svelte';
-  import { launchVersion } from '$lib/workflows/release';
-  import { withExperiment } from '$lib/experiments/experiments';
+  import ReleaseBadge from '#lib/workflows/ReleaseBadge.svelte';
+  import { launchVersion } from '#lib/workflows/release.js';
+  import { withExperiment } from '#lib/experiments/experiments.js';
   import WhatYouGet from './WhatYouGet.svelte';
 
   let {

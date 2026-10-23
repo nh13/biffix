@@ -1,6 +1,6 @@
 // Uploads: the routes and wire shapes of the upload engine's transport (`upload/transport.ts`).
 
-import type { components } from '$lib/generated/api';
+import type { components } from '#lib/generated/api.js';
 import { API_PATHS, pathFor } from './client';
 
 /** Upload routes, filled: the transport builds its requests from these. Every one after `start`

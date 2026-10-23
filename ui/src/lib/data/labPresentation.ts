@@ -3,8 +3,8 @@
 // own folder), and where uploads go. Pure, so it is unit-tested; the Data page reads the source's
 // hide rule off the source, never a copy.
 
-import type { DataSource } from '$lib/api';
-import { UPLOADS_FOLDER } from '$lib/upload/keys';
+import type { DataSource } from '#lib/api/index.js';
+import { UPLOADS_FOLDER } from '#lib/upload/keys.js';
 import type { HideRule as SourceRule } from './browse';
 
 /** Where a project bucket keeps its runs' folders (`s3_layout::RUNS_PREFIX`). */

@@ -2,10 +2,10 @@
 // the server's grouping of them, and the naming editor's state. A naming change re-detects after a
 // pause; closing the preview drops any detection still pending or in flight.
 
-import { detectSamples, type DetectedSamples } from '$lib/api';
-import type { DetectRule, SheetSpec } from '$lib/generated/samples';
-import { debounce } from '$lib/util/debounce';
-import { errorMessage } from '$lib/util/format';
+import { detectSamples, type DetectedSamples } from '#lib/api/index.js';
+import type { DetectRule, SheetSpec } from '#lib/generated/samples.js';
+import { debounce } from '#lib/util/debounce.js';
+import { errorMessage } from '#lib/util/format.js';
 import { autoRule, detectionSummary, exampleSampleId, selectedTokens, toggleToken } from './detect';
 
 export class SampleDetection {

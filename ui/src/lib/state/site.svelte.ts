@@ -3,7 +3,7 @@
 // The root layout loads it once per session and applies the document side effects; the Settings
 // page hands it what the server stored after a save.
 
-import { getSettings, type SiteSettings } from '$lib/api';
+import { getSettings, type SiteSettings } from '#lib/api/index.js';
 
 export const DEFAULT_SITE_TITLE = 'biffix';
 

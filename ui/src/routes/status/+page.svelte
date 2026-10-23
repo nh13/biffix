@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { getStatusHistory, type StatusHistory, type StatusWindow } from '$lib/api';
-  import { startPoll } from '$lib/util/poll';
-  import { barTier, bucketTimeline, historyByComponent, uptime } from '$lib/status/history';
-  import { liveStatus, watchStatus } from '$lib/status/live.svelte';
+  import { getStatusHistory, type StatusHistory, type StatusWindow } from '#lib/api/index.js';
+  import { startPoll } from '#lib/util/poll.js';
+  import { barTier, bucketTimeline, historyByComponent, uptime } from '#lib/status/history.js';
+  import { liveStatus, watchStatus } from '#lib/status/live.svelte.js';
 
   // The live report comes from the status poll the layout's health badge shares (one GET /status
   // per interval serves both). It reflects every probe: once the control plane stops answering,

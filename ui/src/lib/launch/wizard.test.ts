@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { ReferenceBundle } from '$lib/api';
-import type { FormField, FormSchema } from '$lib/workflows/schema';
+import type { ReferenceBundle } from '#lib/api/index.js';
+import type { FormField, FormSchema } from '#lib/workflows/schema.js';
 import { NO_CHOICE, REFERENCE_FIELD } from './referenceChoice';
 import {
   canReach,

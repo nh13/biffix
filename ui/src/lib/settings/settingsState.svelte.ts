@@ -11,9 +11,9 @@ import {
   type AlertRecipientList,
   type EngineSupport,
   type SiteSettings,
-} from '$lib/api';
-import { setSite } from '$lib/state/site.svelte';
-import { errorMessage } from '$lib/util/format';
+} from '#lib/api/index.js';
+import { setSite } from '#lib/state/site.svelte.js';
+import { errorMessage } from '#lib/util/format.js';
 
 /**
  * What the server has stored, as last loaded or saved. The forms are offered only once this has

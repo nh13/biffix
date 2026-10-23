@@ -6,8 +6,8 @@
   // inert. Focus moves to it on open; Escape or Close closes it (the caller hands focus back to the
   // button that opened it).
   import { onMount } from 'svelte';
-  import { renderMarkdown } from '$lib/markdown/markdown';
-  import type { ViewMode } from '$lib/view/viewRoutes';
+  import { renderMarkdown } from '#lib/markdown/markdown.js';
+  import type { ViewMode } from '#lib/view/viewRoutes.js';
   import { GUIDE_URL, loadLearn, type LearnContent } from './learn';
 
   interface Props {

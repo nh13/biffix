@@ -5,12 +5,12 @@ const api = vi.hoisted(() => ({
   listNotifications: vi.fn(),
   markNotificationsRead: vi.fn(),
 }));
-vi.mock('$lib/api', () => api);
+vi.mock('#lib/api/index.js', () => api);
 const live = vi.hoisted(() => ({
   beats: new Set<() => void>(),
   stops: 0,
 }));
-vi.mock('$lib/status/live.svelte', () => ({
+vi.mock('#lib/status/live.svelte.js', () => ({
   watchStatus: () => () => void live.stops++,
   onStatusProbe: (fn: () => void) => {
     live.beats.add(fn);

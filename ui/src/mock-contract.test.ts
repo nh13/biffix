@@ -11,7 +11,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { RunDetail } from '$lib/api';
+import type { RunDetail } from '#lib/api/index.js';
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 interface Schema {

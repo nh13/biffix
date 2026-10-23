@@ -4,7 +4,7 @@
 // time it started and its samples — never the raw run id, which no one can tell apart. Pure, so it
 // is unit-tested.
 
-import { plural } from '$lib/util/format';
+import { plural } from '#lib/util/format.js';
 
 /** The fields a name is read from: a run summary, its detail, or a notification's. */
 export interface NameSource {

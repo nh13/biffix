@@ -9,9 +9,9 @@ import {
   type DataFile,
   type DataFolder,
   type DataSource,
-} from '$lib/api';
-import { debounce } from '$lib/util/debounce';
-import { errorMessage } from '$lib/util/format';
+} from '#lib/api/index.js';
+import { debounce } from '#lib/util/debounce.js';
+import { errorMessage } from '#lib/util/format.js';
 
 export class FolderListing {
   /** The project whose sources these are; `null` for the deploy's default project. */

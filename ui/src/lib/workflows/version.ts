@@ -5,7 +5,7 @@
 // content-hash part and the build too. This is the one label scheme: workflow pages and run pages
 // alike use it.
 
-import type { WorkflowSummary } from '$lib/api';
+import type { WorkflowSummary } from '#lib/api/index.js';
 
 type VersionLike = { id: string; git_sha: string };
 

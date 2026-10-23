@@ -2,8 +2,8 @@
 // (asking first when its headers are not the sheet's own), replace the rows, and say what was left
 // out. The match the user confirms is remembered per pipeline param (`memoryKey`).
 
-import type { SheetSpec } from '$lib/generated/samples';
-import { errorMessage, plural } from '$lib/util/format';
+import type { SheetSpec } from '#lib/generated/samples.js';
+import { errorMessage, plural } from '#lib/util/format.js';
 import {
   autoMapColumns,
   importNotes,

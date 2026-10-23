@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SiteSettings } from '$lib/api';
+import type { SiteSettings } from '#lib/api/index.js';
 import {
   MAX_FILE_KB,
   logoTooLarge,

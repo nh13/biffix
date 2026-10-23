@@ -1,7 +1,8 @@
 // The Usage page's pure logic: named periods as `[from, to)` dates, the page's
 // URL state, and the CSV a viewer can download. Dates are UTC `YYYY-MM-DD`; `to` is exclusive.
 
-import { validParam } from '$lib/util/urlParam';
+import type { ReadonlyURLSearchParams } from '$app/state';
+import { validParam } from '#lib/util/urlParam.js';
 
 export type UsageGroupBy = 'month' | 'workflow' | 'submitter' | 'instance_type' | 'project';
 export type PeriodPreset = 'this_month' | 'last_month' | 'last_3_months' | 'this_year' | 'custom';
@@ -84,7 +85,7 @@ export function isDate(s: string | null): s is string {
 const PERIODS = Object.keys(PERIOD_LABELS) as PeriodPreset[];
 const GROUPS = Object.keys(GROUP_LABELS) as UsageGroupBy[];
 
-export function parseUsageState(params: URLSearchParams): UsageState {
+export function parseUsageState(params: ReadonlyURLSearchParams): UsageState {
   const from = params.get('from');
   const to = params.get('to');
   return {

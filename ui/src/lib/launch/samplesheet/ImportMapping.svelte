@@ -2,8 +2,8 @@
   // The column-matching step of a samplesheet import, shown when the file's columns are not named
   // like the sheet's: which of its columns fills each one, and a preview of the first rows that
   // match makes, before anything is imported.
-  import type { SheetSpec } from '$lib/generated/samples';
-  import { plural } from '$lib/util/format';
+  import type { SheetSpec } from '#lib/generated/samples.js';
+  import { plural } from '#lib/util/format.js';
   import { columnLabel, columnNoun } from './sheet';
   import type { Matching } from './sheetImporter.svelte';
   import type { SheetRow } from './sheet';

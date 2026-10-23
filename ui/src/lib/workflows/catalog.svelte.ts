@@ -9,9 +9,9 @@
 //   const catalog = new WorkflowCatalog((g) => !g.latest.hidden);
 //   $effect(() => catalog.load());
 
-import { listWorkflows, type WorkflowSummary } from '$lib/api';
-import { prefs } from '$lib/state/localPrefs.svelte';
-import { errorMessage } from '$lib/util/format';
+import { listWorkflows, type WorkflowSummary } from '#lib/api/index.js';
+import { prefs } from '#lib/state/localPrefs.svelte.js';
+import { errorMessage } from '#lib/util/format.js';
 import { releaseFilter } from './release';
 import { groupVersions, type VersionGroup } from './version';
 

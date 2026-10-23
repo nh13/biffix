@@ -3,12 +3,12 @@
   // launch wizard, whose Start opens the pipeline's wizard at step 2); the Expert view from its
   // workflow list.
   import { page } from '$app/state';
-  import { listExperiments, type Experiment } from '$lib/api';
-  import { view } from '$lib/state/userPrefs.svelte';
-  import { experimentHref } from '$lib/experiments/experiments';
-  import PipelineCatalog from '$lib/catalog/PipelineCatalog.svelte';
-  import WizardStepper from '$lib/launch/WizardStepper.svelte';
-  import WorkflowChooser from '$lib/launch/WorkflowChooser.svelte';
+  import { listExperiments, type Experiment } from '#lib/api/index.js';
+  import { view } from '#lib/state/userPrefs.svelte.js';
+  import { experimentHref } from '#lib/experiments/experiments.js';
+  import PipelineCatalog from '#lib/catalog/PipelineCatalog.svelte';
+  import WizardStepper from '#lib/launch/WizardStepper.svelte';
+  import WorkflowChooser from '#lib/launch/WorkflowChooser.svelte';
 
   const lab = $derived(view.mode === 'lab');
   // *Start an analysis in this experiment*: carried on to the pipeline's form.

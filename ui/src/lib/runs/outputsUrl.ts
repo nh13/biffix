@@ -3,7 +3,7 @@
 // can name a sample or a file, so they live in the fragment, which never reaches a server; the
 // layout choices stay in the query. Defaults are left out.
 
-import { validParam, withViewParams } from '$lib/util/urlParam';
+import { validParam, withViewParams } from '#lib/util/urlParam.js';
 
 export interface OutputsView {
   view: 'tree' | 'flat';

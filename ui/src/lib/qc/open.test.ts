@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { RunReport } from '$lib/api';
-import type { ViewerFile } from '$lib/components/viewerFile';
+import type { RunReport } from '#lib/api/index.js';
+import type { ViewerFile } from '#lib/components/viewerFile.js';
 import {
   isAlignment,
   isFastqcReport,

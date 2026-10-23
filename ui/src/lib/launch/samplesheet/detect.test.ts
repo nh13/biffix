@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { DetectedSamples } from '$lib/api';
+import type { DetectedSamples } from '#lib/api/index.js';
 import {
   autoRule,
   baseName,

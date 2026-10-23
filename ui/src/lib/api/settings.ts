@@ -1,6 +1,6 @@
 // Site settings and the operational-alert recipients.
 
-import type { components } from '$lib/generated/api';
+import type { components } from '#lib/generated/api.js';
 import { API_PATHS, DEVELOPER_ONLY, get, request, requestJson, type JsonBody } from './client';
 
 export type SiteSettings = JsonBody<'get_settings'>;

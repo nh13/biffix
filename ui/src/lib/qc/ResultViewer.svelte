@@ -2,7 +2,7 @@
   // Whatever Open on a key result shows (`OpenTarget`): the output viewer, the FastQC viewer or the
   // genome browser. One place, so the analysis page, an experiment's results and QC at a glance
   // open results the same way.
-  import OutputViewer from '$lib/components/OutputViewer.svelte';
+  import OutputViewer from '#lib/components/OutputViewer.svelte';
   import type { OpenTarget } from './open';
   import AlignmentViewer from './AlignmentViewer.svelte';
   import FastqcViewer from './FastqcViewer.svelte';

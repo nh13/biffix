@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { RunDetail } from '$lib/api';
+import type { RunDetail } from '#lib/api/index.js';
 import { RENAME_HOLD_MS, RunState } from './runContext.svelte';
 
 const detail = (run_id: string, run_name: string | null) => ({ run_id, run_name }) as RunDetail;

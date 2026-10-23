@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { TaskAttempt } from '$lib/api';
-import { fmtDate } from '$lib/util/format';
+import type { TaskAttempt } from '#lib/api/index.js';
+import { fmtDate } from '#lib/util/format.js';
 import { attemptStory, machineWords, tryText } from './attemptStory';
 
 const attempt = (over: Partial<TaskAttempt>): TaskAttempt => ({

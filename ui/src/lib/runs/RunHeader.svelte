@@ -1,19 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { experimentHref } from '$lib/experiments/experiments';
-  import type { RunDetail } from '$lib/api';
-  import { fmtDate, fmtRelativeMicros, fmtUsd, fmtWallTime, plural } from '$lib/util/format';
-  import { batchJobUrl, cognitoUsersUrl } from '$lib/util/links';
-  import { deploy, loadDeploy } from '$lib/state/deploy.svelte';
-  import { isLiveRun } from '$lib/runs/runState';
-  import StatusPill from '$lib/runs/StatusPill.svelte';
-  import { capacityLabel, hostLabel } from '$lib/runs/attempts';
-  import { costBasis } from '$lib/runs/runFacts';
-  import { runVersionHref, runVersionLabel } from '$lib/runs/runVersion';
-  import { imageLabel, isBuilt, shortDigest } from '$lib/workflows/readiness';
-  import Progress from '$lib/components/Progress.svelte';
-  import RunActions from '$lib/runs/RunActions.svelte';
-  import AddToExperiment from '$lib/experiments/AddToExperiment.svelte';
+  import { experimentHref } from '#lib/experiments/experiments.js';
+  import type { RunDetail } from '#lib/api/index.js';
+  import { fmtDate, fmtRelativeMicros, fmtUsd, fmtWallTime, plural } from '#lib/util/format.js';
+  import { batchJobUrl, cognitoUsersUrl } from '#lib/util/links.js';
+  import { deploy, loadDeploy } from '#lib/state/deploy.svelte.js';
+  import { isLiveRun } from '#lib/runs/runState.js';
+  import StatusPill from '#lib/runs/StatusPill.svelte';
+  import { capacityLabel, hostLabel } from '#lib/runs/attempts.js';
+  import { costBasis } from '#lib/runs/runFacts.js';
+  import { runVersionHref, runVersionLabel } from '#lib/runs/runVersion.js';
+  import { imageLabel, isBuilt, shortDigest } from '#lib/workflows/readiness.js';
+  import Progress from '#lib/components/Progress.svelte';
+  import RunActions from '#lib/runs/RunActions.svelte';
+  import AddToExperiment from '#lib/experiments/AddToExperiment.svelte';
 
   // The run's identity, state and headline facts, with the Cancel action while it is live, and the
   // experiment it is in (put it in one, move it, take it out).

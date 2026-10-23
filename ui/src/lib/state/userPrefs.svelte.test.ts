@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { storageWith } from '$lib/api/testing';
+import { storageWith } from '#lib/api/testing.js';
 
 // The view store talks to `/me/prefs` through these two calls; each test scripts their answers.
 const api = vi.hoisted(() => ({
   getUserPrefs: vi.fn(),
   putUserPrefs: vi.fn(),
 }));
-vi.mock('$lib/api', () => api);
+vi.mock('#lib/api/index.js', () => api);
 
 /** A promise whose settling the test controls, to reorder replies. */
 function deferred<T>() {

@@ -7,8 +7,8 @@
 // given a presentation when only the words differ (`DataBrowser`). Data both views show is read by
 // one shared loader (`OutputsLoader`, `FailureSummaryLoader`, `WorkflowCatalog`), not once per view.
 
-import { RUN_TAB_SEGMENTS } from '$lib/runs/runNav';
-import { WORKFLOW_TABS, type WorkflowTab } from '$lib/workflows/workflowNav';
+import { RUN_TAB_SEGMENTS } from '#lib/runs/runNav.js';
+import { WORKFLOW_TABS, type WorkflowTab } from '#lib/workflows/workflowNav.js';
 
 export type ViewMode = 'lab' | 'expert';
 

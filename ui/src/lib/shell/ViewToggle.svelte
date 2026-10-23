@@ -1,7 +1,7 @@
 <script lang="ts">
   // The Lab | Expert switch shown on every page. Switching keeps the user on the same object:
   // Expert keeps the URL, Lab leaves an Expert-only page for its Lab equivalent.
-  import { view, type ViewMode } from '$lib/state/userPrefs.svelte';
+  import { view, type ViewMode } from '#lib/state/userPrefs.svelte.js';
   import { switchViewTo } from './switchView';
   import { TOUR_ANCHOR } from './tour';
 

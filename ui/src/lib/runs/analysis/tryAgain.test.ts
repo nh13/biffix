@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import type { ReferenceBundle } from '$lib/api';
+import type { ReferenceBundle } from '#lib/api/index.js';
 import {
   launchParts,
   launchRequest,
@@ -8,9 +8,9 @@ import {
   prefillFromRun,
   type LaunchTarget,
   type RunFacts,
-} from '$lib/launch/form';
-import { chosenBundle } from '$lib/launch/referenceChoice';
-import { parseSchema, type FormField, type FormSchema } from '$lib/workflows/schema';
+} from '#lib/launch/form.js';
+import { chosenBundle } from '#lib/launch/referenceChoice.js';
+import { parseSchema, type FormField, type FormSchema } from '#lib/workflows/schema.js';
 import {
   fixHref,
   isFixMode,

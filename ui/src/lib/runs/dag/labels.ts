@@ -2,7 +2,7 @@
 // character budget (the full id stays in the node's tooltip and accessible name). Pure, so it is
 // unit-tested.
 
-import { stepIdentifier } from '$lib/runs/analysis/stepLabel';
+import { stepIdentifier } from '#lib/runs/analysis/stepLabel.js';
 
 /** Characters of the 0.74rem name that fit a 150 px box, with a margin. */
 export const LABEL_CHARS = 20;

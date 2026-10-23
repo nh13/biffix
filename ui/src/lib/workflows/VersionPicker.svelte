@@ -1,8 +1,8 @@
 <script lang="ts">
   // The workflow's versions, to switch between; switching keeps the tab.
   import { goto } from '$app/navigation';
-  import type { WorkflowSummary } from '$lib/api';
-  import { fmtRelativeMicros } from '$lib/util/format';
+  import type { WorkflowSummary } from '#lib/api/index.js';
+  import { fmtRelativeMicros } from '#lib/util/format.js';
   import { isReleased } from './release';
   import { versionLabel } from './version';
   import { workflowTabHref, type WorkflowTab } from './workflowNav';

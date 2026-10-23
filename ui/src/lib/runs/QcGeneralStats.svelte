@@ -1,9 +1,9 @@
 <script lang="ts">
-  import type { QcGeneralStats } from '$lib/api';
-  import { jobsHref as jobsViewHref } from '$lib/runs/jobsUrl';
+  import type { QcGeneralStats } from '#lib/api/index.js';
+  import { jobsHref as jobsViewHref } from '#lib/runs/jobsUrl.js';
   import { formatQcValue, qcStatus, sortSamples } from './qcStats';
-  import { plural } from '$lib/util/format';
-  import { ariaSort, sortArrow, type SortDir } from '$lib/util/sort';
+  import { plural } from '#lib/util/format.js';
+  import { ariaSort, sortArrow, type SortDir } from '#lib/util/sort.js';
 
   // MultiQC's General Statistics as a native table: sortable, MultiQC's pass/warn/fail rules shown
   // as colored cells with a symbol, each sample linked to its jobs. Columns MultiQC hides by default

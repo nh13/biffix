@@ -1,9 +1,9 @@
 <script lang="ts">
   // A page that could not be shown: what happened in the view's words, a way back, Try again
   // when it may help, and the technical line behind *Details* (both views keep it there).
-  import { signInAgain } from '$lib/api/auth';
-  import { errorWords, type ErrorKind, type ErrorSubject } from '$lib/components/errorPage';
-  import { view } from '$lib/state/userPrefs.svelte';
+  import { signInAgain } from '#lib/api/auth.js';
+  import { errorWords, type ErrorKind, type ErrorSubject } from '#lib/components/errorPage.js';
+  import { view } from '#lib/state/userPrefs.svelte.js';
 
   interface Props {
     kind: ErrorKind;

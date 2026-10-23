@@ -18,18 +18,18 @@
     type DataFile,
     type DataSource,
     type Project,
-  } from '$lib/api';
-  import { CopiedFlag } from '$lib/util/clipboard.svelte';
-  import { errorMessage } from '$lib/util/format';
-  import { runNames } from '$lib/runs/runNames.svelte';
-  import { runTabHref } from '$lib/runs/runNav';
-  import OutputViewer from '$lib/components/OutputViewer.svelte';
-  import type { OpenTarget } from '$lib/qc/open';
-  import ResultViewer from '$lib/qc/ResultViewer.svelte';
-  import { defaultUploadFolder } from '$lib/upload/keys';
-  import UploadPanel from '$lib/upload/UploadPanel.svelte';
-  import type { Upload } from '$lib/upload/uploads.svelte';
-  import type { ViewerFile } from '$lib/components/viewerFile';
+  } from '#lib/api/index.js';
+  import { CopiedFlag } from '#lib/util/clipboard.svelte.js';
+  import { errorMessage } from '#lib/util/format.js';
+  import { runNames } from '#lib/runs/runNames.svelte.js';
+  import { runTabHref } from '#lib/runs/runNav.js';
+  import OutputViewer from '#lib/components/OutputViewer.svelte';
+  import type { OpenTarget } from '#lib/qc/open.js';
+  import ResultViewer from '#lib/qc/ResultViewer.svelte';
+  import { defaultUploadFolder } from '#lib/upload/keys.js';
+  import UploadPanel from '#lib/upload/UploadPanel.svelte';
+  import type { Upload } from '#lib/upload/uploads.svelte.js';
+  import type { ViewerFile } from '#lib/components/viewerFile.js';
   import { hasDataFolders } from './browse';
   import { analysesShown, resultOpen } from './dataBrowser';
   import DataToolbar from './DataToolbar.svelte';
@@ -148,7 +148,7 @@
   function show(f: DataFile | null) {
     if (!source) return;
     const href = dataHref(source.id, path, f ? f.path.slice(path.length) : undefined, project);
-    goto(href, { replaceState: !f, keepFocus: true, noScroll: true });
+    goto(href, { replace: !f, reset: false });
   }
 
   let downloadError = $state<string | null>(null);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { localDate } from '$lib/util/date';
-import { versionLabel } from '$lib/workflows/version';
+import { localDate } from '#lib/util/date.js';
+import { versionLabel } from '#lib/workflows/version.js';
 import { runVersionHref, runVersionLabel } from './runVersion';
 
 describe('runVersionLabel', () => {

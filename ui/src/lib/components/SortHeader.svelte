@@ -1,7 +1,7 @@
 <script lang="ts" generics="K extends string">
   // A sortable column header: a real button (focusable, Enter/Space) inside the `<th>`, which
   // carries `aria-sort` so the direction is announced and not only drawn.
-  import { ariaSort, sortArrow, type SortDir } from '$lib/util/sort';
+  import { ariaSort, sortArrow, type SortDir } from '#lib/util/sort.js';
 
   let {
     label,

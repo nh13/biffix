@@ -4,9 +4,9 @@
 // a run's cost in their own detail.) And a job's cost, in the Jobs table, its pane and the attempt
 // picker. Pure, so it is unit-tested.
 
-import type { RunDetail, RunSummary } from '$lib/api';
-import { fmtUsd } from '$lib/util/format';
-import { isLiveRun } from '$lib/runs/runState';
+import type { RunDetail, RunSummary } from '#lib/api/index.js';
+import { fmtUsd } from '#lib/util/format.js';
+import { isLiveRun } from '#lib/runs/runState.js';
 
 /** A run's cost as one number: its estimate once a job is priced, else null (nothing priced). */
 export function pricedUsd(cost: RunDetail['cost'] | null | undefined): number | null {

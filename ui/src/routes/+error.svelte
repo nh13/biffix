@@ -2,8 +2,8 @@
   // A route the app does not have (or one that threw): said in the view's words with a way back,
   // the status and message behind *Details*.
   import { page } from '$app/state';
-  import ErrorPage from '$lib/components/ErrorPage.svelte';
-  import { errorKind } from '$lib/components/errorPage';
+  import ErrorPage from '#lib/components/ErrorPage.svelte';
+  import { errorKind } from '#lib/components/errorPage.js';
 
   const kind = $derived(errorKind(page.status));
   const detail = $derived(

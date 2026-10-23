@@ -3,7 +3,7 @@
   // intermediate files stay. The Expert form's *Run details* adds the params YAML for the CLI; the
   // wizard's Review *Analysis details* adds the experiment to launch into, and folds where results
   // go into one line that still says what it is.
-  import NewExperimentForm from '$lib/experiments/NewExperimentForm.svelte';
+  import NewExperimentForm from '#lib/experiments/NewExperimentForm.svelte';
   import FieldInput from '../FieldInput.svelte';
   import type { Retention } from '../retention';
   import FormCard from './FormCard.svelte';

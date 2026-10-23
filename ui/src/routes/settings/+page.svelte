@@ -2,17 +2,21 @@
   // Settings: one section per heading (lib/settings), sharing the form styles below. The page loads
   // what the sections show once, in either view: the site settings (the Expert view's Site section,
   // the Lab view's Who to ask), the engine releases and the alert recipients.
-  import PinnedPipelines from '$lib/catalog/PinnedPipelines.svelte';
-  import { view } from '$lib/state/userPrefs.svelte';
-  import { AlertsState, EnginesState, SiteSettingsState } from '$lib/settings/settingsState.svelte';
-  import ViewSection from '$lib/settings/ViewSection.svelte';
-  import SiteSection from '$lib/settings/SiteSection.svelte';
-  import EnginesSection from '$lib/settings/EnginesSection.svelte';
-  import AlertsSection from '$lib/settings/AlertsSection.svelte';
-  import DisplaySection from '$lib/settings/DisplaySection.svelte';
-  import NotificationsSection from '$lib/settings/NotificationsSection.svelte';
-  import WhoToAskSection from '$lib/settings/WhoToAskSection.svelte';
-  import HelpSection from '$lib/settings/HelpSection.svelte';
+  import PinnedPipelines from '#lib/catalog/PinnedPipelines.svelte';
+  import { view } from '#lib/state/userPrefs.svelte.js';
+  import {
+    AlertsState,
+    EnginesState,
+    SiteSettingsState,
+  } from '#lib/settings/settingsState.svelte.js';
+  import ViewSection from '#lib/settings/ViewSection.svelte';
+  import SiteSection from '#lib/settings/SiteSection.svelte';
+  import EnginesSection from '#lib/settings/EnginesSection.svelte';
+  import AlertsSection from '#lib/settings/AlertsSection.svelte';
+  import DisplaySection from '#lib/settings/DisplaySection.svelte';
+  import NotificationsSection from '#lib/settings/NotificationsSection.svelte';
+  import WhoToAskSection from '#lib/settings/WhoToAskSection.svelte';
+  import HelpSection from '#lib/settings/HelpSection.svelte';
 
   const settings = new SiteSettingsState();
   const engines = new EnginesState();

@@ -1,7 +1,7 @@
 // Reference bundles: named sets of reference files a launch form's reference dropdown fills params
 // from. Any viewer lists them; admins manage them.
 
-import type { components } from '$lib/generated/api';
+import type { components } from '#lib/generated/api.js';
 import { API_PATHS, get, pathFor, request, requestJson, withQuery, type JsonBody } from './client';
 
 export type ReferenceBundle = JsonBody<'list_references'>[number];

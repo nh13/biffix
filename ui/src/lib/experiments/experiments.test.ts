@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { RunSummary } from '$lib/api';
+import type { RunSummary } from '#lib/api/index.js';
 import {
   activityText,
   anyLive,

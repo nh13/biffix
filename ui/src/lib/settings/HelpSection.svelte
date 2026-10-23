@@ -2,8 +2,8 @@
   // Settings › Help: replay the first-visit tour and bring back the "Switch to Expert" hint. Saved
   // for the user, like the view: the tour's done state follows them to every browser.
   import { goto } from '$app/navigation';
-  import { expertHint, restoreExpertHint } from '$lib/shell/expertHintState.svelte';
-  import { replayTour, view } from '$lib/state/userPrefs.svelte';
+  import { expertHint, restoreExpertHint } from '#lib/shell/expertHintState.svelte.js';
+  import { replayTour, view } from '#lib/state/userPrefs.svelte.js';
 
   // Replay the first-visit tour: My work shows it again (in the Lab view, where it lives).
   async function replay() {

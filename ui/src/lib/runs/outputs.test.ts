@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { RunOutput } from '$lib/api';
+import type { RunOutput } from '#lib/api/index.js';
 import {
   buildOutputTree,
   initiallyOpen,

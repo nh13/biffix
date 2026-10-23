@@ -5,9 +5,9 @@
 // Construct it while a component initialises: its effect lives as long as that component.
 
 import { untrack } from 'svelte';
-import { listReferences, type ReferenceBundle } from '$lib/api';
-import { errorMessage } from '$lib/util/format';
-import type { FormReferences } from '$lib/workflows/schema';
+import { listReferences, type ReferenceBundle } from '#lib/api/index.js';
+import { errorMessage } from '#lib/util/format.js';
+import type { FormReferences } from '#lib/workflows/schema.js';
 
 export class ReferenceOffers {
   offered = $state<ReferenceBundle[] | null>(null);

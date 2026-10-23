@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AlignmentReference, AlignmentLinks } from '$lib/api';
+import type { AlignmentReference, AlignmentLinks } from '#lib/api/index.js';
 import {
   igvOptions,
   lastLocusKey,

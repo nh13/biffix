@@ -10,7 +10,7 @@ import {
   STATE_FILTERS,
   TASK_SORTS,
 } from './jobsUrl';
-import { viewParams } from '$lib/util/urlParam';
+import { viewParams } from '#lib/util/urlParam.js';
 
 describe('jobs view URL state', () => {
   it('parses empty params as the defaults and serializes the defaults to nothing', () => {

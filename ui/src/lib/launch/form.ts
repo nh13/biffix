@@ -3,10 +3,10 @@
 // Re-run pre-fill, and the per-version draft. Kept apart from rendering so it is unit-tested.
 
 import { parse as parseYaml, stringify as toYaml } from 'yaml';
-import type { ReferenceBundle, RunSubmitRequest, WorkflowDetail } from '$lib/api';
-import { localDate } from '$lib/util/date';
-import { errorMessage } from '$lib/util/format';
-import type { FormField, FormSchema, FormSection } from '$lib/workflows/schema';
+import type { ReferenceBundle, RunSubmitRequest, WorkflowDetail } from '#lib/api/index.js';
+import { localDate } from '#lib/util/date.js';
+import { errorMessage } from '#lib/util/format.js';
+import type { FormField, FormSchema, FormSection } from '#lib/workflows/schema.js';
 import {
   inactiveFields,
   parseDecimal,

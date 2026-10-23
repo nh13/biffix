@@ -3,8 +3,8 @@
   // *Ask* button on a failed analysis), unless its pipeline names its own contact. Saved on its
   // own; only an Admin may change it (the server says so, and that refusal is shown).
   import { untrack } from 'svelte';
-  import { putSettings, type SiteSettings } from '$lib/api';
-  import { errorMessage } from '$lib/util/format';
+  import { putSettings, type SiteSettings } from '#lib/api/index.js';
+  import { errorMessage } from '#lib/util/format.js';
   import { supportChanged } from './settings';
   import type { SiteSettingsState } from './settingsState.svelte';
 

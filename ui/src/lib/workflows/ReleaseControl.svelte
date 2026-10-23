@@ -4,8 +4,8 @@
   // Developer or Admin; others see the badge only). A change asks first; its answer wins until the
   // version changes. A release that cannot be read fails the detail itself, so the page shows the
   // error.
-  import { putWorkflowRelease, type VersionRelease, type WorkflowDetail } from '$lib/api';
-  import { errorMessage, fmtRelativeMicros } from '$lib/util/format';
+  import { putWorkflowRelease, type VersionRelease, type WorkflowDetail } from '#lib/api/index.js';
+  import { errorMessage, fmtRelativeMicros } from '#lib/util/format.js';
   import type { WorkflowState } from './workflowContext.svelte';
   import ReleaseBadge from './ReleaseBadge.svelte';
 

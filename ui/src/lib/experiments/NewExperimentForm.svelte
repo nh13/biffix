@@ -3,10 +3,10 @@
   // server checks it), an optional description, and — when the caller has not fixed it — the
   // project it lives in. The server's refusal (a name taken meanwhile, no permission) is shown as it
   // words it. Used by the Experiments page, the wizard's Review and the analysis page's menu.
-  import { createExperiment, type Experiment } from '$lib/api';
-  import { errorMessage } from '$lib/util/format';
-  import { view } from '$lib/state/userPrefs.svelte';
-  import { t } from '$lib/view/vocab';
+  import { createExperiment, type Experiment } from '#lib/api/index.js';
+  import { errorMessage } from '#lib/util/format.js';
+  import { view } from '#lib/state/userPrefs.svelte.js';
+  import { t } from '#lib/view/vocab.js';
   import { NAME_INPUT_MAXLENGTH, nameProblem } from './experiments';
 
   interface Props {

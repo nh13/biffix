@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ReferenceBundle } from '$lib/api';
+import type { ReferenceBundle } from '#lib/api/index.js';
 import {
   bundleForm,
   kindLabel,

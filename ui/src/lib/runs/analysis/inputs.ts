@@ -2,7 +2,7 @@
 // the files it was given, the options it ran with that differ from the pipeline's standard
 // settings, and every setting it ran with (behind *Show all settings*). Pure, so it is unit-tested.
 
-import { changedOptions, describeValue, sampleNames } from '$lib/launch/wizard';
+import { changedOptions, describeValue, sampleNames } from '#lib/launch/wizard.js';
 import {
   isChanged,
   isOutdir,
@@ -11,10 +11,10 @@ import {
   prefillValues,
   sectionIdOf,
   sectionsOf,
-} from '$lib/launch/form';
-import type { SheetRow } from '$lib/launch/samplesheet/sheet';
-import { asRecord } from '$lib/runs/runFacts';
-import type { FormField, FormSchema } from '$lib/workflows/schema';
+} from '#lib/launch/form.js';
+import type { SheetRow } from '#lib/launch/samplesheet/sheet.js';
+import { asRecord } from '#lib/runs/runFacts.js';
+import type { FormField, FormSchema } from '#lib/workflows/schema.js';
 
 /** A samplesheet biffix wrote from rows: its param, spec and rows, and the samples it names. */
 export interface UsedSheet {

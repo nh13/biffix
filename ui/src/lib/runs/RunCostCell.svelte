@@ -1,7 +1,7 @@
 <script lang="ts">
   // A runs list's Cost cell, in either view.
-  import type { RunSummary } from '$lib/api';
-  import { listCostLine } from '$lib/runs/cost';
+  import type { RunSummary } from '#lib/api/index.js';
+  import { listCostLine } from '#lib/runs/cost.js';
 
   let { run }: { run: RunSummary } = $props();
   const cost = $derived(listCostLine(run));

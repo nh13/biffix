@@ -1,9 +1,9 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { getUsage, type UsageReport } from '$lib/api';
-  import { saveBlob } from '$lib/util/download';
-  import { errorMessage, fmtUsd, plural } from '$lib/util/format';
-  import { replaceUrl } from '$lib/util/replaceUrl';
+  import { getUsage, type UsageReport } from '#lib/api/index.js';
+  import { saveBlob } from '#lib/util/download.js';
+  import { errorMessage, fmtUsd, plural } from '#lib/util/format.js';
+  import { replaceUrl } from '#lib/util/replaceUrl.js';
   import {
     GROUP_LABELS,
     PERIOD_LABELS,
@@ -15,7 +15,7 @@
     type PeriodPreset,
     type UsageGroupBy,
     type UsageState,
-  } from '$lib/usage/usage';
+  } from '#lib/usage/usage.js';
 
   // Spend over a period, grouped: estimates from EC2 prices, a bar per group,
   // and a CSV of what is shown. The period and grouping live in the URL so a view can be shared.
@@ -23,7 +23,7 @@
   const range = $derived(rangeFor(view, new Date()));
 
   function update(next: Partial<UsageState>) {
-    const url = new URL(page.url);
+    const url = new URL(page.url.href);
     url.search = usageParams({ ...view, ...next }).toString();
     replaceUrl(url);
   }

@@ -3,7 +3,7 @@
 // them (`GET /runs/{id}/qc/fastqc-status`). Statuses only: MultiQC's data has no FastQC plots.
 // Pure, so it is unit-tested; the component only draws what these return.
 
-import type { FastqcStatusSample } from '$lib/api';
+import type { FastqcStatusSample } from '#lib/api/index.js';
 import { sampleLabels } from './open';
 
 /** One choice in the picker: how it reads and the result. */

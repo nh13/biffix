@@ -5,7 +5,7 @@
 // Where JS and the Rust `regex` crate may read a `rules` pattern differently (`sharedPattern`), the
 // port skips the rule: the form may miss an error the server reports, never report one it wouldn't.
 
-import type { FormField } from '$lib/workflows/schema';
+import type { FormField } from '#lib/workflows/schema.js';
 
 export interface ValidationError {
   field: string;

@@ -3,9 +3,9 @@
 // form's own for `?from=` (the same pre-fill, the same pruning, the same `launchRequest`), so a
 // Try again and a Re-run through the form launch the same thing. Pure, so it is unit-tested.
 
-import type { ReferenceBundle, RunSubmitRequest } from '$lib/api';
-import { parseSchema } from '$lib/workflows/schema';
-import { workflowTabHref } from '$lib/workflows/workflowNav';
+import type { ReferenceBundle, RunSubmitRequest } from '#lib/api/index.js';
+import { parseSchema } from '#lib/workflows/schema.js';
+import { workflowTabHref } from '#lib/workflows/workflowNav.js';
 import {
   launchParts,
   launchRequest,
@@ -13,8 +13,8 @@ import {
   prefillFromRun,
   type LaunchTarget,
   type RunFacts,
-} from '$lib/launch/form';
-import { chosenBundle, referenceProblem } from '$lib/launch/referenceChoice';
+} from '#lib/launch/form.js';
+import { chosenBundle, referenceProblem } from '#lib/launch/referenceChoice.js';
 
 /**
  * `resume` picks up where the run stopped; `rerun` starts again with the same inputs; the two

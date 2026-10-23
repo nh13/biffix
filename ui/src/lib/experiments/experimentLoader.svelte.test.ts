@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // The detail is read through `getExperiment`; each test answers it by hand.
 const api = vi.hoisted(() => ({ getExperiment: vi.fn() }));
-vi.mock('$lib/api', () => api);
+vi.mock('#lib/api/index.js', () => api);
 
 const { ExperimentLoader } = await import('./experimentLoader.svelte');
 

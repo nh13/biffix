@@ -2,14 +2,14 @@
   import '../app.css';
   import { onMount, onDestroy } from 'svelte';
   import { page } from '$app/state';
-  import { currentIdentity, ensureAuthenticated } from '$lib/api/auth';
-  import { DEFAULT_SITE_TITLE, loadSite, site } from '$lib/state/site.svelte';
-  import { watchStatus } from '$lib/status/live.svelte';
-  import { errorMessage } from '$lib/util/format';
-  import { appearance, setThemeChoice, type Theme } from '$lib/state/localPrefs.svelte';
-  import { uploads } from '$lib/upload/store';
-  import { loadView } from '$lib/state/userPrefs.svelte';
-  import AppShell from '$lib/shell/AppShell.svelte';
+  import { currentIdentity, ensureAuthenticated } from '#lib/api/auth.js';
+  import { DEFAULT_SITE_TITLE, loadSite, site } from '#lib/state/site.svelte.js';
+  import { watchStatus } from '#lib/status/live.svelte.js';
+  import { errorMessage } from '#lib/util/format.js';
+  import { appearance, setThemeChoice, type Theme } from '#lib/state/localPrefs.svelte.js';
+  import { uploads } from '#lib/upload/store.js';
+  import { loadView } from '#lib/state/userPrefs.svelte.js';
+  import AppShell from '#lib/shell/AppShell.svelte';
 
   let { children } = $props();
 

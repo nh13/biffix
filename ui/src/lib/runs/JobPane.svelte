@@ -1,10 +1,10 @@
 <script lang="ts">
-  import type { RunDetail, TaskPage } from '$lib/api';
-  import { fmtWallTime, plural } from '$lib/util/format';
-  import { jobCostText } from '$lib/runs/cost';
+  import type { RunDetail, TaskPage } from '#lib/api/index.js';
+  import { fmtWallTime, plural } from '#lib/util/format.js';
+  import { jobCostText } from '#lib/runs/cost.js';
   import { onMount } from 'svelte';
-  import { batchJobUrl, cloudwatchLogUrl } from '$lib/util/links';
-  import { deploy, loadDeploy } from '$lib/state/deploy.svelte';
+  import { batchJobUrl, cloudwatchLogUrl } from '#lib/util/links.js';
+  import { deploy, loadDeploy } from '#lib/state/deploy.svelte.js';
   import {
     capacityLabel,
     hostCapacityLabel,
@@ -12,11 +12,11 @@
     requestedLabel,
     terminationLabel,
     verdictLabel,
-  } from '$lib/runs/attempts';
-  import { isLiveRun } from '$lib/runs/runState';
-  import TaskPanel from '$lib/runs/TaskPanel.svelte';
-  import RunOutputs from '$lib/runs/RunOutputs.svelte';
-  import { runMayHaveOutputs } from '$lib/runs/runNav';
+  } from '#lib/runs/attempts.js';
+  import { isLiveRun } from '#lib/runs/runState.js';
+  import TaskPanel from '#lib/runs/TaskPanel.svelte';
+  import RunOutputs from '#lib/runs/RunOutputs.svelte';
+  import { runMayHaveOutputs } from '#lib/runs/runNav.js';
 
   type Task = TaskPage['tasks'][number];
 

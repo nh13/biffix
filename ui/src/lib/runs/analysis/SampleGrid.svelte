@@ -1,11 +1,11 @@
 <script lang="ts">
   // A run's samples × steps: each sample's row with a cell per per-sample step, then one row for the
   // whole-study steps (MultiQC, joint calling…). Polled while the run is live.
-  import { getRunSamples, type SampleGrid } from '$lib/api';
-  import { startPoll } from '$lib/util/poll';
+  import { getRunSamples, type SampleGrid } from '#lib/api/index.js';
+  import { startPoll } from '#lib/util/poll.js';
   import SampleStateChip from './SampleStateChip.svelte';
   import { stepLabel } from './stepLabel';
-  import { plural } from '$lib/util/format';
+  import { plural } from '#lib/util/format.js';
 
   type Cell = SampleGrid['study'][string];
 

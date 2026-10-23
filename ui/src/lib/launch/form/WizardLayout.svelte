@@ -3,7 +3,7 @@
   // (2), Reference & options (3) and Review & launch (4), with a stepper above and Back / Next
   // below. Step 1, picking the pipeline, is New run.
   import { page } from '$app/state';
-  import { setView } from '$lib/state/userPrefs.svelte';
+  import { setView } from '#lib/state/userPrefs.svelte.js';
   import ReviewStep from '../ReviewStep.svelte';
   import WizardStepper from '../WizardStepper.svelte';
   import type { WizardStep } from '../wizard';

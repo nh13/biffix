@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { RunDetail } from '$lib/api';
+import type { RunDetail } from '#lib/api/index.js';
 import { activeRunTab, runMayHaveOutputs, runOutputsTotal, runTabHref, runTabs } from './runNav';
 
 const run = (over: Partial<RunDetail> = {}): RunDetail =>

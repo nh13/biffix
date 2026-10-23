@@ -2,9 +2,9 @@
   // Samples detected from the files just picked, previewed before anything is added: the server's
   // grouping of them, and a naming editor for odd names (the id read from the file name or its
   // folder, automatically, from chosen parts of the name, or by a regular expression).
-  import type { DetectRule } from '$lib/generated/samples';
-  import { plural } from '$lib/util/format';
-  import { focusRadio, radioKeyTarget } from '$lib/util/radioGroup';
+  import type { DetectRule } from '#lib/generated/samples.js';
+  import { plural } from '#lib/util/format.js';
+  import { focusRadio, radioKeyTarget } from '#lib/util/radioGroup.js';
   import { baseName } from './detect';
   import type { SampleDetection } from './detection.svelte';
 

@@ -3,9 +3,10 @@
 // the query: the search text and the selected job (a task key, whose wildcards name a sample) never
 // reach a server. Defaults are left out, so an unfiltered view has a clean URL.
 
-import type { TaskSort, TaskStateFilter } from '$lib/api';
-import { runTabHref } from '$lib/runs/runNav';
-import { validParam, withViewParams } from '$lib/util/urlParam';
+import type { ReadonlyURL } from '$app/state';
+import type { TaskSort, TaskStateFilter } from '#lib/api/index.js';
+import { runTabHref } from '#lib/runs/runNav.js';
+import { validParam, withViewParams } from '#lib/util/urlParam.js';
 
 export const STATE_FILTERS: readonly TaskStateFilter[] = ['all', 'active', 'succeeded', 'failed'];
 export const TASK_SORTS: readonly TaskSort[] = ['key', 'state', 'duration', 'started'];
@@ -66,7 +67,7 @@ export function jobsViewParams(view: JobsView, base?: URLSearchParams): URLSearc
  * query fill in what the fragment lacks, so a view key left there (a hand-written `?state=failed`)
  * could never be cleared back to its default.
  */
-export function jobsViewHref(url: URL, view: JobsView): string {
+export function jobsViewHref(url: ReadonlyURL, view: JobsView): string {
   const query = new URLSearchParams(url.search);
   for (const key of JOBS_VIEW_KEYS) query.delete(key);
   const search = query.size > 0 ? `?${query}` : '';

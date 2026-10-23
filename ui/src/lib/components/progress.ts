@@ -1,8 +1,8 @@
 // What <Progress> shows for a run, as a pure function of the run's counts so the bucket arithmetic
 // is testable without mounting the component.
 
-import type { RunSummary } from '$lib/api';
-import { isTerminalRun } from '$lib/runs/runState';
+import type { RunSummary } from '#lib/api/index.js';
+import { isTerminalRun } from '#lib/runs/runState.js';
 
 /** The run fields progress reads (both `RunSummary` and `RunDetail` carry them). */
 export type ProgressFacts = Pick<

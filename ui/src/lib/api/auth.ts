@@ -1,6 +1,6 @@
 import { API_BASE } from './base';
-import type { components } from '$lib/generated/api';
-import { base64UrlDecode, base64UrlEncode } from '$lib/util/base64url';
+import type { components } from '#lib/generated/api.js';
+import { base64UrlDecode, base64UrlEncode } from '#lib/util/base64url.js';
 
 /** `GET /auth/config`: the deploy's public OAuth client configuration (generated from the API). */
 export type OAuthClientConfig = components['schemas']['OAuthClientConfig'];

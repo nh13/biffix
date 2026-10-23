@@ -7,8 +7,8 @@
   somewhere distinct lets the app stay signed out until the user chooses otherwise.
 -->
 <script lang="ts">
-  import { beginLogin, loadOAuthConfig } from '$lib/api/auth';
-  import { errorMessage } from '$lib/util/format';
+  import { beginLogin, loadOAuthConfig } from '#lib/api/auth.js';
+  import { errorMessage } from '#lib/util/format.js';
 
   let error = $state<string | null>(null);
   let busy = $state(false);

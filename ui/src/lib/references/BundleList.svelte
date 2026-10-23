@@ -1,8 +1,8 @@
 <script lang="ts">
   // Settings → References: the stored bundles, each with its files' keys, Edit and Delete (which
   // asks once more first).
-  import type { ReferenceBundle } from '$lib/api';
-  import { fmtRelativeMicros } from '$lib/util/format';
+  import type { ReferenceBundle } from '#lib/api/index.js';
+  import { fmtRelativeMicros } from '#lib/util/format.js';
   import { kindLabel } from './bundleForm';
 
   interface Props {

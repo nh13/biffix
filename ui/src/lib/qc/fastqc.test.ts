@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { FastqcModule } from '$lib/api';
+import type { FastqcModule } from '#lib/api/index.js';
 import {
   DEFAULT_FRAME as F,
   extrasOf,

@@ -1,7 +1,7 @@
 // Workflows: the registered versions, the engines, what a launch usually costs, and a pipeline's
 // Lab listing and a version's release.
 
-import type { components } from '$lib/generated/api';
+import type { components } from '#lib/generated/api.js';
 import {
   API_PATHS,
   DEVELOPER_ONLY,

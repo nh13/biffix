@@ -1,8 +1,8 @@
 <script lang="ts">
   // The Jobs view's table: one row per job of the loaded window (clicking one selects it, opening
   // its pane), and a footer counting them with Show more.
-  import type { TaskPage } from '$lib/api';
-  import { fmtWallTime } from '$lib/util/format';
+  import type { TaskPage } from '#lib/api/index.js';
+  import { fmtWallTime } from '#lib/util/format.js';
   import { hostLabel, requestedLabel, terminationLabel } from './attempts';
   import { NO_BATCH_JOB } from './jobsTable';
   import { jobCostText } from './cost';

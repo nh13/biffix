@@ -2,8 +2,8 @@
   // One analysis's result in the experiment's results table: Open (in the viewer its format calls
   // for) and Download, and, for a per-sample result with several samples, which sample. The table's
   // compact form of `ResultCard`, opening and downloading the same way.
-  import { unservedText, type OpenTarget } from '$lib/qc/open';
-  import type { ResultCard } from '$lib/runs/results';
+  import { unservedText, type OpenTarget } from '#lib/qc/open.js';
+  import type { ResultCard } from '#lib/runs/results.js';
   import { ResultChoice } from './resultChoice.svelte';
 
   interface Props {

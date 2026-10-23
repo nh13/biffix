@@ -3,8 +3,8 @@
   // Jobs tab, say): the page still renders, and this offers the way back without changing the
   // user's preference.
   import { page } from '$app/state';
-  import { labEquivalent } from '$lib/view/viewRoutes';
-  import { t } from '$lib/view/vocab';
+  import { labEquivalent } from '#lib/view/viewRoutes.js';
+  import { t } from '#lib/view/vocab.js';
 
   const back = $derived(labEquivalent(page.url.pathname));
   // The words are the Lab's: an analysis is a run, a pipeline a workflow.

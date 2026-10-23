@@ -2,9 +2,9 @@
 // access, the server's fault, no connection), said in the view's vocabulary with a way back. The
 // technical line stays available behind *Details*. Pure, so it is unit-tested.
 
-import { ApiError, AuthRequiredError } from '$lib/api';
-import type { ViewMode } from '$lib/view/viewRoutes';
-import { t } from '$lib/view/vocab';
+import { ApiError, AuthRequiredError } from '#lib/api/index.js';
+import type { ViewMode } from '#lib/view/viewRoutes.js';
+import { t } from '#lib/view/vocab.js';
 
 export type ErrorKind =
   'not-found' | 'bad-request' | 'forbidden' | 'signed-out' | 'server' | 'network';

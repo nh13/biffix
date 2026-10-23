@@ -6,23 +6,23 @@
   // (or a click or focus outside) closes it, and Escape hands focus back to the bell. Newly arrived
   // ones are announced to a screen reader.
   import { tick } from 'svelte';
-  import { Disclosure } from '$lib/util/disclosure.svelte';
-  import Icon from '$lib/components/Icon.svelte';
+  import { Disclosure } from '#lib/util/disclosure.svelte.js';
+  import Icon from '#lib/components/Icon.svelte';
   import {
     markRead,
     notifications,
     openedFromBell,
     watchNotifications,
-  } from '$lib/notifications/notifications.svelte';
+  } from '#lib/notifications/notifications.svelte.js';
   import {
     badgeText,
     bellLabel,
     emptyText,
     notificationText,
     unreadSummary,
-  } from '$lib/notifications/notify';
-  import { runTabHref } from '$lib/runs/runNav';
-  import { view } from '$lib/state/userPrefs.svelte';
+  } from '#lib/notifications/notify.js';
+  import { runTabHref } from '#lib/runs/runNav.js';
+  import { view } from '#lib/state/userPrefs.svelte.js';
 
   const uid = $props.id();
   const panelId = `${uid}-notifications`;

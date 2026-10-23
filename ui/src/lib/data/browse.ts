@@ -4,7 +4,7 @@
 // prefix with it, beside their copy button. Which prefixes a source hides is the server's answer,
 // read off the source, never a copy of its rule.
 
-import { listDataSources, type DataSource } from '$lib/api';
+import { listDataSources, type DataSource } from '#lib/api/index.js';
 import { dataHref, folderOf } from './paths';
 
 /** A source's hide rule, as the server serves it on the source. */

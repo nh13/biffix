@@ -5,7 +5,7 @@
 // (Needs attention opens again when more need a look than when it was closed). Pure, so it is
 // unit-tested.
 
-import { readPref, writePref } from '$lib/util/storage';
+import { readPref, writePref } from '#lib/util/storage.js';
 
 /** The rows of analyses. */
 export type WorkRow = 'attention' | 'running' | 'finished';

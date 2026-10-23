@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { jsonResponse, serve, useSignedInSession } from '$lib/api/testing';
+import { jsonResponse, serve, useSignedInSession } from '#lib/api/testing.js';
 import { apiTransport } from './transport';
 import { KeyTaken, PartUrlExpired, UploadGone } from './uploads.svelte';
 
-vi.mock('$lib/api/auth', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('$lib/api/auth')>()),
+vi.mock('#lib/api/auth.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('#lib/api/auth.js')>()),
   reauthenticate: vi.fn(async () => true),
 }));
 

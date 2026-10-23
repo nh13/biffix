@@ -3,7 +3,7 @@
 // this browser (a per-viewer convenience), so a colleague who opened a shared analysis sees it, and
 // it never comes back after a dismissal; Settings can bring it back.
 
-import { readPref, writePref } from '$lib/util/storage';
+import { readPref, writePref } from '#lib/util/storage.js';
 
 const KEY = 'biffix-expert-hint-dismissed';
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DataFile, DataFindResult, DataFolderPage, DataSource } from '$lib/api';
+import type { DataFile, DataFindResult, DataFolderPage, DataSource } from '#lib/api/index.js';
 
 // Each API call hands back a promise the test settles, in whatever order it likes.
 interface Pending<T> {
@@ -24,7 +24,7 @@ function pending<T>(
   );
 }
 
-vi.mock('$lib/api', () => ({
+vi.mock('#lib/api/index.js', () => ({
   listDataFolder: (
     _s: string,
     _p: string,

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AlignmentLinks } from '$lib/api';
+import type { AlignmentLinks } from '#lib/api/index.js';
 import {
   LinkRenewal,
   MIN_RENEW_INTERVAL_MS,

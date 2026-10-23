@@ -1,7 +1,7 @@
 <script lang="ts">
   // Settings › View: Lab or Expert, saved for the user (/me/prefs), so it follows them to every
   // browser.
-  import { setView, view } from '$lib/state/userPrefs.svelte';
+  import { setView, view } from '#lib/state/userPrefs.svelte.js';
 </script>
 
 <div class="settings-section">

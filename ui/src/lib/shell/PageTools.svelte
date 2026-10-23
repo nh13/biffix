@@ -1,7 +1,7 @@
 <script lang="ts">
   // What sits above every page: the Learn "?", the bell and the Lab | Expert switch. Shown in the
   // narrow top bar and in the wide view bar (one is hidden at any width).
-  import NotificationBell from '$lib/notifications/NotificationBell.svelte';
+  import NotificationBell from '#lib/notifications/NotificationBell.svelte';
   import ViewToggle from './ViewToggle.svelte';
   import type { LearnPanelState } from './learnPanel.svelte';
 

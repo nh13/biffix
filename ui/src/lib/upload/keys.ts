@@ -1,7 +1,7 @@
 // Where a browser upload goes in the project bucket: the default folder, the key a file lands at
 // (or why it cannot), and another name when that key is taken. Pure, so it is unit-tested.
 
-import { localDate } from '$lib/util/date';
+import { localDate } from '#lib/util/date.js';
 
 /** Browser uploads go under this folder of the project bucket (the backend allows no other). */
 export const UPLOADS_FOLDER = 'uploads/';

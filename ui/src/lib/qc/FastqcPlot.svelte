@@ -2,7 +2,7 @@
   // One FastQC module drawn as FastQC draws it: Per base sequence quality as a box per base over
   // the good / fair / poor bands, any other numeric module as lines. The geometry is `fastqc.ts`'s;
   // this only draws it. The numbers are one click away in the viewer (Show the numbers).
-  import type { FastqcModule } from '$lib/api';
+  import type { FastqcModule } from '#lib/api/index.js';
   import {
     DEFAULT_FRAME as F,
     lineData,

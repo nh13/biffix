@@ -1,3 +1,5 @@
+import type { ReadonlyURL, ReadonlyURLSearchParams } from '$app/state';
+
 /**
  * Validate a raw URL search-param against a known set, returning `fallback` when it is absent or
  * unrecognized. Routes read this inside a `$derived` so the result still recomputes on navigation.
@@ -16,7 +18,7 @@ export function validParam<T extends string, F extends T | null>(
 export const FLAG_ON = 'true';
 
 /** Whether boolean URL flag `name` is on ([`FLAG_ON`]); anything else, or its absence, is off. */
-export function flagParam(params: URLSearchParams, name: string): boolean {
+export function flagParam(params: ReadonlyURLSearchParams, name: string): boolean {
   return params.get(name) === FLAG_ON;
 }
 
@@ -27,7 +29,7 @@ export function flagParam(params: URLSearchParams, name: string): boolean {
  * nothing in the query (the Outputs tab's `view` and `work`), so query values fill in; fragment
  * values win.
  */
-export function viewParams(url: URL): URLSearchParams {
+export function viewParams(url: ReadonlyURL): URLSearchParams {
   const params = new URLSearchParams(url.search);
   for (const [key, value] of new URLSearchParams(url.hash.slice(1))) params.set(key, value);
   return params;

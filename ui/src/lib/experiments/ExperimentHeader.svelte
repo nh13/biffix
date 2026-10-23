@@ -7,11 +7,11 @@
     type Experiment,
     type ExperimentDetail,
     type ExperimentUpdateRequest,
-  } from '$lib/api';
-  import { saveBlob } from '$lib/util/download';
-  import { errorMessage, fmtDate } from '$lib/util/format';
-  import type { ViewMode } from '$lib/view/viewRoutes';
-  import { t } from '$lib/view/vocab';
+  } from '#lib/api/index.js';
+  import { saveBlob } from '#lib/util/download.js';
+  import { errorMessage, fmtDate } from '#lib/util/format.js';
+  import type { ViewMode } from '#lib/view/viewRoutes.js';
+  import { t } from '#lib/view/vocab.js';
   import {
     NAME_INPUT_MAXLENGTH,
     nameProblem,

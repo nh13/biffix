@@ -15,11 +15,16 @@ import {
   markNotificationsRead,
   type NotificationList,
   type NotificationsReadRequest,
-} from '$lib/api';
-import { errorMessage } from '$lib/util/format';
-import { applyRead, arrivalText, newlyUnread, NOTIFICATION_LIMIT } from '$lib/notifications/notify';
-import { view } from '$lib/state/userPrefs.svelte';
-import { onStatusProbe, watchStatus } from '$lib/status/live.svelte';
+} from '#lib/api/index.js';
+import { errorMessage } from '#lib/util/format.js';
+import {
+  applyRead,
+  arrivalText,
+  newlyUnread,
+  NOTIFICATION_LIMIT,
+} from '#lib/notifications/notify.js';
+import { view } from '#lib/state/userPrefs.svelte.js';
+import { onStatusProbe, watchStatus } from '#lib/status/live.svelte.js';
 
 export const notifications = $state<{
   /** The last list the server gave (with reads applied since); `null` until the first. */

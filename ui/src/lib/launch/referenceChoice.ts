@@ -3,8 +3,8 @@
 // bundle or chooses *Use my own files…*, which shows those params' own fields instead. Pure, so it
 // is unit-tested apart from rendering.
 
-import type { ReferenceBundle } from '$lib/api';
-import type { FormReferences, FormSchema } from '$lib/workflows/schema';
+import type { ReferenceBundle } from '#lib/api/index.js';
+import type { FormReferences, FormSchema } from '#lib/workflows/schema.js';
 import type { FormValues } from './form';
 import type { ValidationError } from './validate';
 

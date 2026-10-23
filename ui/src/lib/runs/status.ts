@@ -2,8 +2,8 @@
 // text. One function, so the home page, the analyses list and the analysis page agree. Progress is
 // counted in samples when the run's tasks name them, else in steps (tasks).
 
-import type { RunSummary } from '$lib/api';
-import { fmtWallTime, plural } from '$lib/util/format';
+import type { RunSummary } from '#lib/api/index.js';
+import { fmtWallTime, plural } from '#lib/util/format.js';
 
 export type StatusTone = 'waiting' | 'running' | 'done' | 'attention' | 'stopped';
 

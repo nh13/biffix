@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SheetSpec } from '$lib/generated/samples';
+import type { SheetSpec } from '#lib/generated/samples.js';
 import {
   autoMapColumns,
   columnNamedBy,

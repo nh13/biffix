@@ -2,7 +2,7 @@
 // the geometry of its plots, from the pipeline's own `fastqc_data.txt` (`GET …/fastqc`). Pure, so
 // the plots are unit-tested; the component only draws what these return.
 
-import type { FastqcModule } from '$lib/api';
+import type { FastqcModule } from '#lib/api/index.js';
 
 /** How a module's status reads: a symbol and a word (never colour alone), and its tone. */
 export interface StatusText {

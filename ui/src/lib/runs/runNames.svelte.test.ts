@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { RunSummary } from '$lib/api';
+import type { RunSummary } from '#lib/api/index.js';
 import { idBatches, NAME_TTL_MS, RunNames } from './runNames.svelte';
 
 const summary = (run_id: string, run_name: string | null = null) =>

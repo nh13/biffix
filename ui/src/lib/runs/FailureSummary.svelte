@@ -2,11 +2,11 @@
   // Why a failed run failed: its first failed steps, each in plain words — what
   // happened, what to try — with the end of its log and a link to the job; or the workflow engine's
   // own failure when no step failed.
-  import type { FailureSummary, RunDetail } from '$lib/api';
-  import { FailureSummaryLoader } from '$lib/runs/failureLoader.svelte';
-  import { jobsHref } from '$lib/runs/jobsUrl';
-  import { runTabHref } from '$lib/runs/runNav';
-  import { plural } from '$lib/util/format';
+  import type { FailureSummary, RunDetail } from '#lib/api/index.js';
+  import { FailureSummaryLoader } from '#lib/runs/failureLoader.svelte.js';
+  import { jobsHref } from '#lib/runs/jobsUrl.js';
+  import { runTabHref } from '#lib/runs/runNav.js';
+  import { plural } from '#lib/util/format.js';
 
   interface Props {
     run: RunDetail;

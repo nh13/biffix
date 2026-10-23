@@ -2,7 +2,7 @@
   // One quiet line on a Lab page for whoever needs more than it shows (a bioinformatician a link was
   // shared with): what the Expert view has, and a button to switch to it on the same page. Shown in
   // the Lab view until dismissed; the dismissal holds for every page (`expertHint`).
-  import { view } from '$lib/state/userPrefs.svelte';
+  import { view } from '#lib/state/userPrefs.svelte.js';
   import { dismissExpertHint, expertHint } from './expertHintState.svelte';
   import { switchViewTo } from './switchView';
 

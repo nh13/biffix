@@ -9,8 +9,8 @@
     setThemeChoice,
     type LogOrder,
     type ThemeChoice,
-  } from '$lib/state/localPrefs.svelte';
-  import { view } from '$lib/state/userPrefs.svelte';
+  } from '#lib/state/localPrefs.svelte.js';
+  import { view } from '#lib/state/userPrefs.svelte.js';
 
   const THEMES: { id: ThemeChoice; label: string; hint: string }[] = [
     { id: 'system', label: 'Match my computer', hint: 'light or dark, as your computer is set' },

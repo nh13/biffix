@@ -2,10 +2,10 @@
   // Under a resumed analysis's status: it continues another one, linked, with how that one
   // ended, how many steps it reused instead of running again, and that its results went to the
   // same folder as the original's (when they share one).
-  import type { RunDetail } from '$lib/api';
-  import { runTabHref } from '$lib/runs/runNav';
-  import { plural } from '$lib/util/format';
-  import { runName, shortDay } from '$lib/runs/runName';
+  import type { RunDetail } from '#lib/api/index.js';
+  import { runTabHref } from '#lib/runs/runNav.js';
+  import { plural } from '#lib/util/format.js';
+  import { runName, shortDay } from '#lib/runs/runName.js';
   import { sharesOriginFolder } from './inputs';
 
   interface Props {

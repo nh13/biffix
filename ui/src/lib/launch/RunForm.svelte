@@ -10,7 +10,7 @@
   //
   // This is the shell: it owns the form's state (`LaunchForm`, which its parts read from context)
   // and picks the layout, `FormLayout` or `WizardLayout`, under the banners both share.
-  import { setDataProject } from '$lib/data/projectContext';
+  import { setDataProject } from '#lib/data/projectContext.js';
   import type { LaunchTarget } from './form';
   import FormLayout from './form/FormLayout.svelte';
   import LaunchBanners from './form/LaunchBanners.svelte';

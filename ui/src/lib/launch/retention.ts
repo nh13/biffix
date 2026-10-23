@@ -1,7 +1,7 @@
 // What happens to a Nextflow run's intermediate files (its work dir) once it ends.
 // Results are never deleted; a run whose intermediate files are gone can't be resumed.
 
-import { plural } from '$lib/util/format';
+import { plural } from '#lib/util/format.js';
 
 export type Retention = 'default' | 'delete_on_success' | 'keep';
 

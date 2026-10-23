@@ -1,6 +1,6 @@
 // Sample detection: files → samples → samplesheet rows (biffix_api::SamplesContract).
 
-import type { SampleDetectRequest, DetectedSamples } from '$lib/generated/samples';
+import type { SampleDetectRequest, DetectedSamples } from '#lib/generated/samples.js';
 import { API_PATHS, requestJson } from './client';
 
 export type { SampleDetectRequest, DetectedSamples };

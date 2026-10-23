@@ -4,9 +4,9 @@
 // search, the open file in the URL, the viewer, downloads); only what is here differs. Pure, so it
 // is unit-tested.
 
-import type { DataSource } from '$lib/api';
-import { plural } from '$lib/util/format';
-import type { ViewMode } from '$lib/view/viewRoutes';
+import type { DataSource } from '#lib/api/index.js';
+import { plural } from '#lib/util/format.js';
+import type { ViewMode } from '#lib/view/viewRoutes.js';
 import { expertTrail, labTrail, type TrailStep } from './dataBrowser';
 import { sourceKindLabel } from './labPresentation';
 

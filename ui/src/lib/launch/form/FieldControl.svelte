@@ -1,7 +1,7 @@
 <script lang="ts">
   // One parameter's control in the launch form: a samplesheet (rows, or an existing sheet's path),
   // else the field's own input.
-  import type { FormField } from '$lib/workflows/schema';
+  import type { FormField } from '#lib/workflows/schema.js';
   import FieldInput from '../FieldInput.svelte';
   import SamplesheetField from '../samplesheet/SamplesheetField.svelte';
   import { launchForm } from './launchForm.svelte';

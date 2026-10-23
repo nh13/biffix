@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { fmtRelativeMicros } from '$lib/util/format';
-  import { versionLabel, registrantLabel as who } from '$lib/workflows/version';
-  import { getWorkflowContext } from '$lib/workflows/workflowContext.svelte';
-  import { workflowTabHref } from '$lib/workflows/workflowNav';
-  import ReleaseBadge from '$lib/workflows/ReleaseBadge.svelte';
+  import { fmtRelativeMicros } from '#lib/util/format.js';
+  import { versionLabel, registrantLabel as who } from '#lib/workflows/version.js';
+  import { getWorkflowContext } from '#lib/workflows/workflowContext.svelte.js';
+  import { workflowTabHref } from '#lib/workflows/workflowNav.js';
+  import ReleaseBadge from '#lib/workflows/ReleaseBadge.svelte';
 
   const wf = getWorkflowContext();
   const id = $derived(wf.detail?.id ?? '');

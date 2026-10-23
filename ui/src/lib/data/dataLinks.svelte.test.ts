@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DataSource } from '$lib/api';
+import type { DataSource } from '#lib/api/index.js';
 
 // Each request hands back a promise the test settles, in whatever order it likes.
 interface Pending {
@@ -9,7 +9,7 @@ interface Pending {
 }
 const calls: Pending[] = [];
 
-vi.mock('$lib/api', () => ({
+vi.mock('#lib/api/index.js', () => ({
   listDataSources: (project: string | null) =>
     new Promise<DataSource[]>((resolve, reject) => calls.push({ project, resolve, reject })),
 }));

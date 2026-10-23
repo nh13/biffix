@@ -1,11 +1,11 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import type { OutputPreview } from '$lib/api';
-  import type { ViewerFile } from '$lib/components/viewerFile';
-  import { errorMessage, fmtBytes } from '$lib/util/format';
-  import { headerlessFormatOf, parseTable } from '$lib/util/tsv';
-  import TsvTable from '$lib/components/TsvTable.svelte';
-  import Dialog from '$lib/components/Dialog.svelte';
+  import type { OutputPreview } from '#lib/api/index.js';
+  import type { ViewerFile } from '#lib/components/viewerFile.js';
+  import { errorMessage, fmtBytes } from '#lib/util/format.js';
+  import { headerlessFormatOf, parseTable } from '#lib/util/tsv.js';
+  import TsvTable from '#lib/components/TsvTable.svelte';
+  import Dialog from '#lib/components/Dialog.svelte';
 
   // One file shown in the browser (a run output, or a file in a data source), by its `viewer`:
   // tables and text from the backend's preview (the first 1 MiB, decompressed), images / PDFs /

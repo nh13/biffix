@@ -1,7 +1,7 @@
 <script lang="ts">
   // Every sample × analysis of an experiment, each cell the sample's state in that analysis: the
   // first dozen rows, all on asking.
-  import SampleStateChip from '$lib/runs/analysis/SampleStateChip.svelte';
+  import SampleStateChip from '#lib/runs/analysis/SampleStateChip.svelte';
   import type { SampleColumn, SampleRow } from './experiments';
 
   let { table }: { table: { columns: SampleColumn[]; rows: SampleRow[] } } = $props();

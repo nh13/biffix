@@ -2,10 +2,10 @@
   // An unregistered workflow's launch form (`biffix workflows form --open`). The form travels in the
   // URL fragment, so it is decoded here and never sent to the server.
   import { onMount } from 'svelte';
-  import { decodePreview } from '$lib/workflows/preview';
-  import { errorMessage } from '$lib/util/format';
-  import type { LaunchTarget } from '$lib/launch/form';
-  import RunForm from '$lib/launch/RunForm.svelte';
+  import { decodePreview } from '#lib/workflows/preview.js';
+  import { errorMessage } from '#lib/util/format.js';
+  import type { LaunchTarget } from '#lib/launch/form.js';
+  import RunForm from '#lib/launch/RunForm.svelte';
 
   let detail = $state<LaunchTarget | null>(null);
   let error = $state<string | null>(null);

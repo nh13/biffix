@@ -2,16 +2,16 @@
   // The runs list: one `RunsList` (filter, scopes, search, paging, the live poll, dismissals and
   // sort) shown by the view's presentation: the Lab view's analyses or the Expert view's table.
   // The filter tabs, search, scope chips and pager around it are this page's, in either view.
-  import { view } from '$lib/state/userPrefs.svelte';
-  import { t } from '$lib/view/vocab';
-  import { dismissAllLabel } from '$lib/runs/analysis/dismiss.svelte';
-  import { RunsList } from '$lib/runs/runsList.svelte';
-  import { nothingStartedYet } from '$lib/runs/runsEmpty';
-  import RunsFilterTabs from '$lib/runs/RunsFilterTabs.svelte';
-  import AnalysesList from '$lib/runs/AnalysesList.svelte';
-  import RunsTable from '$lib/runs/RunsTable.svelte';
-  import { experimentHref } from '$lib/experiments/experiments';
-  import { workflowHref } from '$lib/workflows/workflowNav';
+  import { view } from '#lib/state/userPrefs.svelte.js';
+  import { t } from '#lib/view/vocab.js';
+  import { dismissAllLabel } from '#lib/runs/analysis/dismiss.svelte.js';
+  import { RunsList } from '#lib/runs/runsList.svelte.js';
+  import { nothingStartedYet } from '#lib/runs/runsEmpty.js';
+  import RunsFilterTabs from '#lib/runs/RunsFilterTabs.svelte';
+  import AnalysesList from '#lib/runs/AnalysesList.svelte';
+  import RunsTable from '#lib/runs/RunsTable.svelte';
+  import { experimentHref } from '#lib/experiments/experiments.js';
+  import { workflowHref } from '#lib/workflows/workflowNav.js';
 
   const list = new RunsList();
   const lab = $derived(list.lab);

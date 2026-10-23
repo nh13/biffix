@@ -1,8 +1,8 @@
 // The runs list's client-side sort of the page it shows (cross-page order stays the server's:
 // recent first), and where the list goes after a dismissal. Pure, so each is unit-tested.
 
-import type { RunSummary } from '$lib/api';
-import type { SortDir } from '$lib/util/sort';
+import type { RunSummary } from '#lib/api/index.js';
+import type { SortDir } from '#lib/util/sort.js';
 import { pipelineTitle } from './runName';
 import type { PageRequest } from './runsPager';
 

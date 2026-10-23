@@ -12,8 +12,8 @@ import {
   type UploadedFile,
   type UploadPartUrlList,
   type UploadStatus,
-} from '$lib/api';
-import type { components } from '$lib/generated/api';
+} from '#lib/api/index.js';
+import type { components } from '#lib/generated/api.js';
 import { KeyTaken, PartUrlExpired, UploadGone, type UploadTransport } from './uploads.svelte';
 
 type Schemas = components['schemas'];

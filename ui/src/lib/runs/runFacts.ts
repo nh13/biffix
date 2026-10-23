@@ -1,8 +1,8 @@
 // Pure helpers for what the run page shows about a run.
 
-import type { RunDetail } from '$lib/api';
-import { priceSourceLabel } from '$lib/runs/attempts';
-import { plural } from '$lib/util/format';
+import type { RunDetail } from '#lib/api/index.js';
+import { priceSourceLabel } from '#lib/runs/attempts.js';
+import { plural } from '#lib/util/format.js';
 
 /** `v` when it is a plain object (a run's params, its input tables), else an empty one. */
 export const asRecord = (v: unknown): Record<string, unknown> =>

@@ -2,7 +2,7 @@
 // BAM/CRAM output (`GET …/alignment-view`). Pure, so the mapping is unit-tested; the component
 // hands the result to `igv.createBrowser` (and `loadSessionObject` when the links are re-minted).
 
-import type { AlignmentReference, AlignmentLinks } from '$lib/api';
+import type { AlignmentReference, AlignmentLinks } from '#lib/api/index.js';
 
 /** An igv track, as this viewer configures them (a subset of igv.js's track options). */
 export interface IgvTrack {

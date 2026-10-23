@@ -2,7 +2,7 @@
   // A parameter's long help, opened from its ⓘ: the author's text (from the workflow repo, so
   // untrusted) rendered as sanitized Markdown, so a paragraph break, a list or a link reads as one;
   // only inline formatting, lists, code and links (no heading, table or image).
-  import { renderHelpMarkdown } from '$lib/markdown/markdown';
+  import { renderHelpMarkdown } from '#lib/markdown/markdown.js';
 
   interface Props {
     /** The panel's id, which its ⓘ button's `aria-controls` names. */

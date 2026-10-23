@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import cases from '../../../../../schemas/sheet-cases.json';
-import type { SheetSpec } from '$lib/generated/samples';
+import type { SheetSpec } from '#lib/generated/samples.js';
 import {
   carryTouched,
   columnNoun,

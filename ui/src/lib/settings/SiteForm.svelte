@@ -3,8 +3,8 @@
   // from what is stored; a save shows only this form as stored, so an unsaved edit in the support
   // contact form is kept.
   import { untrack } from 'svelte';
-  import { putSettings } from '$lib/api';
-  import { errorMessage } from '$lib/util/format';
+  import { putSettings } from '#lib/api/index.js';
+  import { errorMessage } from '#lib/util/format.js';
   import { MAX_DATA_URL_CHARS, MAX_FILE_KB, logoTooLarge, siteChanges } from './settings';
   import type { SiteSettingsState } from './settingsState.svelte';
 

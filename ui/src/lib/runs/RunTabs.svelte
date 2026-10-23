@@ -1,9 +1,9 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import type { RunDetail } from '$lib/api';
-  import { activeRunTab, runTabs } from '$lib/runs/runNav';
-  import RunActions from '$lib/runs/RunActions.svelte';
-  import StatusPill from '$lib/runs/StatusPill.svelte';
+  import type { RunDetail } from '#lib/api/index.js';
+  import { activeRunTab, runTabs } from '#lib/runs/runNav.js';
+  import RunActions from '#lib/runs/RunActions.svelte';
+  import StatusPill from '#lib/runs/StatusPill.svelte';
 
   // The run's views as tabs: real links (so middle-click, back/forward and sharing work), the
   // current one marked for assistive tech. Pinned to the top of the page; once the full header has
@@ -37,7 +37,7 @@
         class:active={tab.id === active}
         class:empty={tab.empty}
         aria-current={tab.id === active ? 'page' : undefined}
-        data-sveltekit-noscroll
+        data-sveltekit-reset="false"
         >{tab.label}{#if tab.count != null}{' '}<span class="count">{tab.count}</span>{/if}</a
       >
     {/each}

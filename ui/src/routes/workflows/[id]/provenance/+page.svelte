@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { sourceLinks } from '$lib/workflows/source';
-  import { ecrImageUrl } from '$lib/util/links';
-  import { getWorkflowContext } from '$lib/workflows/workflowContext.svelte';
-  import { workflowHref } from '$lib/workflows/workflowNav';
-  import { archMark, imageLabel, isBuilt, shortDigest } from '$lib/workflows/readiness';
-  import { CopiedFlag } from '$lib/util/clipboard.svelte';
+  import { sourceLinks } from '#lib/workflows/source.js';
+  import { ecrImageUrl } from '#lib/util/links.js';
+  import { getWorkflowContext } from '#lib/workflows/workflowContext.svelte.js';
+  import { workflowHref } from '#lib/workflows/workflowNav.js';
+  import { archMark, imageLabel, isBuilt, shortDigest } from '#lib/workflows/readiness.js';
+  import { CopiedFlag } from '#lib/util/clipboard.svelte.js';
 
   const wf = getWorkflowContext();
 

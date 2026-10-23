@@ -2,9 +2,9 @@
   // The runs list in the Lab view: a table of analyses by name, pipeline and plain status, or below
   // a phone's width My work's rows (a table would not fit). The page owns the list's state.
   import { MediaQuery } from 'svelte/reactivity';
-  import SortHeader from '$lib/components/SortHeader.svelte';
-  import RunRow from '$lib/home/RunRow.svelte';
-  import { fmtDate } from '$lib/util/format';
+  import SortHeader from '#lib/components/SortHeader.svelte';
+  import RunRow from '#lib/home/RunRow.svelte';
+  import { fmtDate } from '#lib/util/format.js';
   import { pipelineTitle } from './runName';
   import { runTabHref } from './runNav';
   import { runVersionHref } from './runVersion';

@@ -4,14 +4,14 @@
   // versions are reachable from the workflow's version picker. Workflows with no released version
   // are listed only with Developer on. The Lab view picks from the pipeline catalog instead.
   import type { Snippet } from 'svelte';
-  import { fmtRelativeMicros, plural } from '$lib/util/format';
-  import { workflowTabHref } from '$lib/workflows/workflowNav';
-  import { WorkflowCatalog } from '$lib/workflows/catalog.svelte';
-  import { withExperiment } from '$lib/experiments/experiments';
-  import { launchVersion } from '$lib/workflows/release';
-  import ReleaseBadge from '$lib/workflows/ReleaseBadge.svelte';
-  import DeveloperToggle from '$lib/workflows/DeveloperToggle.svelte';
-  import NothingReleased from '$lib/workflows/NothingReleased.svelte';
+  import { fmtRelativeMicros, plural } from '#lib/util/format.js';
+  import { workflowTabHref } from '#lib/workflows/workflowNav.js';
+  import { WorkflowCatalog } from '#lib/workflows/catalog.svelte.js';
+  import { withExperiment } from '#lib/experiments/experiments.js';
+  import { launchVersion } from '#lib/workflows/release.js';
+  import ReleaseBadge from '#lib/workflows/ReleaseBadge.svelte';
+  import DeveloperToggle from '#lib/workflows/DeveloperToggle.svelte';
+  import NothingReleased from '#lib/workflows/NothingReleased.svelte';
 
   interface Props {
     /** The experiment a launch joins (carried on to the workflow's form). */

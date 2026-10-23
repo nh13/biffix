@@ -1,7 +1,7 @@
 // The tabs of a `/workflows/[id]` page and their URLs: pure, so any page can link to a workflow tab
 // without importing the Svelte context module.
 
-import type { WorkflowDetail } from '$lib/api';
+import type { WorkflowDetail } from '#lib/api/index.js';
 
 export type WorkflowTab = 'run' | 'about' | 'parameters' | 'versions' | 'provenance';
 /** Run first: it is the tab a biologist opens the workflow for. */

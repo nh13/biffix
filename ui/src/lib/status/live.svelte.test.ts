@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { StatusReport } from '$lib/api';
+import type { StatusReport } from '#lib/api/index.js';
 
 const getStatus = vi.fn<() => Promise<StatusReport>>();
-vi.mock('$lib/api', () => ({ getStatus: () => getStatus() }));
+vi.mock('#lib/api/index.js', () => ({ getStatus: () => getStatus() }));
 
 const { healthOf, liveStatus, watchStatus, STATUS_POLL_MS } = await import('./live.svelte');
 

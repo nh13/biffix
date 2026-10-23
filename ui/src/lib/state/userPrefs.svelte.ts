@@ -8,12 +8,12 @@
 // load rather than replaced by the server's older value.
 
 import { untrack } from 'svelte';
-import { getUserPrefs, putUserPrefs, type UserPrefs } from '$lib/api';
-import { readPref, writePref } from '$lib/util/storage';
-import type { ViewMode } from '$lib/view/viewRoutes';
-import { errorMessage } from '$lib/util/format';
+import { getUserPrefs, putUserPrefs, type UserPrefs } from '#lib/api/index.js';
+import { readPref, writePref } from '#lib/util/storage.js';
+import type { ViewMode } from '#lib/view/viewRoutes.js';
+import { errorMessage } from '#lib/util/format.js';
 
-export type { ViewMode } from '$lib/view/viewRoutes';
+export type { ViewMode } from '#lib/view/viewRoutes.js';
 
 const VIEW_KEY = 'biffix-view';
 /** Set while this browser holds a view the server has not stored yet. */

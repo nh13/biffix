@@ -1,19 +1,19 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { page } from '$app/state';
-  import { getRun, listOutputs, listRunReports } from '$lib/api';
-  import { startPoll } from '$lib/util/poll';
-  import { isTerminalRun } from '$lib/runs/runState';
-  import { RunState, setRunContext } from '$lib/runs/runContext.svelte';
-  import RunHeader from '$lib/runs/RunHeader.svelte';
-  import RunTabs from '$lib/runs/RunTabs.svelte';
-  import { view } from '$lib/state/userPrefs.svelte';
-  import { markRead } from '$lib/notifications/notifications.svelte';
-  import { onStatusProbe } from '$lib/status/live.svelte';
-  import { resultCards } from '$lib/runs/results';
-  import ErrorPage from '$lib/components/ErrorPage.svelte';
-  import { errorKind } from '$lib/components/errorPage';
-  import { errorMessage } from '$lib/util/format';
+  import { getRun, listOutputs, listRunReports } from '#lib/api/index.js';
+  import { startPoll } from '#lib/util/poll.js';
+  import { isTerminalRun } from '#lib/runs/runState.js';
+  import { RunState, setRunContext } from '#lib/runs/runContext.svelte.js';
+  import RunHeader from '#lib/runs/RunHeader.svelte';
+  import RunTabs from '#lib/runs/RunTabs.svelte';
+  import { view } from '#lib/state/userPrefs.svelte.js';
+  import { markRead } from '#lib/notifications/notifications.svelte.js';
+  import { onStatusProbe } from '#lib/status/live.svelte.js';
+  import { resultCards } from '#lib/runs/results.js';
+  import ErrorPage from '#lib/components/ErrorPage.svelte';
+  import { errorKind } from '#lib/components/errorPage.js';
+  import { errorMessage } from '#lib/util/format.js';
 
   // Every view of one run: polls the run (until it ends) and shares it with the views below, under
   // a header that stays the same across them.

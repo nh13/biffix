@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { RunDetail } from '$lib/api';
+import type { RunDetail } from '#lib/api/index.js';
 import { costLine, jobCostText, listCostLine, noCostLine, pricedUsd } from './cost';
 
 describe('pricedUsd', () => {

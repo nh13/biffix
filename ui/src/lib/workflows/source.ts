@@ -3,7 +3,7 @@
 // registrant for a separate URL. For a git source on GitHub we can point at the exact frozen commit
 // and its README; for any other host we only trust the repo root; an S3 source links the console.
 
-import { s3ConsoleUrl } from '$lib/util/links';
+import { s3ConsoleUrl } from '#lib/util/links.js';
 
 export interface SourceLinks {
   /** Kind of source, for the block heading. */

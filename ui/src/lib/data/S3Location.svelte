@@ -1,9 +1,9 @@
 <script lang="ts">
   // An S3 URI a run names (its output prefix): a link into the Data page when the Data page can
   // show it (else the URI as text), a copy button, and (Expert) the S3 console.
-  import { CopiedFlag } from '$lib/util/clipboard.svelte';
-  import { s3ConsoleUrl } from '$lib/util/links';
-  import { deploy } from '$lib/state/deploy.svelte';
+  import { CopiedFlag } from '#lib/util/clipboard.svelte.js';
+  import { s3ConsoleUrl } from '#lib/util/links.js';
+  import { deploy } from '#lib/state/deploy.svelte.js';
   import { DataLinks } from './dataLinks.svelte';
 
   interface Props {

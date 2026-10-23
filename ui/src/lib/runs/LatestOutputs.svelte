@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { listOutputs, type RunOutput, type RunDetail } from '$lib/api';
-  import { fmtBytes } from '$lib/util/format';
-  import { startPoll } from '$lib/util/poll';
-  import { runTabHref } from '$lib/runs/runNav';
+  import { listOutputs, type RunOutput, type RunDetail } from '#lib/api/index.js';
+  import { fmtBytes } from '#lib/util/format.js';
+  import { startPoll } from '#lib/util/poll.js';
+  import { runTabHref } from '#lib/runs/runNav.js';
 
   // A glance at the run's outputs, linking to the Outputs view for the rest.
   interface Props {

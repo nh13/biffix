@@ -1,6 +1,6 @@
 // Run outputs: the tree the Outputs section draws from a run's registered objects.
 
-import type { RunOutput } from '$lib/api';
+import type { RunOutput } from '#lib/api/index.js';
 
 /** A directory of the output tree, with rollups over everything beneath it. */
 export interface OutputDir {

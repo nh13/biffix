@@ -3,19 +3,19 @@
   // released version, else its newest) with its older versions folded under it; searchable and
   // sortable, the sort kept in the URL. The Lab view's is the pipeline catalog.
   import { page } from '$app/state';
-  import { replaceUrl } from '$lib/util/replaceUrl';
-  import { validParam } from '$lib/util/urlParam';
-  import type { WorkflowSummary } from '$lib/api';
-  import { fmtRelativeMicros, plural } from '$lib/util/format';
-  import { engineLabel, versionLabel, registrantLabel as who } from '$lib/workflows/version';
-  import { workflowHref } from '$lib/workflows/workflowNav';
-  import { WorkflowCatalog, type WorkflowGroup as Group } from '$lib/workflows/catalog.svelte';
-  import SortHeader from '$lib/components/SortHeader.svelte';
-  import { prefs } from '$lib/state/localPrefs.svelte';
-  import { launchVersion } from '$lib/workflows/release';
-  import ReleaseBadge from '$lib/workflows/ReleaseBadge.svelte';
-  import DeveloperToggle from '$lib/workflows/DeveloperToggle.svelte';
-  import NothingReleased from '$lib/workflows/NothingReleased.svelte';
+  import { replaceUrl } from '#lib/util/replaceUrl.js';
+  import { validParam } from '#lib/util/urlParam.js';
+  import type { WorkflowSummary } from '#lib/api/index.js';
+  import { fmtRelativeMicros, plural } from '#lib/util/format.js';
+  import { engineLabel, versionLabel, registrantLabel as who } from '#lib/workflows/version.js';
+  import { workflowHref } from '#lib/workflows/workflowNav.js';
+  import { WorkflowCatalog, type WorkflowGroup as Group } from '#lib/workflows/catalog.svelte.js';
+  import SortHeader from '#lib/components/SortHeader.svelte';
+  import { prefs } from '#lib/state/localPrefs.svelte.js';
+  import { launchVersion } from '#lib/workflows/release.js';
+  import ReleaseBadge from '#lib/workflows/ReleaseBadge.svelte';
+  import DeveloperToggle from '#lib/workflows/DeveloperToggle.svelte';
+  import NothingReleased from '#lib/workflows/NothingReleased.svelte';
 
   const catalog = new WorkflowCatalog();
   const loading = $derived(catalog.loading);
@@ -37,7 +37,7 @@
     page.url.searchParams.get('dir') === 'desc' ? 'desc' : 'asc',
   );
   function toggleSort(key: SortKey) {
-    const u = new URL(page.url);
+    const u = new URL(page.url.href);
     if (sortKey === key) {
       u.searchParams.set('dir', sortDir === 'asc' ? 'desc' : 'asc');
     } else {

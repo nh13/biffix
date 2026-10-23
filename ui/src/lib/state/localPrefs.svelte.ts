@@ -3,7 +3,7 @@
 // must not be forced on every viewer. The shared `$state` makes a change on the Settings page apply
 // live to any component reading it (e.g. an open task-log panel).
 
-import { readPref, removePref, writePref } from '$lib/util/storage';
+import { readPref, removePref, writePref } from '#lib/util/storage.js';
 
 export type LogOrder = 'oldest' | 'newest';
 

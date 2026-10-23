@@ -3,7 +3,7 @@
   // Re-run's or Resume's pre-fill, a restored draft, an example (with its undo), an import, and (in
   // the Expert form) the experiment it launches into.
   import { launchForm } from './launchForm.svelte';
-  import { runTabHref } from '$lib/runs/runNav';
+  import { runTabHref } from '#lib/runs/runNav.js';
 
   const form = launchForm();
 </script>

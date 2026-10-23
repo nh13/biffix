@@ -5,19 +5,19 @@
   // it), Show in Data, Download and Copy path. A search narrows it; a long group shows a page at a
   // time. No task or role columns and no work files: the Expert view's Outputs tab has those.
   import { goto } from '$app/navigation';
-  import { runTabHref } from '$lib/runs/runNav';
-  import type { RunDetail } from '$lib/api';
-  import { CopiedFlag } from '$lib/util/clipboard.svelte';
-  import { DataLinks } from '$lib/data/dataLinks.svelte';
-  import { fmtBytes, plural } from '$lib/util/format';
-  import { openTarget, type OpenTarget } from '$lib/qc/open';
-  import ResultViewer from '$lib/qc/ResultViewer.svelte';
-  import { getRunContext } from '$lib/runs/runContext.svelte';
-  import { isLiveRun } from '$lib/runs/runState';
-  import { OutputsLoader } from '$lib/runs/outputsLoader.svelte';
-  import { site } from '$lib/state/site.svelte';
-  import { setView } from '$lib/state/userPrefs.svelte';
-  import { outputViewerFile } from '$lib/components/viewerFile';
+  import { runTabHref } from '#lib/runs/runNav.js';
+  import type { RunDetail } from '#lib/api/index.js';
+  import { CopiedFlag } from '#lib/util/clipboard.svelte.js';
+  import { DataLinks } from '#lib/data/dataLinks.svelte.js';
+  import { fmtBytes, plural } from '#lib/util/format.js';
+  import { openTarget, type OpenTarget } from '#lib/qc/open.js';
+  import ResultViewer from '#lib/qc/ResultViewer.svelte';
+  import { getRunContext } from '#lib/runs/runContext.svelte.js';
+  import { isLiveRun } from '#lib/runs/runState.js';
+  import { OutputsLoader } from '#lib/runs/outputsLoader.svelte.js';
+  import { site } from '#lib/state/site.svelte.js';
+  import { setView } from '#lib/state/userPrefs.svelte.js';
+  import { outputViewerFile } from '#lib/components/viewerFile.js';
   import {
     FILES_PER_PAGE,
     fileOpenKind,
@@ -28,8 +28,8 @@
     type FileGroupId,
     type LabFile,
   } from './files';
-  import { runName } from '$lib/runs/runName';
-  import { runNames } from '$lib/runs/runNames.svelte';
+  import { runName } from '#lib/runs/runName.js';
+  import { runNames } from '#lib/runs/runNames.svelte.js';
 
   let { run }: { run: RunDetail } = $props();
 

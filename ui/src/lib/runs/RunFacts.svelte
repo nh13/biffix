@@ -1,12 +1,12 @@
 <script lang="ts">
-  import type { RunDetail } from '$lib/api';
-  import { s3ConsoleUrl } from '$lib/util/links';
-  import { resumeCommand } from '$lib/runs/resume';
-  import { runTabHref } from '$lib/runs/runNav';
-  import { fmtRelativeMicros, plural } from '$lib/util/format';
-  import { CopiedFlag } from '$lib/util/clipboard.svelte';
+  import type { RunDetail } from '#lib/api/index.js';
+  import { s3ConsoleUrl } from '#lib/util/links.js';
+  import { resumeCommand } from '#lib/runs/resume.js';
+  import { runTabHref } from '#lib/runs/runNav.js';
+  import { fmtRelativeMicros, plural } from '#lib/util/format.js';
+  import { CopiedFlag } from '#lib/util/clipboard.svelte.js';
   import { imageMapRows, submitImageRows } from './runFacts';
-  import S3Location from '$lib/data/S3Location.svelte';
+  import S3Location from '#lib/data/S3Location.svelte';
 
   // Where the run writes and what it read: its output prefix, the Nextflow session and resume
   // command, and its input URIs.
