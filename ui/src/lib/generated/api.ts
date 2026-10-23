@@ -29,8 +29,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /data-sources` — where inputs can be picked from in a project (the default one unless
-     *     `project` names another), its bucket first. */
+    /**
+     * `GET /data-sources` — where inputs can be picked from in a project (the default one unless
+     *     `project` names another), its bucket first.
+     */
     get: operations['list_sources'];
     put?: never;
     post?: never;
@@ -66,10 +68,12 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** `POST /data/find` — files under a folder, at any depth, whose name contains `q`. `truncated`
+    /**
+     * `POST /data/find` — files under a folder, at any depth, whose name contains `q`. `truncated`
      *     when a match was left out: more than `limit` matched, or the search stopped at its scan budget
      *     before reading the whole folder. The query is in the body, so no folder name or search text
-     *     reaches a request URL. */
+     *     reaches a request URL.
+     */
     post: operations['find_files'];
     delete?: never;
     options?: never;
@@ -86,9 +90,11 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** `POST /data/head` — whether each pasted or imported path exists (and its size). A URI no data
+    /**
+     * `POST /data/head` — whether each pasted or imported path exists (and its size). A URI no data
      *     source shows ([`DataSource::shows`]: outside every source, a folder, or under a prefix biffix
-     *     hides) is reported as unknown, not absent: biffix cannot say, a run's role might. */
+     *     hides) is reported as unknown, not absent: biffix cannot say, a run's role might.
+     */
     post: operations['head_objects'];
     delete?: never;
     options?: never;
@@ -105,8 +111,10 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** `POST /data/list` — one folder of a data source: its sub-folders and files, a page at a time.
-     *     The query is in the body, so no folder name reaches a request URL. */
+    /**
+     * `POST /data/list` — one folder of a data source: its sub-folders and files, a page at a time.
+     *     The query is in the body, so no folder name reaches a request URL.
+     */
     post: operations['list_folder'];
     delete?: never;
     options?: never;
@@ -123,9 +131,11 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** `POST /data/preview` — the start of a file as text (gzip/bgzip decompressed), read by the
+    /**
+     * `POST /data/preview` — the start of a file as text (gzip/bgzip decompressed), read by the
      *     backend; a binary file comes back as `kind: binary`. The file is named in the body, so no file
-     *     name reaches a request URL. */
+     *     name reaches a request URL.
+     */
     post: operations['preview_file'];
     delete?: never;
     options?: never;
@@ -142,8 +152,10 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** `POST /data/uploads` — start an upload; the response says how to split the file. 409 when an
-     *     object already exists at the key: uploads never replace one. */
+    /**
+     * `POST /data/uploads` — start an upload; the response says how to split the file. 409 when an
+     *     object already exists at the key: uploads never replace one.
+     */
     post: operations['start_upload'];
     delete?: never;
     options?: never;
@@ -160,8 +172,10 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** `POST /data/uploads/{upload_id}/abort` — cancel an upload; S3 deletes its parts. The key is in
-     *     the body, so no file name reaches a request URL. */
+    /**
+     * `POST /data/uploads/{upload_id}/abort` — cancel an upload; S3 deletes its parts. The key is in
+     *     the body, so no file name reaches a request URL.
+     */
     post: operations['abort_upload'];
     delete?: never;
     options?: never;
@@ -178,9 +192,11 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** `POST /data/uploads/{upload_id}/complete` — assemble the file from its parts (every part, in
+    /**
+     * `POST /data/uploads/{upload_id}/complete` — assemble the file from its parts (every part, in
      *     order, with the ETag S3 returned for it). 409 when an object reached the key since the upload
-     *     started: nothing is replaced, and the upload is cancelled (upload the file under another name). */
+     *     started: nothing is replaced, and the upload is cancelled (upload the file under another name).
+     */
     post: operations['complete_upload'];
     delete?: never;
     options?: never;
@@ -214,8 +230,10 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** `POST /data/uploads/{upload_id}/status` — the parts already uploaded, so a reload can resume.
-     *     The key is in the body, so no file name reaches a request URL. */
+    /**
+     * `POST /data/uploads/{upload_id}/status` — the parts already uploaded, so a reload can resume.
+     *     The key is in the body, so no file name reaches a request URL.
+     */
     post: operations['upload_status'];
     delete?: never;
     options?: never;
@@ -232,8 +250,10 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** `POST /data/view-url` — a short-lived URL showing an image, PDF or HTML file inline, its
-     *     content type set from its name. 409 for a file with no such viewer. */
+    /**
+     * `POST /data/view-url` — a short-lived URL showing an image, PDF or HTML file inline, its
+     *     content type set from its name. 409 for a file with no such viewer.
+     */
     post: operations['view_file_url'];
     delete?: never;
     options?: never;
@@ -282,10 +302,12 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** List experiments, newest activity first: the later of the newest run's submit and the
+    /**
+     * List experiments, newest activity first: the later of the newest run's submit and the
      *     experiment's creation ([`ExperimentRecord::activity_micros`]), ties by id. `?mine=true` keeps
      *     the caller's: those they created or submitted a run into. Each carries whether it is the
-     *     caller's (`mine`) and how many of the caller's runs in it need their attention. */
+     *     caller's (`mine`) and how many of the caller's runs in it need their attention.
+     */
     get: operations['list_experiments'];
     put?: never;
     /** Create an experiment in a project (one a registered workflow is in). */
@@ -303,11 +325,13 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** One experiment with its newest runs (newest first, at most [`MAX_DETAIL_RUNS`]), the samples
+    /**
+     * One experiment with its newest runs (newest first, at most [`MAX_DETAIL_RUNS`]), the samples
      *     across those runs, and the summed cost of all of its runs. A bounded read whatever the
      *     experiment's size: its run count and newest run (one aggregate), one page of runs (no count),
      *     that page's per-run costs (one grouped read, as the run list's), their sample facts, and one
-     *     cost aggregate. */
+     *     cost aggregate.
+     */
     get: operations['get_experiment'];
     /** Rename, describe, archive or restore an experiment (a partial update). */
     put: operations['update_experiment'];
@@ -385,14 +409,16 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Dismiss some of the caller's failed runs from their *Needs attention*: `run_ids` (1 to 500,
+    /**
+     * Dismiss some of the caller's failed runs from their *Needs attention*: `run_ids` (1 to 500,
      *     else 400), exactly the runs the caller was shown (one row, or the rows on screen), never an
      *     "everything up to now" cutoff that could take one they have not seen. Runs that are not the
      *     caller's, or did not fail, are ignored. Idempotent; durable and per user
      *     (`notification_dismissals`, recorded `via: dismiss`). Reading a notification is separate: this
      *     neither reads it nor is undone by reading it. Returns how many still need attention; once the
      *     dismissal is recorded it is a 200 even if that count cannot be read (`attention` is then
-     *     absent), so a client never shows a recorded dismissal as refused. */
+     *     absent), so a client never shows a recorded dismissal as refused.
+     */
     post: operations['dismiss_attention'];
     delete?: never;
     options?: never;
@@ -407,9 +433,11 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** The caller's newest notifications (their runs that ended, newest first, at most `limit`:
+    /**
+     * The caller's newest notifications (their runs that ended, newest first, at most `limit`:
      *     default 20, clamped to 1..=100), each with whether they have read it, and how many of all theirs
-     *     are unread. */
+     *     are unread.
+     */
     get: operations['list_notifications'];
     put?: never;
     post?: never;
@@ -428,9 +456,11 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Mark some of the caller's notifications read: `ids`, every notification of `run_ids`, or
+    /**
+     * Mark some of the caller's notifications read: `ids`, every notification of `run_ids`, or
      *     `all: true` (exactly one, and at most 500 ids, else 400). Ids and runs that are not the
-     *     caller's are ignored. Returns the caller's unread counts after. */
+     *     caller's are ignored. Returns the caller's unread counts after.
+     */
     post: operations['read_notifications'];
     delete?: never;
     options?: never;
@@ -447,10 +477,12 @@ export interface paths {
     };
     /** Read the caller's preferences (the defaults when they have none stored). */
     get: operations['get_prefs'];
-    /** Update the caller's preferences. A partial update: a field the body leaves out keeps its
+    /**
+     * Update the caller's preferences. A partial update: a field the body leaves out keeps its
      *     stored value. `pin` and `unpin` change one (trimmed) key against the stored list atomically; at
      *     most one of them per body (400), and a pin past the cap is a 400 naming it. An unknown `view`
-     *     is a body the API cannot read (422). */
+     *     is a body the API cannot read (422).
+     */
     put: operations['put_prefs'];
     post?: never;
     delete?: never;
@@ -466,8 +498,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /projects` — the deploy's projects: where a workflow version can be registered (each has
-     *     its own bucket, roles and data sources), the default first among equals. */
+    /**
+     * `GET /projects` — the deploy's projects: where a workflow version can be registered (each has
+     *     its own bucket, roles and data sources), the default first among equals.
+     */
     get: operations['list_projects'];
     put?: never;
     post?: never;
@@ -501,8 +535,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /references` — reference bundles, by id; `kind` and `keys` narrow them to the ones a form
-     *     can use. */
+    /**
+     * `GET /references` — reference bundles, by id; `kind` and `keys` narrow them to the ones a form
+     *     can use.
+     */
     get: operations['list_references'];
     put?: never;
     /** `POST /references` — add a bundle (admin). 409 when the id is taken. */
@@ -521,12 +557,16 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** `PUT /references/{id}` — replace a bundle's contents (admin). Runs already launched keep the
-     *     URIs they used (their anchors record them). The bundle keeps who created it and when. */
+    /**
+     * `PUT /references/{id}` — replace a bundle's contents (admin). Runs already launched keep the
+     *     URIs they used (their anchors record them). The bundle keeps who created it and when.
+     */
     put: operations['update_reference'];
     post?: never;
-    /** `DELETE /references/{id}` — remove a bundle (admin). Forms stop offering it; runs launched with
-     *     it keep their record. */
+    /**
+     * `DELETE /references/{id}` — remove a bundle (admin). Forms stop offering it; runs launched with
+     *     it keep their record.
+     */
     delete: operations['delete_reference'];
     options?: never;
     head?: never;
@@ -564,9 +604,11 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** `POST /runs/query` — `GET /runs` with its parameters in a JSON body, the form the UI uses: the
+    /**
+     * `POST /runs/query` — `GET /runs` with its parameters in a JSON body, the form the UI uses: the
      *     search text can be a run name, which can name a sample, and a body is not logged the way a
-     *     request URL is. Same answers. */
+     *     request URL is. Same answers.
+     */
     post: operations['query_runs'];
     delete?: never;
     options?: never;
@@ -600,10 +642,12 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** `POST /runs/{run_id}/attempts/query` — every AWS Batch attempt of one task (e.g. a
+    /**
+     * `POST /runs/{run_id}/attempts/query` — every AWS Batch attempt of one task (e.g. a
      *     spot-reclaimed attempt and its successful retry), each with its own exit code, reason, log
      *     stream and host. Empty for a task that never became a Batch job (a local rule, a cache hit). The
-     *     task key rides in a JSON body: it names a sample, and must not reach a request URL. */
+     *     task key rides in a JSON body: it names a sample, and must not reach a request URL.
+     */
     post: operations['query_task_attempts'];
     delete?: never;
     options?: never;
@@ -655,10 +699,12 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /runs/{run_id}/coordinator-logs` — a page of the run's coordinator (workflow driver) log,
+    /**
+     * `GET /runs/{run_id}/coordinator-logs` — a page of the run's coordinator (workflow driver) log,
      *     served through biffix like task logs. Where a run that failed before scheduling any task (clone,
      *     staging, or DAG errors) explains itself. Empty page when no stream was recorded: the coordinator
-     *     has not started, or the run predates coordinator log tracking. */
+     *     has not started, or the run predates coordinator log tracking.
+     */
     get: operations['coordinator_logs'];
     put?: never;
     post?: never;
@@ -677,10 +723,12 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Put a run in an experiment of its project, move it to another, or take it out (`null`, or a
+    /**
+     * Put a run in an experiment of its project, move it to another, or take it out (`null`, or a
      *     blank id). The body must name `experiment_id` (a 400 otherwise, so a misspelled field is not
      *     read as "take it out"). Recorded as the run's `experiment_set` event; returns the run's summary
-     *     after. */
+     *     after.
+     */
     post: operations['set_run_experiment'];
     delete?: never;
     options?: never;
@@ -695,9 +743,11 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /runs/{run_id}/failure-summary` — why a failed run failed, in plain words: its first failed
+    /**
+     * `GET /runs/{run_id}/failure-summary` — why a failed run failed, in plain words: its first failed
      *     steps (earliest first), each with its cause, what to try, and the end of its log; or the workflow
-     *     engine's own failure when no step failed. Empty for a run that did not fail. */
+     *     engine's own failure when no step failed. Empty for a run that did not fail.
+     */
     get: operations['failure_summary'];
     put?: never;
     post?: never;
@@ -716,11 +766,13 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Rename a run, or clear its name (`null`, or a blank name) so readers show a derived one. Allowed
+    /**
+     * Rename a run, or clear its name (`null`, or a blank name) so readers show a derived one. Allowed
      *     to whoever may control the run, as for cancelling it or moving it between experiments
      *     (`LaunchWorkflow` on a run they can see). The body must name `run_name` (a 400 otherwise, so a
      *     misspelled field is not read as "clear"). Recorded as the run's `run_renamed` event, so the name
-     *     folds into the projection and a replay keeps it; returns the run's summary after. */
+     *     folds into the projection and a replay keeps it; returns the run's summary after.
+     */
     post: operations['rename_run'];
     delete?: never;
     options?: never;
@@ -737,12 +789,14 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** `POST /runs/{run_id}/outputs/query` — a page of the objects the run registered, ordered by S3
+    /**
+     * `POST /runs/{run_id}/outputs/query` — a page of the objects the run registered, ordered by S3
      *     URI. The filters are in a JSON body, so a task key, a directory or a cursor (all of which can
      *     name a sample or a file) never appears in a request URL. An output registered outside the
      *     output prefix is shown by its engine path or bucket key instead and is never under any
      *     `prefix`; the role `*` is every role, including ones this build does not know (the role is an
-     *     open enum). */
+     *     open enum).
+     */
     post: operations['query_outputs'];
     delete?: never;
     options?: never;
@@ -757,10 +811,12 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /runs/{run_id}/outputs/{output_id}` — one output of the run, shaped as in the list. A
+    /**
+     * `GET /runs/{run_id}/outputs/{output_id}` — one output of the run, shaped as in the list. A
      *     client that names an output by id (a link to an open file) can show it without paging through
      *     the whole list to find it. 404 when the id is not an output of this run; a file it reused from
-     *     a run it resumed counts as its output. */
+     *     a run it resumed counts as its output.
+     */
     get: operations['get_output'];
     put?: never;
     post?: never;
@@ -777,13 +833,15 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /runs/{run_id}/outputs/{output_id}/alignment-view` — presigned Range-readable links to a BAM
+    /**
+     * `GET /runs/{run_id}/outputs/{output_id}/alignment-view` — presigned Range-readable links to a BAM
      *     or CRAM output and its index, the reference to show it against (the run's recorded reference
      *     bundle, or `?reference=`; a bundle's `igv_genome` names a hosted genome instead), and where to
      *     open (the first contig with mapped reads, read from the file's own index and header; skipped
      *     with `?locus=false`, as a client renewing its links does). The links last an hour at most: ask
      *     again before `expires_at`, or when a read is refused. 409 when the output is not a BAM/CRAM or
-     *     has no index. */
+     *     has no index.
+     */
     get: operations['alignment_view'];
     put?: never;
     post?: never;
@@ -800,9 +858,11 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /runs/{run_id}/outputs/{output_id}/download` — a short-lived presigned URL that downloads
+    /**
+     * `GET /runs/{run_id}/outputs/{output_id}/download` — a short-lived presigned URL that downloads
      *     the object as an attachment. 404 when the id is not an output of this run; 403 when the output
-     *     is one biffix does not serve ([`checkable`]). */
+     *     is one biffix does not serve ([`checkable`]).
+     */
     get: operations['download_output'];
     put?: never;
     post?: never;
@@ -819,11 +879,13 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /runs/{run_id}/outputs/{output_id}/fastqc` — the pipeline's own FastQC result for an
+    /**
+     * `GET /runs/{run_id}/outputs/{output_id}/fastqc` — the pipeline's own FastQC result for an
      *     output, as data: the output's `_fastqc.zip` itself, the zip beside a `_fastqc.html`, or, for a
      *     FASTQ, the zip FastQC names after it (`S1_R1.fastq.gz` → `S1_R1_fastqc.zip`) among the run's
      *     registered outputs, when it is unambiguously that FASTQ's. 404 when there is none (the client
-     *     falls back to the HTML report); 422 when the zip is too large or not FastQC's. */
+     *     falls back to the HTML report); 422 when the zip is too large or not FastQC's.
+     */
     get: operations['output_fastqc'];
     put?: never;
     post?: never;
@@ -840,9 +902,11 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /runs/{run_id}/outputs/{output_id}/preview` — the start of an output as text, read by the
+    /**
+     * `GET /runs/{run_id}/outputs/{output_id}/preview` — the start of an output as text, read by the
      *     backend (so it works whatever the bucket's CORS). A gzip/bgzip file is decompressed; a binary
-     *     file comes back as `kind: binary` with no text. */
+     *     file comes back as `kind: binary` with no text.
+     */
     get: operations['preview_output'];
     put?: never;
     post?: never;
@@ -859,9 +923,11 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /runs/{run_id}/outputs/{output_id}/view-url` — a short-lived URL that shows an image, PDF
+    /**
+     * `GET /runs/{run_id}/outputs/{output_id}/view-url` — a short-lived URL that shows an image, PDF
      *     or HTML output inline. The content type is set from the file name, never from what S3 stored
-     *     (uploads are often `binary/octet-stream`). 409 for an output with no such viewer. */
+     *     (uploads are often `binary/octet-stream`). 409 for an output with no such viewer.
+     */
     get: operations['view_output_url'];
     put?: never;
     post?: never;
@@ -895,14 +961,16 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /runs/{run_id}/qc/fastqc-status` — each FastQC result's module statuses and basic
+    /**
+     * `GET /runs/{run_id}/qc/fastqc-status` — each FastQC result's module statuses and basic
      *     statistics as MultiQC recorded them, each attributed to the run's sample that owns it: for a
      *     pipeline that publishes MultiQC's output but not FastQC's own zips. Read from every FastQC table
      *     in `multiqc_data/` beside the report `/reports` lists with kind `multiqc` (one per FastQC
      *     section: `multiqc_fastqc.txt`, and `multiqc_fastqc_<anchor>.txt` for a section with an anchor
      *     or a repeated one), each result tagged with its section. 404 when the run has no MultiQC report,
      *     or the report no FastQC table: MultiQC wrote its data in another format (`data_format`, said in
-     *     the message), or as `multiqc_data.zip` (`--zip-data-dir`, not read), or ran no FastQC module. */
+     *     the message), or as `multiqc_data.zip` (`--zip-data-dir`, not read), or ran no FastQC module.
+     */
     get: operations['qc_fastqc_status'];
     put?: never;
     post?: never;
@@ -919,10 +987,12 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /runs/{run_id}/qc/general-stats` — the MultiQC report's General Statistics as data: the
+    /**
+     * `GET /runs/{run_id}/qc/general-stats` — the MultiQC report's General Statistics as data: the
      *     values from `multiqc_data/multiqc_general_stats.txt` beside the report, with the columns'
      *     metadata from `multiqc_data/multiqc_data.json` (plain column names when that is missing). The
-     *     report is the one `/reports` lists with kind `multiqc`. */
+     *     report is the one `/reports` lists with kind `multiqc`.
+     */
     get: operations['qc_general_stats'];
     put?: never;
     post?: never;
@@ -956,8 +1026,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /runs/{run_id}/samples` — the run's samples × steps (the Lab view's per-sample progress):
-     *     each sample's state and its cell per step, the whole-study steps, in pipeline order. */
+    /**
+     * `GET /runs/{run_id}/samples` — the run's samples × steps (the Lab view's per-sample progress):
+     *     each sample's state and its cell per step, the whole-study steps, in pipeline order.
+     */
     get: operations['run_samples'];
     put?: never;
     post?: never;
@@ -976,11 +1048,13 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** `POST /runs/{run_id}/task-logs/query` — a page of one task's CloudWatch log stream, served
+    /**
+     * `POST /runs/{run_id}/task-logs/query` — a page of one task's CloudWatch log stream, served
      *     through biffix's own auth (ViewRuns) so a scientist needs a biffix login, not an AWS account, to
      *     read why their job failed. The stream is derived server-side from the authorized task; the client
      *     supplies only the run id, task key, and an opaque paging cursor. They ride in a JSON body: the
-     *     task key names a sample, and a body is not logged the way a request URL is. */
+     *     task key names a sample, and a body is not logged the way a request URL is.
+     */
     post: operations['query_task_logs'];
     delete?: never;
     options?: never;
@@ -997,10 +1071,12 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** `POST /runs/{run_id}/tasks/query` — one page of the run's tasks, with its filters in a JSON
+    /**
+     * `POST /runs/{run_id}/tasks/query` — one page of the run's tasks, with its filters in a JSON
      *     body: a search term or a task key can name a sample, and a body is not logged the way a request
      *     URL is. 400 for an unknown `state`, `sort` or `order` (checked only once the caller may see the
-     *     run, so a bad parameter never tells an unauthorized caller anything). */
+     *     run, so a bad parameter never tells an unauthorized caller anything).
+     */
     post: operations['query_tasks'];
     delete?: never;
     options?: never;
@@ -1058,8 +1134,10 @@ export interface paths {
     /** List the operational-alert recipients. Developer-gated, like editing settings. */
     get: operations['get_alert_recipients'];
     put?: never;
-    /** Add an alert recipient. AWS emails it a confirmation link; it receives alerts once confirmed.
-     *     Adding an address that is already subscribed is a no-op. */
+    /**
+     * Add an alert recipient. AWS emails it a confirmation link; it receives alerts once confirmed.
+     *     Adding an address that is already subscribed is a no-op.
+     */
     post: operations['add_alert_recipient'];
     delete?: never;
     options?: never;
@@ -1076,9 +1154,11 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Remove a confirmed alert recipient. A pending one cannot be removed (SNS has no id for it until
+    /**
+     * Remove a confirmed alert recipient. A pending one cannot be removed (SNS has no id for it until
      *     it is confirmed); it lapses on its own after 3 days unconfirmed. The address is in the body,
-     *     keeping it out of the request URL, where access logs keep it. */
+     *     keeping it out of the request URL, where access logs keep it.
+     */
     post: operations['remove_alert_recipient'];
     delete?: never;
     options?: never;
@@ -1093,9 +1173,11 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** The service-status page data. Reads ONLY Postgres: a live `SELECT 1` for the database plus the
+    /**
+     * The service-status page data. Reads ONLY Postgres: a live `SELECT 1` for the database plus the
      *     latest probe sample per component (the reconcile lambda does the AWS calls and writes samples).
-     *     A stale sample is escalated — the probe not reporting is itself a fault. */
+     *     A stale sample is escalated — the probe not reporting is itself a fault.
+     */
     get: operations['status'];
     put?: never;
     post?: never;
@@ -1165,9 +1247,11 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** Hide a workflow from the Lab's pipeline cards, or show it again. Applies to every version of
+    /**
+     * Hide a workflow from the Lab's pipeline cards, or show it again. Applies to every version of
      *     the (project, name); the Expert list still shows a hidden one. Developer-gated, like
-     *     registering. The name travels in the body since it may contain `/`. */
+     *     registering. The name travels in the body since it may contain `/`.
+     */
     put: operations['put_workflow_listing'];
     post?: never;
     delete?: never;
@@ -1185,11 +1269,13 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Presign a PUT for staging a workflow-source tarball: an S3-staged source, which is how a
+    /**
+     * Presign a PUT for staging a workflow-source tarball: an S3-staged source, which is how a
      *     workflow in a private repository is registered. Developer-gated. The client PUTs the tarball to
      *     the returned URL, then calls `POST /workflows` with `source = {kind:s3, uri}`, which checks
      *     again that the URI stays inside the staging area of the version's project bucket. `project`
-     *     picks the bucket; one this deploy does not configure is a 400. */
+     *     picks the bucket; one this deploy does not configure is a 400.
+     */
     post: operations['source_upload'];
     delete?: never;
     options?: never;
@@ -1204,9 +1290,11 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Fetch one registered version by its frozen id, including its `form_schema`. Viewer-gated, like
+    /**
+     * Fetch one registered version by its frozen id, including its `form_schema`. Viewer-gated, like
      *     the other reads. The list view omits `form_schema`, so the CLI needs this to
-     *     validate submit params against the registered schema. */
+     *     validate submit params against the registered schema.
+     */
     get: operations['get_workflow'];
     put?: never;
     post?: never;
@@ -1223,11 +1311,13 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** `GET /workflows/{id}/estimate?samples=N` — what a launch of this workflow with N samples may
+    /**
+     * `GET /workflows/{id}/estimate?samples=N` — what a launch of this workflow with N samples may
      *     cost and how long it may take, from the workflow's recent successful runs (any version, same
      *     project and name). No estimate until two such runs recorded a cost and a sample count. `typical`
      *     is one run of it, whatever its sample count (a running analysis's ETA, a catalog card's "usually
-     *     ~2 h"): from two successful runs. */
+     *     ~2 h"): from two successful runs.
+     */
     get: operations['estimate_workflow'];
     put?: never;
     post?: never;
@@ -1246,8 +1336,10 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Import a version's image again after its automatic imports failed. Developer-gated, like
-     *     registration. An image that is imported or importing is left as it is. */
+    /**
+     * Import a version's image again after its automatic imports failed. Developer-gated, like
+     *     registration. An image that is imported or importing is left as it is.
+     */
     post: operations['rebuild_image'];
     delete?: never;
     options?: never;
@@ -1263,10 +1355,12 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** Release a version, or (`released: false`) un-release it so it is a developer version again.
+    /**
+     * Release a version, or (`released: false`) un-release it so it is a developer version again.
      *     Developer-gated, like registering. Recorded with who and when, and kept: the response's
      *     `history` lists every change. Releasing a released version (or un-releasing a developer one)
-     *     changes nothing and records nothing. */
+     *     changes nothing and records nothing.
+     */
     put: operations['put_workflow_release'];
     post?: never;
     delete?: never;
@@ -1284,10 +1378,12 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Register a version again from what it recorded: on this deploy's engine runtime (or the exact
+    /**
+     * Register a version again from what it recorded: on this deploy's engine runtime (or the exact
      *     `engine_version` given), with its images pinned again, in its project (or the `project` given).
      *     Developer-gated, like registration. The same inputs as an existing build of the source are a 409
-     *     naming it; `dry_run` reports what would be registered and writes nothing. */
+     *     naming it; `dry_run` reports what would be registered and writes nothing.
+     */
     post: operations['reregister_workflow'];
     delete?: never;
     options?: never;
@@ -1304,9 +1400,11 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Build a version's coordinator variant again after its automatic builds failed (e.g. once a
+    /**
+     * Build a version's coordinator variant again after its automatic builds failed (e.g. once a
      *     transient upstream outage has passed). Developer-gated, like registration. A variant that is
-     *     ready or building is left as it is; the response is its state either way. */
+     *     ready or building is left as it is; the response is its state either way.
+     */
     post: operations['rebuild_runtime'];
     delete?: never;
     options?: never;
@@ -1328,44 +1426,58 @@ export interface components {
     AlertRecipientAddRequest: {
       email: string;
     };
-    /** @description `GET /settings/alerts` — the alert recipients. `configured` is false when the deploy has no
-     *     alerts topic. */
+    /**
+     * @description `GET /settings/alerts` — the alert recipients. `configured` is false when the deploy has no
+     *     alerts topic.
+     */
     AlertRecipientList: {
       configured: boolean;
       recipients: components['schemas']['AlertRecipient'][];
     };
-    /** @description `POST /settings/alerts/remove` — remove a recipient. The address travels in the body, not the
-     *     request URL, so access logs don't keep it. */
+    /**
+     * @description `POST /settings/alerts/remove` — remove a recipient. The address travels in the body, not the
+     *     request URL, so access logs don't keep it.
+     */
     AlertRecipientRemoveRequest: {
       email: string;
     };
-    /** @description What a genome browser needs to show one alignment output
+    /**
+     * @description What a genome browser needs to show one alignment output
      *     (`GET /runs/{run_id}/outputs/{output_id}/alignment-view`). Every URL is a presigned GET the
      *     browser reads directly with HTTP Range requests; they stop working at `expires_at` (or sooner,
      *     when the credentials that signed them end), so a client that stays open asks again before
-     *     then, and when a read is refused, with `?locus=false` (only the links change). */
+     *     then, and when a read is refused, with `?locus=false` (only the links change).
+     */
     AlignmentLinks: {
       alignment: components['schemas']['AlignmentTrack'];
-      /** @description Whether every bucket the URLs point into is known to allow the browser's cross-origin Range
+      /**
+       * @description Whether every bucket the URLs point into is known to allow the browser's cross-origin Range
        *     reads: `configured`, or `unknown` (the deploy has not recorded a CORS rule for one of them;
-       *     the reads may still work). Open. */
+       *     the reads may still work). Open.
+       */
       bucket_cors: string;
       /**
        * Format: double
        * @description Epoch seconds after which the URLs no longer work.
        */
       expires_at: number;
-      /** @description Where to open: the first contig with mapped reads, as `name:start-end` (1-based, inclusive),
+      /**
+       * @description Where to open: the first contig with mapped reads, as `name:start-end` (1-based, inclusive),
        *     when the file's index and its own header say. `None` ⇒ the browser's own default (and
-       *     always with `?locus=false`). */
+       *     always with `?locus=false`).
+       */
       locus?: string | null;
-      /** @description Why something is missing or was left out (an annotation too large to load unindexed, a
-       *     reference file outside every data source, …), for the viewer to show. */
+      /**
+       * @description Why something is missing or was left out (an annotation too large to load unindexed, a
+       *     reference file outside every data source, …), for the viewer to show.
+       */
       notes?: string[];
       reference?: components['schemas']['AlignmentReference'] | null;
     };
-    /** @description The reference an alignment is shown against: a bundle's own FASTA (and annotation), or a genome
-     *     the genome browser hosts (the bundle's `igv_genome`), which sends the browser to that host. */
+    /**
+     * @description The reference an alignment is shown against: a bundle's own FASTA (and annotation), or a genome
+     *     the genome browser hosts (the bundle's `igv_genome`), which sends the browser to that host.
+     */
     AlignmentReference:
       | {
           annotation?: components['schemas']['AnnotationTrack'] | null;
@@ -1412,26 +1524,38 @@ export interface components {
        */
       attention?: number | null;
     };
-    /** @description `POST /me/attention/dismiss` — take some of the caller's failed runs out of their *Needs
+    /**
+     * @description `POST /me/attention/dismiss` — take some of the caller's failed runs out of their *Needs
      *     attention* (one row's Dismiss, or *Dismiss all* naming exactly the runs it shows). Opening a run
-     *     or reading its notification does not; this does, as trying the run again does. */
+     *     or reading its notification does not; this does, as trying the run again does.
+     */
     AttentionDismissRequest: {
-      /** @description The runs to dismiss (1 to 500). A run that is not the caller's, or does not need their
-       *     attention, is ignored. */
+      /**
+       * @description The runs to dismiss (1 to 500). A run that is not the caller's, or does not need their
+       *     attention, is ignored.
+       */
       run_ids: string[];
     };
-    /** @description A version's entry in the Lab's pipeline catalog (`catalog:` in `biffix.yaml`, frozen with the
-     *     form). */
+    /**
+     * @description A version's entry in the Lab's pipeline catalog (`catalog:` in `biffix.yaml`, frozen with the
+     *     form).
+     */
     CatalogEntry: {
       contact?: components['schemas']['SupportContact'] | null;
-      /** @description The card's description: the catalog's, else the form's, else the About page's first
-       *     sentence. */
+      /**
+       * @description The card's description: the catalog's, else the form's, else the About page's first
+       *     sentence.
+       */
       description?: string | null;
-      /** @description What a run takes: the launch form's main inputs in plain words (its samplesheet and file
-       *     inputs a launch must give, and its reference dropdown), in form order. */
+      /**
+       * @description What a run takes: the launch form's main inputs in plain words (its samplesheet and file
+       *     inputs a launch must give, and its reference dropdown), in form order.
+       */
       inputs?: string[];
-      /** @description What a run gives you: the names of the key results the version declares (`reports:` in
-       *     `biffix.yaml`), in declaration order, each once. */
+      /**
+       * @description What a run gives you: the names of the key results the version declares (`reports:` in
+       *     `biffix.yaml`), in declaration order, each once.
+       */
       results?: string[];
       /** @description Tags to filter on (normalized at registration: trimmed, unique ignoring case). */
       tags?: string[];
@@ -1490,17 +1614,23 @@ export interface components {
       size: number;
       /** @description `s3://bucket/key`, as a param value. */
       uri: string;
-      /** @description How the browser can show it, from its name (`table`, `text`, `image`, `pdf`, `html`), as for
-       *     run outputs; absent when it can only be downloaded. */
+      /**
+       * @description How the browser can show it, from its name (`table`, `text`, `image`, `pdf`, `html`), as for
+       *     run outputs; absent when it can only be downloaded.
+       */
       viewer?: string | null;
     };
-    /** @description `POST /data/preview`, `/data/view-url` and `/data/download-url` request: one file of a source,
-     *     named in the body rather than the request URL. */
+    /**
+     * @description `POST /data/preview`, `/data/view-url` and `/data/download-url` request: one file of a source,
+     *     named in the body rather than the request URL.
+     */
     DataFileRequest: {
       /** @description The file, relative to the source root. */
       path: string;
-      /** @description The project whose sources to use (its bucket is the `project` source); absent ⇒ the
-       *     deploy's default project. A deploy of one project uses it whatever this names. */
+      /**
+       * @description The project whose sources to use (its bucket is the `project` source); absent ⇒ the
+       *     deploy's default project. A deploy of one project uses it whatever this names.
+       */
       project?: string | null;
       /** @description Data source id. */
       source: string;
@@ -1511,8 +1641,10 @@ export interface components {
       limit?: number | null;
       /** @description The folder to search under. */
       path?: string | null;
-      /** @description The project whose sources to use (its bucket is the `project` source); absent ⇒ the
-       *     deploy's default project. A deploy of one project uses it whatever this names. */
+      /**
+       * @description The project whose sources to use (its bucket is the `project` source); absent ⇒ the
+       *     deploy's default project. A deploy of one project uses it whatever this names.
+       */
       project?: string | null;
       /** @description A fragment of the file name (case-insensitive). */
       q: string;
@@ -1523,8 +1655,10 @@ export interface components {
     DataFindResult: {
       files: components['schemas']['DataFile'][];
       source: string;
-      /** @description A match may have been left out: more files matched than the limit, or the search stopped
-       *     at its scan budget before reading the whole folder. */
+      /**
+       * @description A match may have been left out: more files matched than the limit, or the search stopped
+       *     at its scan budget before reading the whole folder.
+       */
       truncated: boolean;
     };
     /** @description A sub-folder in a listing. */
@@ -1546,8 +1680,10 @@ export interface components {
     };
     /** @description One looked-up object. */
     DataHead: {
-      /** @description `true` exists; `false` absent; absent when the URI is outside every data source (biffix
-       *     cannot see it, but a run's role might). */
+      /**
+       * @description `true` exists; `false` absent; absent when the URI is outside every data source (biffix
+       *     cannot see it, but a run's role might).
+       */
       exists?: boolean | null;
       /** Format: int64 */
       size?: number | null;
@@ -1559,39 +1695,51 @@ export interface components {
     };
     /** @description `POST /data/head` request: which objects to look up. */
     DataHeadRequest: {
-      /** @description The project whose sources to use (its bucket is the `project` source); absent ⇒ the
-       *     deploy's default project. A deploy of one project uses it whatever this names. */
+      /**
+       * @description The project whose sources to use (its bucket is the `project` source); absent ⇒ the
+       *     deploy's default project. A deploy of one project uses it whatever this names.
+       */
       project?: string | null;
       /** @description `s3://` URIs; at most 200. */
       uris: string[];
     };
-    /** @description `POST /data/list` request: in a body, so folder names (which can name samples) never reach a
-     *     request URL or an access log. */
+    /**
+     * @description `POST /data/list` request: in a body, so folder names (which can name samples) never reach a
+     *     request URL or an access log.
+     */
     DataListRequest: {
       /** @description Cursor from a prior page. */
       cursor?: string | null;
       /** @description The folder, relative to the source root. */
       path?: string | null;
-      /** @description The project whose sources to use (its bucket is the `project` source); absent ⇒ the
-       *     deploy's default project. A deploy of one project uses it whatever this names. */
+      /**
+       * @description The project whose sources to use (its bucket is the `project` source); absent ⇒ the
+       *     deploy's default project. A deploy of one project uses it whatever this names.
+       */
       project?: string | null;
       /** @description Data source id. */
       source: string;
       /** @description Only names in the folder that start with this. */
       starts_with?: string | null;
     };
-    /** @description A place a run's inputs can come from: the project's own bucket, or an S3 location an admin
-     *     registered in the deploy config (a sequencing core's drop folder, a reference library). */
+    /**
+     * @description A place a run's inputs can come from: the project's own bucket, or an S3 location an admin
+     *     registered in the deploy config (a sequencing core's drop folder, a reference library).
+     */
     DataSource: {
-      /** @description Paths under a `hidden_prefixes` entry that are browsable after all (a project's run
-       *     folders, `biffix/runs/`). */
+      /**
+       * @description Paths under a `hidden_prefixes` entry that are browsable after all (a project's run
+       *     folders, `biffix/runs/`).
+       */
       browsable_exceptions?: string[];
       description?: string | null;
-      /** @description Paths (relative to the root) the Data page hides: a folder or file whose path starts with
+      /**
+       * @description Paths (relative to the root) the Data page hides: a folder or file whose path starts with
        *     one of these cannot be listed, previewed or downloaded through the source, unless its path
        *     also starts with one of `browsable_exceptions`. The server's own rule, so a client can tell
        *     whether a link into the source would open rather than copy it. Empty (absent) when the
-       *     source hides nothing. */
+       *     source hides nothing.
+       */
       hidden_prefixes?: string[];
       /** @description Stable id (`project` for the project bucket). */
       id: string;
@@ -1601,14 +1749,18 @@ export interface components {
       name: string;
       /** @description Its root as `s3://bucket/prefix/`. */
       uri: string;
-      /** @description Files can be uploaded here: the project bucket, when the deploy has enabled browser uploads
-       *     to it (its CORS rule is in place). */
+      /**
+       * @description Files can be uploaded here: the project bucket, when the deploy has enabled browser uploads
+       *     to it (its CORS rule is in place).
+       */
       writable: boolean;
     };
-    /** @description `GET /engines` — an engine biffix runs and the releases a workflow version may pin as its
+    /**
+     * @description `GET /engines` — an engine biffix runs and the releases a workflow version may pin as its
      *     `engine_version`: an exact release from `min_version` (inclusive) to `below_version`
      *     (exclusive), written the way the engine writes its versions — and, when `releases` is given,
-     *     one of those (the only releases biffix can build; Nextflow's are pinned by sha256). */
+     *     one of those (the only releases biffix can build; Nextflow's are pinned by sha256).
+     */
     EngineSupport: {
       below_version: string;
       engine: string;
@@ -1637,9 +1789,11 @@ export interface components {
        * @description When its newest run was submitted (epoch seconds).
        */
       last_run_at?: number | null;
-      /** @description Whether it is the caller's: they created it, or submitted a run into it (what `?mine=true`
+      /**
+       * @description Whether it is the caller's: they created it, or submitted a run into it (what `?mine=true`
        *     keeps). Per caller, so a list of everyone's can be split into Mine and All without a second
-       *     read. */
+       *     read.
+       */
       mine?: boolean;
       name: string;
       /**
@@ -1657,19 +1811,25 @@ export interface components {
        */
       run_count: number;
     };
-    /** @description `POST /experiments` — create one. The name is trimmed, 1..=200 characters, unique (ignoring
-     *     case) among the project's experiments that are not archived. */
+    /**
+     * @description `POST /experiments` — create one. The name is trimmed, 1..=200 characters, unique (ignoring
+     *     case) among the project's experiments that are not archived.
+     */
     ExperimentCreateRequest: {
       description?: string | null;
       name: string;
       project: string;
     };
-    /** @description `GET /experiments/{id}` — the experiment, its newest runs (newest first, at most 200), the
-     *     samples across those runs and one total cost over all of its runs. */
+    /**
+     * @description `GET /experiments/{id}` — the experiment, its newest runs (newest first, at most 200), the
+     *     samples across those runs and one total cost over all of its runs.
+     */
     ExperimentDetail: {
       experiment: components['schemas']['Experiment'];
-      /** @description Its newest runs, newest first: all of them up to 200, else the 200 newest (see
-       *     `runs_total`; the run list's `?experiment=` pages through every one). */
+      /**
+       * @description Its newest runs, newest first: all of them up to 200, else the 200 newest (see
+       *     `runs_total`; the run list's `?experiment=` pages through every one).
+       */
       runs: components['schemas']['RunSummary'][];
       /**
        * Format: int64
@@ -1685,25 +1845,31 @@ export interface components {
        */
       total_cost_usd?: number | null;
     };
-    /** @description `GET /experiments` — newest activity first: an experiment's activity is the later of its newest
+    /**
+     * @description `GET /experiments` — newest activity first: an experiment's activity is the later of its newest
      *     run's submit and its own creation (so a new experiment filled with older runs sorts as new), ties
      *     broken by id. `?project=` scopes to one project; `?archived=true` includes archived ones;
      *     `?mine=true` keeps only the caller's: those they created or submitted a run into (a run in it
-     *     whose submitter is them, as the run list's `?mine=true` reads a run's submitter). */
+     *     whose submitter is them, as the run list's `?mine=true` reads a run's submitter).
+     */
     ExperimentList: {
       experiments: components['schemas']['Experiment'][];
     };
-    /** @description One sample across an experiment's runs: its state in each run that has it, by run id. A state is
+    /**
+     * @description One sample across an experiment's runs: its state in each run that has it, by run id. A state is
      *     the samples grid's row state for that sample in that run: `waiting`, `running`, `done`, `failed`
-     *     or `stopped` (an open set: a client shows one it does not know as is). */
+     *     or `stopped` (an open set: a client shows one it does not know as is).
+     */
     ExperimentSample: {
       by_run: {
         [key: string]: string;
       };
       id: string;
     };
-    /** @description `PUT /experiments/{id}` — a partial update: an absent field keeps its value; `description:
-     *     null` (or blank) clears it; `archived` archives (`true`) or restores (`false`). */
+    /**
+     * @description `PUT /experiments/{id}` — a partial update: an absent field keeps its value; `description:
+     *     null` (or blank) clears it; `archived` archives (`true`) or restores (`false`).
+     */
     ExperimentUpdateRequest: {
       archived?: boolean | null;
       description?: string | null;
@@ -1719,10 +1885,12 @@ export interface components {
       attempts: number;
       /** @description The AWS Batch job of the failed task's last attempt (for a support report). */
       batch_job_id?: string | null;
-      /** @description `could_not_start`, `out_of_memory`, `spot_reclaimed`, `host_lost`, `timed_out`,
+      /**
+       * @description `could_not_start`, `out_of_memory`, `spot_reclaimed`, `host_lost`, `timed_out`,
        *     `missing_input`, `bad_input`, `reference_mismatch`, `no_space`, `access_denied`,
        *     `missing_output`, `step_error`, `engine_error`, `launch_failed` or `unknown` (open: a reader
-       *     treats a value it does not know as unknown). */
+       *     treats a value it does not know as unknown).
+       */
       cause: string;
       /**
        * Format: int64
@@ -1735,23 +1903,29 @@ export interface components {
       log_tail: string[];
       /** @description Completes "`<step>` failed: …". */
       message: string;
-      /** @description AWS's own reason its last attempt stopped, when it gave one (e.g. why a container could not
+      /**
+       * @description AWS's own reason its last attempt stopped, when it gave one (e.g. why a container could not
        *     start — there is no log then); or, when the workflow engine failed a step whose job
-       *     succeeded, the engine's reason. */
+       *     succeeded, the engine's reason.
+       */
       reason?: string | null;
       /** @description The sample the failed task belongs to (per-sample progress), when it is attributed to one. */
       sample?: string | null;
-      /** @description Set when the run failed before it launched: the control-plane stage it stopped at
+      /**
+       * @description Set when the run failed before it launched: the control-plane stage it stopped at
        *     (`image_preparation` or `launch`; open, so a reader treats any value as "before launch").
-       *     There is then no job or engine log to open. Absent for a failed step or the engine. */
+       *     There is then no job or engine log to open. Absent for a failed step or the engine.
+       */
       stage?: string | null;
       /** @description What to call it: the step (rule/process) name, else the task key, else `workflow engine`. */
       step: string;
       /** @description The failed task; absent for the engine's own failure. */
       task_key?: string | null;
-      /** @description What *Try again* should do for this cause: `resume` (pick up where it stopped), `rerun`
+      /**
+       * @description What *Try again* should do for this cause: `resume` (pick up where it stopped), `rerun`
        *     (start again with the same inputs), `fix_samples` or `fix_options` (retrying unchanged would
-       *     fail the same way: open the launch form pre-filled at samples / at options). Open. */
+       *     fail the same way: open the launch form pre-filled at samples / at options). Open.
+       */
       try_again: string;
     };
     /** @description Why a failed run failed, in plain words (`GET /runs/{id}/failure-summary`). */
@@ -1761,8 +1935,10 @@ export interface components {
        * @description How many steps failed (the items cover the first few).
        */
       failed_steps: number;
-      /** @description The first failed steps, earliest first; or the engine's own failure when no step failed.
-       *     Empty for a run that did not fail. */
+      /**
+       * @description The first failed steps, earliest first; or the engine's own failure when no step failed.
+       *     Empty for a run that did not fail.
+       */
       items: components['schemas']['FailureItem'][];
       support?: components['schemas']['SupportContact'] | null;
     };
@@ -1799,33 +1975,45 @@ export interface components {
     FastqcModule: {
       /** @description The table's column names (its last `#` header line, without the `#`). */
       columns: string[];
-      /** @description Header lines before the column names, as `[key, value]` (`["Total Deduplicated
-       *     Percentage", "94.08"]`). */
+      /**
+       * @description Header lines before the column names, as `[key, value]` (`["Total Deduplicated
+       *     Percentage", "94.08"]`).
+       */
       extra?: string[][];
       /** @description The module's name as FastQC writes it (`Per base sequence quality`). */
       name: string;
-      /** @description The table's rows, each cell as written (numbers are not parsed; a cell may be a range such
-       *     as `10-14`). */
+      /**
+       * @description The table's rows, each cell as written (numbers are not parsed; a cell may be a range such
+       *     as `10-14`).
+       */
       rows: string[][];
       /** @description `pass`, `warn` or `fail` as FastQC wrote it. Open: a later FastQC may write others. */
       status: string;
-      /** @description The module held more than the API returns (more rows, or more cells in a row, than its caps,
-       *     or the file's data ran past what one response carries); `rows` holds the first ones. */
+      /**
+       * @description The module held more than the API returns (more rows, or more cells in a row, than its caps,
+       *     or the file's data ran past what one response carries); `rows` holds the first ones.
+       */
       truncated?: boolean;
     };
     /** @description One FastQC module's status, without its data. */
     FastqcModuleStatus: {
       /** @description The module's name as FastQC writes it (`Per base sequence quality`). */
       name: string;
-      /** @description `pass`, `warn` or `fail`, in the case MultiQC wrote it (compare case-insensitively). A cell
-       *     that is none of these is no module. */
+      /**
+       * @description `pass`, `warn` or `fail`, in the case MultiQC wrote it (compare case-insensitively). A cell
+       *     that is none of these is no module.
+       */
       status: string;
     };
-    /** @description A FastQC result as data (`GET /runs/{run_id}/outputs/{output_id}/fastqc`): the modules of the
-     *     `fastqc_data.txt` inside the pipeline's own `_fastqc.zip`. */
+    /**
+     * @description A FastQC result as data (`GET /runs/{run_id}/outputs/{output_id}/fastqc`): the modules of the
+     *     `fastqc_data.txt` inside the pipeline's own `_fastqc.zip`.
+     */
     FastqcReport: {
-      /** @description The FastQC HTML report beside the zip, when the run registered one (open it with the
-       *     output's view URL). */
+      /**
+       * @description The FastQC HTML report beside the zip, when the run registered one (open it with the
+       *     output's view URL).
+       */
       html_output_id?: string | null;
       /** @description The modules in the file's order. */
       modules: components['schemas']['FastqcModule'][];
@@ -1834,19 +2022,25 @@ export interface components {
       /** @description The FastQC version that wrote it (`0.12.1`), from the file's first line. */
       version?: string | null;
     };
-    /** @description Per-sample FastQC statuses from the run's MultiQC data (`GET /runs/{run_id}/qc/fastqc-status`):
+    /**
+     * @description Per-sample FastQC statuses from the run's MultiQC data (`GET /runs/{run_id}/qc/fastqc-status`):
      *     for a pipeline that publishes MultiQC's output but not FastQC's own `_fastqc.zip`s, which the
-     *     FastQC viewer needs. Statuses and basic statistics only: MultiQC's data holds no FastQC plots. */
+     *     FastQC viewer needs. Statuses and basic statistics only: MultiQC's data holds no FastQC plots.
+     */
     FastqcStatusReport: {
       /** @description The MultiQC report whose data these are (an output of the run; open it for the plots). */
       report_output_id: string;
-      /** @description One per FastQC result MultiQC read (a paired-end sample has two), section by section (the
+      /**
+       * @description One per FastQC result MultiQC read (a paired-end sample has two), section by section (the
        *     unanchored `multiqc_fastqc.txt` first, then each `multiqc_fastqc_<anchor>.txt` by name);
        *     within a section the run's samples first in the run's sample order, then any result no
-       *     sample owns, each group by MultiQC name. */
+       *     sample owns, each group by MultiQC name.
+       */
       samples: components['schemas']['FastqcStatusSample'][];
-      /** @description Where the statuses were read from: `multiqc` (`multiqc_data/multiqc_fastqc.txt`). Open:
-       *     other sources may follow. */
+      /**
+       * @description Where the statuses were read from: `multiqc` (`multiqc_data/multiqc_fastqc.txt`). Open:
+       *     other sources may follow.
+       */
       source: string;
     };
     /** @description One FastQC result as MultiQC summarised it. */
@@ -1857,18 +2051,22 @@ export interface components {
       filename?: string | null;
       /** @description FastQC's modules in MultiQC's column order. */
       modules: components['schemas']['FastqcModuleStatus'][];
-      /** @description The run's sample this result belongs to: the longest sample id the MultiQC name starts with,
+      /**
+       * @description The run's sample this result belongs to: the longest sample id the MultiQC name starts with,
        *     followed by the end or a character that cannot continue an id (`S1_R1` is S1's, `S10_R1`
        *     S10's); when no id owns the MultiQC name (MultiQC renamed, prefixed or truncated it), the
        *     same rule on `filename`'s stem. Ids match literally: one holding `*` or `?` is no glob here.
        *     The rule cannot tell a read suffix from an id: with samples `S1` and `S1_1`, the result
-       *     `S1_1` (S1's read 1, as nf-core names reads) is `S1_1`'s. `None` when no sample owns it. */
+       *     `S1_1` (S1's read 1, as nf-core names reads) is `S1_1`'s. `None` when no sample owns it.
+       */
       sample?: string | null;
-      /** @description The MultiQC FastQC section this result is from, when the report has several (FastQC run on
+      /**
+       * @description The MultiQC FastQC section this result is from, when the report has several (FastQC run on
        *     raw and on trimmed reads): the anchor in its table's name, as written
        *     (`multiqc_fastqc_fastqc_trimmed.txt` → `fastqc_trimmed`; a repeated unanchored section's is
        *     `fastqc-1`). `None` for the unanchored `multiqc_fastqc.txt`. The same MultiQC name can be in
-       *     several sections. */
+       *     several sections.
+       */
       section?: string | null;
       stats: components['schemas']['FastqcBasicStats'];
     };
@@ -1881,15 +2079,19 @@ export interface components {
      * @enum {string}
      */
     HealthStatus: 'ok' | 'degraded' | 'down';
-    /** @description The EC2 host an attempt ran on, joined from the ECS host registry, plus whether it was spot or
+    /**
+     * @description The EC2 host an attempt ran on, joined from the ECS host registry, plus whether it was spot or
      *     on-demand. Every field is optional: a host registered before the registry existed has only the
-     *     queue-derived capacity, and a still-queued attempt has no host at all. */
+     *     queue-derived capacity, and a still-queued attempt has no host at all.
+     */
     Host: {
       availability_zone?: string | null;
       /** @description `spot`, `on_demand`, or another EC2 lifecycle (e.g. `capacity_block`). */
       capacity?: string | null;
-      /** @description Where `capacity` came from: `instance` (EC2 reported it for this host) or `queue` (the job
-       *     queue's configured capacity, used when the instance's own lifecycle is unknown). */
+      /**
+       * @description Where `capacity` came from: `instance` (EC2 reported it for this host) or `queue` (the job
+       *     queue's configured capacity, used when the instance's own lifecycle is unknown).
+       */
       capacity_source?: string | null;
       cpu_architecture?: string | null;
       ec2_instance_id?: string | null;
@@ -1916,18 +2118,24 @@ export interface components {
       /** @description `unbuilt` | `requested` | `running` | `succeeded` | `failed`. */
       state: string;
     };
-    /** @description An image to build from a recipe the workflow ships; its context is staged first
-     *     (`POST /workflows/source-upload` with `context_tree_hash`). */
+    /**
+     * @description An image to build from a recipe the workflow ships; its context is staged first
+     *     (`POST /workflows/source-upload` with `context_tree_hash`).
+     */
     ImageBuildRequest: {
       /** @description The architectures to build (`amd64`, `arm64`). */
       archs: string[];
-      /** @description The context directory in the workflow (`docker/align`; an empty string for the root). For
-       *     `pixi`, the environment's directory. */
+      /**
+       * @description The context directory in the workflow (`docker/align`; an empty string for the root). For
+       *     `pixi`, the environment's directory.
+       */
       context: string;
       /** @description The tarball's sha256 (hex). */
       context_sha256: string;
-      /** @description The staged context tarball: `s3://<project bucket>/workflow-sources/<source id>/contexts/
-       *     <tree_hash>.tar.gz`. */
+      /**
+       * @description The staged context tarball: `s3://<project bucket>/workflow-sources/<source id>/contexts/
+       *     <tree_hash>.tar.gz`.
+       */
       context_uri: string;
       /** @description The Dockerfile's path within the context (`dockerfile`). */
       dockerfile?: string | null;
@@ -1939,18 +2147,22 @@ export interface components {
     /** @description One named image in a registration. */
     ImageRequest: {
       build?: components['schemas']['ImageBuildRequest'] | null;
-      /** @description An image reference to import (`quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0`). Exactly
-       *     one of `ref` and `build`. */
+      /**
+       * @description An image reference to import (`quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0`). Exactly
+       *     one of `ref` and `build`.
+       */
       ref?: string | null;
       /** @description `own`: a Snakemake image that carries its own Snakemake. */
       runtime?: string | null;
     };
-    /** @description A batch of engine events. Batched because the plugin buffers, and one POST per event would put a
+    /**
+     * @description A batch of engine events. Batched because the plugin buffers, and one POST per event would put a
      *     network round trip in the engine's hot path.
      *
      *     Each element is an engine wire event, kept raw here and parsed one by one, so a kind this backend
      *     does not know yet (a newer plugin's) is stored unfolded instead of failing the whole batch: an
-     *     event's kind is an open enum. */
+     *     event's kind is an open enum.
+     */
     IngestRequest: {
       events: Record<string, never>[];
     };
@@ -1959,9 +2171,11 @@ export interface components {
       appended: number;
       /** @description Events accepted but already present, deduped on `dedup_key`. A plugin retry is a no-op. */
       duplicates: number;
-      /** @description Events of the batch the route refused one by one and did not append (a `task_submitted`
+      /**
+       * @description Events of the batch the route refused one by one and did not append (a `task_submitted`
        *     whose Batch job claim it could not verify), each with why. The rest of the batch landed; a
-       *     resend of a refused event is refused again, so a poster logs it and drops it. */
+       *     resend of a refused event is refused again, so a poster logs it and drops it.
+       */
       refused?: components['schemas']['RefusedEvent'][];
     };
     /** @description One job's estimated cost (an attempt, or the coordinator). */
@@ -1977,9 +2191,11 @@ export interface components {
        * @description The average compute price over the job, USD/hour.
        */
       price_per_hour: number;
-      /** @description Where the compute price came from: `on_demand` (list price), `spot_history` (EC2 spot price
+      /**
+       * @description Where the compute price came from: `on_demand` (list price), `spot_history` (EC2 spot price
        *     history for the host's type and AZ — what spot bills), `spot_at_on_demand` (spot, history
-       *     unavailable: an upper bound), `unknown_at_on_demand` (lifecycle unknown). */
+       *     unavailable: an upper bound), `unknown_at_on_demand` (lifecycle unknown).
+       */
       price_source: string;
       /**
        * Format: double
@@ -2014,18 +2230,24 @@ export interface components {
        */
       ts_ms: number;
     };
-    /** @description `POST /runs/{id}/task-logs/query`: a page of a task's log stream. Serves the logs *through*
+    /**
+     * @description `POST /runs/{id}/task-logs/query`: a page of a task's log stream. Serves the logs *through*
      *     biffix (gated by the caller's ViewRuns capability), so viewing a task's logs needs a biffix
      *     login, not an AWS console account. The stream name is derived server-side from the task the caller is
-     *     authorized to see — never supplied by the client. */
+     *     authorized to see — never supplied by the client.
+     */
     LogPage: {
       events: components['schemas']['LogLine'][];
-      /** @description The CloudWatch stream these events came from. `None` ⇒ the task has no stream yet (still
-       *     queued, a cache-hit, or a local rule that never became a Batch job) — render "no logs yet". */
+      /**
+       * @description The CloudWatch stream these events came from. `None` ⇒ the task has no stream yet (still
+       *     queued, a cache-hit, or a local rule that never became a Batch job) — render "no logs yet".
+       */
       log_stream?: string | null;
       next_backward_token?: string | null;
-      /** @description Opaque CloudWatch cursors — pass one back as `cursor` to page. `next_backward_token` walks
-       *     toward older events ("load earlier"); `next_forward_token` toward newer ("live tail"). */
+      /**
+       * @description Opaque CloudWatch cursors — pass one back as `cursor` to page. `next_backward_token` walks
+       *     toward older events ("load earlier"); `next_forward_token` toward newer ("live tail").
+       */
       next_forward_token?: string | null;
     };
     /** @description One Nextflow plugin a workflow declares, at an exact version. */
@@ -2048,8 +2270,10 @@ export interface components {
       id: string;
       /** @description `succeeded`, `failed` or `cancelled` (open: a reader shows an unknown kind plainly). */
       kind: string;
-      /** @description The caller has read it (opened the run, marked it read, or tried the run again). Read state is
-       *     the bell's alone: a failed run read still needs attention until it is dismissed. */
+      /**
+       * @description The caller has read it (opened the run, marked it read, or tried the run again). Read state is
+       *     the bell's alone: a failed run read still needs attention until it is dismissed.
+       */
       read: boolean;
       run_id: string;
       /** @description The run's name, when it has one. */
@@ -2069,12 +2293,16 @@ export interface components {
       submitted_at?: number | null;
       /** @description The workflow's name (the Lab view calls it the pipeline). */
       workflow_name?: string | null;
-      /** @description The pipeline's friendly title (its form's `title`), when its author gave one; with
-       *     `submitted_at` and the sample count it names a run that has no `run_name`. */
+      /**
+       * @description The pipeline's friendly title (its form's `title`), when its author gave one; with
+       *     `submitted_at` and the sample count it names a run that has no `run_name`.
+       */
       workflow_title?: string | null;
     };
-    /** @description `GET /me/notifications` — the caller's latest notifications, newest first, and how many of all
-     *     of theirs are unread. */
+    /**
+     * @description `GET /me/notifications` — the caller's latest notifications, newest first, and how many of all
+     *     of theirs are unread.
+     */
     NotificationList: {
       items: components['schemas']['Notification'][];
       /** Format: int64 */
@@ -2086,38 +2314,52 @@ export interface components {
        */
       unread_failed: number;
     };
-    /** @description `POST /me/notifications/read` — mark some of the caller's notifications read. Give exactly one
-     *     of `ids`, `run_ids` (every notification of those runs) or `all: true`. */
+    /**
+     * @description `POST /me/notifications/read` — mark some of the caller's notifications read. Give exactly one
+     *     of `ids`, `run_ids` (every notification of those runs) or `all: true`.
+     */
     NotificationsReadRequest: {
       all?: boolean | null;
       ids?: string[] | null;
       run_ids?: string[] | null;
     };
-    /** @description `GET /auth/config` — the public OAuth client configuration (no secrets). The CLI reads this to
-     *     discover the native client id + registered loopback redirect URIs (no client id is baked in). */
+    /**
+     * @description `GET /auth/config` — the public OAuth client configuration (no secrets). The CLI reads this to
+     *     discover the native client id + registered loopback redirect URIs (no client id is baked in).
+     */
     OAuthClientConfig: {
       authorization_endpoint: string;
-      /** @description The native CLI app client id, when a CLI client is deployed. Public and
-       *     non-secret; the `biffix` CLI discovers it here so no client id is baked into the binary. */
+      /**
+       * @description The native CLI app client id, when a CLI client is deployed. Public and
+       *     non-secret; the `biffix` CLI discovers it here so no client id is baked into the binary.
+       */
       cli_client_id?: string | null;
-      /** @description The registered loopback redirect URIs for the CLI client. Cognito matches a
-       *     redirect URI exactly, so the CLI must bind one of these registered ports. */
+      /**
+       * @description The registered loopback redirect URIs for the CLI client. Cognito matches a
+       *     redirect URI exactly, so the CLI must bind one of these registered ports.
+       */
       cli_redirect_uris?: string[];
       client_id: string;
-      /** @description Cognito's hosted-UI logout endpoint. Ending the IdP session is what makes sign-out real; a
-       *     client that only clears its own tokens is silently signed back in on the next request. */
+      /**
+       * @description Cognito's hosted-UI logout endpoint. Ending the IdP session is what makes sign-out real; a
+       *     client that only clears its own tokens is silently signed back in on the next request.
+       */
       logout_endpoint: string;
       /** @description Where Cognito returns the browser after logout (a registered logout URL). */
       logout_uri: string;
       redirect_uri: string;
-      /** @description The AWS region the deploy runs in (e.g. `us-west-2`), for deep links into the AWS console
-       *     (S3, Batch, CloudWatch). Non-secret. `None` when the backend cannot tell (no `AWS_REGION`). */
+      /**
+       * @description The AWS region the deploy runs in (e.g. `us-west-2`), for deep links into the AWS console
+       *     (S3, Batch, CloudWatch). Non-secret. `None` when the backend cannot tell (no `AWS_REGION`).
+       */
       region?: string | null;
       scopes: string[];
       token_endpoint: string;
-      /** @description The Cognito user pool id, derived from the OIDC issuer. Non-secret (it appears in every
+      /**
+       * @description The Cognito user pool id, derived from the OIDC issuer. Non-secret (it appears in every
        *     token's issuer), and lets the UI link a run's submitter to the Cognito console. `None` when
-       *     the issuer isn't a Cognito issuer (e.g. auth disabled / a local non-Cognito setup). */
+       *     the issuer isn't a Cognito issuer (e.g. auth disabled / a local non-Cognito setup).
+       */
       user_pool_id?: string | null;
     };
     /**
@@ -2157,8 +2399,10 @@ export interface components {
       filename: string;
       url: string;
     };
-    /** @description `GET /projects`: one of the deploy's projects (each has its own bucket, roles and data
-     *     sources; a workflow version runs in its own). */
+    /**
+     * @description `GET /projects`: one of the deploy's projects (each has its own bucket, roles and data
+     *     sources; a workflow version runs in its own).
+     */
     Project: {
       /** @description The project's S3 bucket. */
       bucket: string;
@@ -2219,19 +2463,23 @@ export interface components {
       display_name: string;
       /** @description The id a form, an example or a submit names it by (`grch38-gatk`). */
       id: string;
-      /** @description A genome the alignment viewer hosts (`hg38`, `mm39`) to show this bundle's alignments
+      /**
+       * @description A genome the alignment viewer hosts (`hg38`, `mm39`) to show this bundle's alignments
        *     against instead of its own FASTA: its sequence and annotation then come from the viewer's
-       *     public servers, not from biffix (so set it only for public assemblies). */
+       *     public servers, not from biffix (so set it only for public assemblies).
+       */
       igv_genome?: string | null;
       /** @description `assembly` (a genome) or `assay_kit` (a panel's files). */
       kind: string;
       notes?: string | null;
       /** Format: int64 */
       updated_at_micros: number;
-      /** @description Named entries → `s3://` URIs (`fasta`, `fasta_index`, `gtf`, `star_index`, …): a file, a
+      /**
+       * @description Named entries → `s3://` URIs (`fasta`, `fasta_index`, `gtf`, `star_index`, …): a file, a
        *     folder (an index directory, its trailing `/` optional), or an index named by its base path
        *     (`s3://refs/hg38/bwa/genome` for `genome.amb`, `genome.bwt`, …), which a submit accepts for
-       *     the params the bundle fills. */
+       *     the params the bundle fills.
+       */
       uris: {
         [key: string]: string;
       };
@@ -2262,11 +2510,15 @@ export interface components {
       /** @description Why it was refused. */
       reason: string;
     };
-    /** @description `POST /workflows` request: freeze an immutable workflow version. The caller (CI/CLI) supplies
-     *     the resolved `git_sha` + `source_content_hash` + normalized `form_schema`. */
+    /**
+     * @description `POST /workflows` request: freeze an immutable workflow version. The caller (CI/CLI) supplies
+     *     the resolved `git_sha` + `source_content_hash` + normalized `form_schema`.
+     */
     RegisterRequest: {
-      /** @description The version's About page: the Markdown file the manifest names with `about:` (at most
-       *     [`MAX_ABOUT_BYTES`]). */
+      /**
+       * @description The version's About page: the Markdown file the manifest names with `about:` (at most
+       *     [`MAX_ABOUT_BYTES`]).
+       */
       about_markdown?: string | null;
       /** @description Engine (default `snakemake`). */
       engine?: string | null;
@@ -2276,25 +2528,31 @@ export interface components {
       form_schema: unknown;
       /** @description Resolved commit SHA the version pins. */
       git_sha: string;
-      /** @description Default worker image: an image reference (pinned to its digest), or a bare `sha256:...`
+      /**
+       * @description Default worker image: an image reference (pinned to its digest), or a bare `sha256:...`
        *     digest of an image in the deploy's workflow repository.
        *     Optional — omit it when every rule/process declares its own container (Nextflow `container`,
        *     Snakemake's `aws_batch_container_image` resource); the version then carries no default
-       *     image. */
+       *     image.
+       */
       image?: string | null;
-      /** @description The workflow's named images (`images:` in `biffix.yaml`), each imported into (or built in)
+      /**
+       * @description The workflow's named images (`images:` in `biffix.yaml`), each imported into (or built in)
        *     the tenant repository. An imported default image is sent in `image`; a default image built
        *     from the workflow is sent here as `images["default"]` (with `image` left unset — sending
-       *     both is rejected). */
+       *     both is rejected).
+       */
       images?: {
         [key: string]: components['schemas']['ImageRequest'];
       };
       /** @description Display name of the workflow. */
       name: string;
-      /** @description Nextflow only: the plugins the workflow declares (`plugins:` in `biffix.yaml`), each pinned
+      /**
+       * @description Nextflow only: the plugins the workflow declares (`plugins:` in `biffix.yaml`), each pinned
        *     by the sha256 of its registry zip. They are built into the version's runtime (the
        *     coordinator runs Nextflow offline), so they are part of its runtime key. Empty for a
-       *     workflow that declares none. */
+       *     workflow that declares none.
+       */
       nextflow_plugins?: components['schemas']['NextflowPluginRequest'][];
       /** @description Owning project (blast-radius scope). */
       project: string;
@@ -2302,15 +2560,19 @@ export interface components {
       queue_classes?: string[] | null;
       /** @description How the CLI was invoked, recorded so the version can be re-registered from its inputs. */
       registration_inputs: components['schemas']['RegistrationInputs'];
-      /** @description `WorkflowSource`-shaped: `{"kind":"git","repo":..,"git_ref":..}` or
-       *     `{"kind":"s3","uri":..}`. */
+      /**
+       * @description `WorkflowSource`-shaped: `{"kind":"git","repo":..,"git_ref":..}` or
+       *     `{"kind":"s3","uri":..}`.
+       */
       source: unknown;
       /** @description Deterministic content hash over the source tree. */
       source_content_hash: string;
       target?: string | null;
     };
-    /** @description What a registration was given beyond the source itself (whose `biffix.yaml` travels with it):
-     *     enough, with the name, project and source, to register the same version again. */
+    /**
+     * @description What a registration was given beyond the source itself (whose `biffix.yaml` travels with it):
+     *     enough, with the name, project and source, to register the same version again.
+     */
     RegistrationInputs: {
       /** @description The CLI release that registered it. */
       cli_version: string;
@@ -2330,8 +2592,10 @@ export interface components {
     };
     /** @description One image in a [`ReregisterPlan`]. */
     ReregisterImagePlan: {
-      /** @description Already imported or built on this deploy, and for a Snakemake image that is not
-       *     `runtime: own`, already derived with the version's runtime: nothing to build for it. */
+      /**
+       * @description Already imported or built on this deploy, and for a Snakemake image that is not
+       *     `runtime: own`, already derived with the version's runtime: nothing to build for it.
+       */
       cached: boolean;
       /** @description `import`, `dockerfile` or `pixi`. */
       kind: string;
@@ -2357,21 +2621,29 @@ export interface components {
       runtime_cached: boolean;
       runtime_key: string;
     };
-    /** @description `POST /workflows/{id}/reregister` — register a version again from what it recorded, on this
-     *     deploy's engine runtime, re-pinning its images. */
+    /**
+     * @description `POST /workflows/{id}/reregister` — register a version again from what it recorded, on this
+     *     deploy's engine runtime, re-pinning its images.
+     */
     ReregisterRequest: {
       /** @description Report what re-registering would do without registering anything. */
       dry_run?: boolean;
-      /** @description An exact engine release to use instead of the recorded one (needed for a version that
-       *     recorded only a major version, e.g. `9`). */
+      /**
+       * @description An exact engine release to use instead of the recorded one (needed for a version that
+       *     recorded only a major version, e.g. `9`).
+       */
       engine_version?: string | null;
-      /** @description The project to register the new version in, instead of the one the version was registered
-       *     in: how a version labelled with a project the deploy does not configure is moved into one. */
+      /**
+       * @description The project to register the new version in, instead of the one the version was registered
+       *     in: how a version labelled with a project the deploy does not configure is moved into one.
+       */
       project?: string | null;
     };
-    /** @description A run's estimated AWS cost: compute and root volume for the time each job ran, from its host's
+    /**
+     * @description A run's estimated AWS cost: compute and root volume for the time each job ran, from its host's
      *     type and AZ and EC2 prices. An estimate, not the bill — it excludes host boot/idle time, credits
-     *     and Savings Plans; same-region S3 transfer is free. */
+     *     and Savings Plans; same-region S3 transfer is free.
+     */
     RunCost: {
       by_instance_type: components['schemas']['CostByInstanceType'][];
       /** Format: double */
@@ -2410,28 +2682,42 @@ export interface components {
       edges: string[][];
       nodes: components['schemas']['DagNode'][];
     };
-    /** @description `GET /runs/{id}` detail: the run's summary (flattened onto the wire) plus its task table, DAG,
-     *     and resolved (secret-redacted) params. */
+    /**
+     * @description `GET /runs/{id}` detail: the run's summary (flattened onto the wire) plus its task table, DAG,
+     *     and resolved (secret-redacted) params.
+     */
     RunDetail: components['schemas']['RunSummary'] & {
-      /** @description Who asked to cancel the run (their label), when it was cancelled on request and a label is
-       *     known: never an opaque user id. */
+      /**
+       * @description Who asked to cancel the run (their label), when it was cancelled on request and a label is
+       *     known: never an opaque user id.
+       */
       cancelled_by?: string | null;
       coordinator_host?: components['schemas']['Host'] | null;
-      /** @description The coordinator (head) job's Batch id — links to the coordinator job/logs, the only visible
-       *     artifact when a run fails before scheduling any child task. */
+      /**
+       * @description The coordinator (head) job's Batch id — links to the coordinator job/logs, the only visible
+       *     artifact when a run fails before scheduling any child task.
+       */
       coordinator_job_id?: string | null;
-      /** @description The coordinator's CloudWatch log stream (read it through `GET /runs/{id}/coordinator-logs`).
-       *     Absent before the coordinator starts. */
+      /**
+       * @description The coordinator's CloudWatch log stream (read it through `GET /runs/{id}/coordinator-logs`).
+       *     Absent before the coordinator starts.
+       */
       coordinator_log_stream?: string | null;
       cost?: components['schemas']['RunCost'] | null;
-      /** @description The group-level DAG (nodes + edges) with per-node task rollups. Empty when the engine
-       *     reported no graph (an engine that does not emit `run_dag`). */
+      /**
+       * @description The group-level DAG (nodes + edges) with per-node task rollups. Empty when the engine
+       *     reported no graph (an engine that does not emit `run_dag`).
+       */
       dag: components['schemas']['RunDag'];
-      /** @description The engine session the run executed as — for Nextflow, the key of its resume cache under
-       *     `<output_prefix>.nextflow/cache/<engine_session_id>/`. Absent for Snakemake runs. */
+      /**
+       * @description The engine session the run executed as — for Nextflow, the key of its resume cache under
+       *     `<output_prefix>.nextflow/cache/<engine_session_id>/`. Absent for Snakemake runs.
+       */
       engine_session_id?: string | null;
-      /** @description Samplesheets biffix wrote for this run from rows given at submit, by param:
-       *     `{uri, etag, rows: [{column: value}]}`. Absent when none were. */
+      /**
+       * @description Samplesheets biffix wrote for this run from rows given at submit, by param:
+       *     `{uri, etag, rows: [{column: value}]}`. Absent when none were.
+       */
       input_tables?: Record<string, never> | null;
       /**
        * Format: int64
@@ -2440,8 +2726,10 @@ export interface components {
        *     submit-time images or in the queue is not counted. Absent before launch.
        */
       launched_at_micros?: number | null;
-      /** @description The run's S3 output prefix (`s3://<project-bucket>/biffix/runs/<run_id>/`), filled by the
-       *     handler which knows the deploy's project bucket. */
+      /**
+       * @description The run's S3 output prefix (`s3://<project-bucket>/biffix/runs/<run_id>/`), filled by the
+       *     handler which knows the deploy's project bucket.
+       */
       output_prefix?: string | null;
       /** @description Resolved params at submit, already secret-redacted. `{}` when none/unknown. */
       params: unknown;
@@ -2449,26 +2737,38 @@ export interface components {
       preparing?: components['schemas']['RunPreparation'] | null;
       provenance?: components['schemas']['RunProvenance'] | null;
       reference_bundle?: components['schemas']['ReferenceUse'] | null;
-      /** @description Whether a `--resume-from` of this run passes the submit path's resume rules (finished,
+      /**
+       * @description Whether a `--resume-from` of this run passes the submit path's resume rules (finished,
        *     intermediate files kept, a Nextflow run's session recorded, a prefix to resume in) — the
        *     same check, so a client offers resume exactly when a submit would accept it. The version
-       *     being launched must still be of the same workflow and engine. */
+       *     being launched must still be of the same workflow and engine.
+       */
       resumable?: boolean;
-      /** @description A Nextflow run's resume cache, `<output_prefix>.nextflow/cache/<engine_session_id>/` (the
-       *     coordinator's `cloudcache.path`, keyed by session). Absent without a prefix and a session. */
+      /**
+       * @description A Nextflow run's resume cache, `<output_prefix>.nextflow/cache/<engine_session_id>/` (the
+       *     coordinator's `cloudcache.path`, keyed by session). Absent without a prefix and a session.
+       */
       resume_cache_uri?: string | null;
-      /** @description The run this one resumed (`--resume-from`): it shares that run's output prefix, work dir and
-       *     engine session. */
+      /**
+       * @description The run this one resumed (`--resume-from`): it shares that run's output prefix, work dir and
+       *     engine session.
+       */
       resumed_from?: string | null;
-      /** @description What happens to the run's intermediate files: `default`, `delete_on_success` or `keep`.
-       *     Absent ⇒ `default`. */
+      /**
+       * @description What happens to the run's intermediate files: `default`, `delete_on_success` or `keep`.
+       *     Absent ⇒ `default`.
+       */
       retention?: string | null;
-      /** @description True when the engine reported a different session than the one biffix launched it with (so
-       *     `engine_session_id` is the engine's own). Omitted when false. */
+      /**
+       * @description True when the engine reported a different session than the one biffix launched it with (so
+       *     `engine_session_id` is the engine's own). Omitted when false.
+       */
       session_mismatch?: boolean;
-      /** @description The images given at submit (`--image`), as pinned: from the run's anchor once it launched,
+      /**
+       * @description The images given at submit (`--image`), as pinned: from the run's anchor once it launched,
        *     else from when it was accepted (so a run that failed while preparing them has them too).
-       *     Absent when the submit named none, or the store keeps no event log. */
+       *     Absent when the submit named none, or the store keeps no event log.
+       */
       submit_images?: components['schemas']['SubmittedImage'][] | null;
       tasks: components['schemas']['Task'][];
       /**
@@ -2485,11 +2785,15 @@ export interface components {
        */
       workflow_registered_at_micros?: number | null;
     };
-    /** @description `POST /runs/{id}/experiment` — put a run in an experiment (of its project), or take it out
-     *     (`experiment_id: null`, or blank). Recorded as the run's `experiment_set` event. */
+    /**
+     * @description `POST /runs/{id}/experiment` — put a run in an experiment (of its project), or take it out
+     *     (`experiment_id: null`, or blank). Recorded as the run's `experiment_set` event.
+     */
     RunExperimentSetRequest: {
-      /** @description Required, even to take the run out (`null`): a body without it (say, a misspelled field)
-       *     is refused rather than read as "out of any experiment". */
+      /**
+       * @description Required, even to take the run out (`null`): a body without it (say, a misspelled field)
+       *     is refused rather than read as "out of any experiment".
+       */
       experiment_id: string | null;
     };
     /**
@@ -2502,8 +2806,10 @@ export interface components {
       /** Format: int64 */
       attempt?: number | null;
       etag?: string | null;
-      /** @description `None` until S3 has been checked; `Some(false)` when the object is gone (a `temp()` file
-       *     removed, or deleted since). */
+      /**
+       * @description `None` until S3 has been checked; `Some(false)` when the object is gone (a `temp()` file
+       *     removed, or deleted since).
+       */
       exists?: boolean | null;
       /** @description Opaque, stable id; the per-object routes take this, never a key. */
       id: string;
@@ -2512,29 +2818,39 @@ export interface components {
        * @description Epoch seconds S3 last modified the object.
        */
       last_modified?: number | null;
-      /** @description The object's etag no longer matches the one its producer reported: something (often a later
-       *     run sharing the output prefix) has overwritten it. */
+      /**
+       * @description The object's etag no longer matches the one its producer reported: something (often a later
+       *     run sharing the output prefix) has overwritten it.
+       */
       modified_since_produced?: boolean;
       /** @description The basename. */
       name: string;
-      /** @description Relative to the run's output prefix when inside it, else the engine's own path, else the
-       *     bucket-relative key. */
+      /**
+       * @description Relative to the run's output prefix when inside it, else the engine's own path, else the
+       *     bucket-relative key.
+       */
       path: string;
-      /** @description The registering run (this one, or the one named by `reused_from`) satisfied it from the
-       *     engine's cache (a Nextflow `-resume` cache hit) rather than producing it. */
+      /**
+       * @description The registering run (this one, or the one named by `reused_from`) satisfied it from the
+       *     engine's cache (a Nextflow `-resume` cache hit) rather than producing it.
+       */
       reused?: boolean;
-      /** @description Set when this run registered no output for the file and a run it resumed did: the nearest
+      /**
+       * @description Set when this run registered no output for the file and a run it resumed did: the nearest
        *     run in its resume chain (directly or through others) that registered it, sharing this run's
        *     output prefix. That run is not necessarily the one that wrote the bytes (it may itself have
        *     had it from the cache: see `reused`). Distinct from `reused`: a Snakemake resume skips a
        *     finished task and registers nothing for it, so its file comes from the earlier run's record;
-       *     a Nextflow resume registers a cache hit on the resumed run itself, with `reused` set. */
+       *     a Nextflow resume registers a cache hit on the resumed run itself, with `reused` set.
+       */
       reused_from?: string | null;
       /** @description output | published | intermediate | log | benchmark (open set). */
       role: string;
       s3_uri: string;
-      /** @description Whether biffix will issue a download link for it. False ⇒ listed only (outside the project
-       *     bucket, or under a reserved prefix). */
+      /**
+       * @description Whether biffix will issue a download link for it. False ⇒ listed only (outside the project
+       *     bucket, or under a reserved prefix).
+       */
       servable: boolean;
       /**
        * Format: int64
@@ -2542,8 +2858,10 @@ export interface components {
        */
       size?: number | null;
       task_key?: string | null;
-      /** @description How the UI can show it in the browser: `table`, `text`, `image`, `pdf` or `html`, from the
-       *     file name. Absent ⇒ download only. */
+      /**
+       * @description How the UI can show it in the browser: `table`, `text`, `image`, `pdf` or `html`, from the
+       *     file name. Absent ⇒ download only.
+       */
       viewer?: string | null;
     };
     /** @description A page of a run's outputs, ordered by `s3_uri`. */
@@ -2565,9 +2883,11 @@ export interface components {
        */
       total: number;
     };
-    /** @description `POST /runs/{id}/outputs/query` request: the output-list filters in a JSON body. A task key, a
+    /**
+     * @description `POST /runs/{id}/outputs/query` request: the output-list filters in a JSON body. A task key, a
      *     directory and the cursor (an output's S3 URI) can all name a sample or a file, so a client
-     *     sends them here rather than in a request URL, which proxies and access logs record. */
+     *     sends them here rather than in a request URL, which proxies and access logs record.
+     */
     RunOutputQueryRequest: {
       /** @description Keyset cursor from a prior page's `next_cursor`. */
       after?: string | null;
@@ -2576,9 +2896,11 @@ export interface components {
        * @description Page size (default 500, max 2000).
        */
       limit?: number | null;
-      /** @description Only outputs whose path (relative to the run's output prefix) starts with this: a directory
+      /**
+       * @description Only outputs whose path (relative to the run's output prefix) starts with this: a directory
        *     of the output-prefix tree (`qc/`), or a file's own path (`qc/S1.bam`, which also matches
-       *     files named after it, such as `qc/S1.bam.bai`: how a client finds one file's output). */
+       *     files named after it, such as `qc/S1.bam.bai`: how a client finds one file's output).
+       */
       prefix?: string | null;
       /** @description Roles to include; absent or empty ⇒ every role except `intermediate`; `*` ⇒ every role. */
       roles?: string[];
@@ -2587,8 +2909,10 @@ export interface components {
     };
     /** @description A page of runs plus the total matching the filter/search (for the list's pagination controls). */
     RunPage: {
-      /** @description Keyset cursor bounding the newer edge of this page — pass as `before` to page back. `None`
-       *     on an empty page. */
+      /**
+       * @description Keyset cursor bounding the newer edge of this page — pass as `before` to page back. `None`
+       *     on an empty page.
+       */
       first_cursor?: string | null;
       /** @description Keyset cursor bounding the older edge — pass as `after` to page forward. `None` when empty. */
       last_cursor?: string | null;
@@ -2598,8 +2922,10 @@ export interface components {
       /** Format: int64 */
       total: number;
     };
-    /** @description A run waiting for its submit-time images: each image and where its import is, and why the run
-     *     cannot launch yet. */
+    /**
+     * @description A run waiting for its submit-time images: each image and where its import is, and why the run
+     *     cannot launch yet.
+     */
     RunPreparation: {
       images: components['schemas']['WorkflowImage'][];
       /** @description One line per image not yet runnable. */
@@ -2616,39 +2942,51 @@ export interface components {
       git_sha: string;
       /** @description The default image the run's tasks ran, pinned by digest. Empty when the version has none. */
       image_digest: string;
-      /** @description Each image reference the workflow declares (as written and normalized) → the tenant image
-       *     its tasks ran. Absent when the run recorded none. */
+      /**
+       * @description Each image reference the workflow declares (as written and normalized) → the tenant image
+       *     its tasks ran. Absent when the run recorded none.
+       */
       image_map?: {
         [key: string]: string;
       } | null;
-      /** @description The default image as imported, when the tasks ran an image derived from it (a Snakemake
-       *     image with the engine runtime added). */
+      /**
+       * @description The default image as imported, when the tasks ran an image derived from it (a Snakemake
+       *     image with the engine runtime added).
+       */
       image_source_digest?: string | null;
       runtime?: components['schemas']['RuntimeUse'] | null;
-      /** @description The images given at submit (`--image`), as pinned, from the run's anchor. Absent when the
+      /**
+       * @description The images given at submit (`--image`), as pinned, from the run's anchor. Absent when the
        *     submit named none (and, like the rest of provenance, for a run that never launched: see
-       *     `RunDetail.submit_images`). */
+       *     `RunDetail.submit_images`).
+       */
       submit_images?: components['schemas']['SubmittedImage'][] | null;
     };
-    /** @description Which page of runs to return: the query of `GET /runs`, or the JSON body of `POST /runs/query`.
+    /**
+     * @description Which page of runs to return: the query of `GET /runs`, or the JSON body of `POST /runs/query`.
      *     The body form keeps the search text (which can be a run name, and so name a sample) out of the
-     *     request URL, and so out of every access log. */
+     *     request URL, and so out of every access log.
+     */
     RunQueryRequest: {
       /** @description Keyset cursor: return the next (older) page after this one. From a prior `last_cursor`. */
       after?: string | null;
-      /** @description `true`: only the caller's failed runs they have not dismissed (the Lab home's *Needs
-       *     attention*; opening or reading one leaves it there). Implies `mine`. */
+      /**
+       * @description `true`: only the caller's failed runs they have not dismissed (the Lab home's *Needs
+       *     attention*; opening or reading one leaves it there). Implies `mine`.
+       */
       attention?: boolean | null;
       /** @description Keyset cursor: return the previous (newer) page. From a prior `first_cursor`. */
       before?: string | null;
       /** @description Only the runs in this experiment. */
       experiment?: string | null;
       filter?: components['schemas']['RunFilter'] | null;
-      /** @description Only these runs, by id (at most 200; an unknown id is left out): how a client names many
+      /**
+       * @description Only these runs, by id (at most 200; an unknown id is left out): how a client names many
        *     runs it knows only by id at once (the run folders a Data page lists). Empty or absent ⇒ any
        *     run; a list whose ids are all blank names no run (an empty page, never every run). In the
        *     body of `POST /runs/query` only: `GET /runs?ids=…` is refused with a 400, since a query
-       *     string carries no list. */
+       *     string carries no list.
+       */
       ids?: string[];
       /**
        * Format: int64
@@ -2657,23 +2995,31 @@ export interface components {
       limit?: number | null;
       /** @description `true`: only runs the caller submitted ("my runs"). Default: everyone's. */
       mine?: boolean | null;
-      /** @description Free-text search: a case-insensitive substring of one of run id, run name, workflow name,
+      /**
+       * @description Free-text search: a case-insensitive substring of one of run id, run name, workflow name,
        *     the pipeline's title (its form's `title`), workflow-version id, submitter, submitter label,
        *     project or engine. A name the UI derives for an unnamed run is not searched as a whole, but
-       *     its pipeline title is. */
+       *     its pipeline title is.
+       */
       q?: string | null;
       /** @description Exact frozen workflow-version id to scope to (runs of one registered version). */
       workflow?: string | null;
     };
-    /** @description `POST /runs/{id}/name` — rename a run, or clear its name (`run_name: null`, or blank) so readers
-     *     show a derived one. Recorded as the run's `run_renamed` event. */
+    /**
+     * @description `POST /runs/{id}/name` — rename a run, or clear its name (`run_name: null`, or blank) so readers
+     *     show a derived one. Recorded as the run's `run_renamed` event.
+     */
     RunRenameRequest: {
-      /** @description Required, even to clear the name (`null`): a body without it (say, a misspelled field) is
-       *     refused rather than read as "clear". Trimmed; at most 200 characters. */
+      /**
+       * @description Required, even to clear the name (`null`): a body without it (say, a misspelled field) is
+       *     refused rather than read as "clear". Trimmed; at most 200 characters.
+       */
       run_name: string | null;
     };
-    /** @description One report a run wrote (`GET /runs/{id}/reports`): a report its workflow declared, or a MultiQC
-     *     report found among its outputs. */
+    /**
+     * @description One report a run wrote (`GET /runs/{id}/reports`): a report its workflow declared, or a MultiQC
+     *     report found among its outputs.
+     */
     RunReport: {
       /**
        * Format: int32
@@ -2684,14 +3030,18 @@ export interface components {
        */
       declaration?: number | null;
       description?: string | null;
-      /** @description How to show it: `html`, `table`, `image`, `pdf`, `alignment`, `reads`, `fastqc` (a FastQC
+      /**
+       * @description How to show it: `html`, `table`, `image`, `pdf`, `alignment`, `reads`, `fastqc` (a FastQC
        *     `_fastqc.html` or `_fastqc.zip`; its data comes from `/fastqc`) or `file` — the author's
-       *     `kind:`, else from the file's name. Open. */
+       *     `kind:`, else from the file's name. Open.
+       */
       format: string;
-      /** @description `declared` (the workflow's `reports:`), `multiqc`: the run's MultiQC report, the one
+      /**
+       * @description `declared` (the workflow's `reports:`), `multiqc`: the run's MultiQC report, the one
        *     `/qc/general-stats` reads (found by name; a declared report that is it keeps its name), or
        *     `detected`: a FastQC result the workflow did not declare, found by name (for the QC
-       *     previews; a client listing only what the workflow declared leaves these out). Open. */
+       *     previews; a client listing only what the workflow declared leaves these out). Open.
+       */
       kind: string;
       name: string;
       /** @description The output that is the report (open it with the output view/preview endpoints). */
@@ -2699,11 +3049,13 @@ export interface components {
       /** @description For a `per_sample` report, the sample this one is (its `{sample}` in the declared path). */
       sample?: string | null;
     };
-    /** @description A run's reports: declared ones first, in the workflow's order (one declaration's reports
+    /**
+     * @description A run's reports: declared ones first, in the workflow's order (one declaration's reports
      *     together: a per-sample one sample by sample in the run's sample order, each sample's files back
      *     to back in path order), then the run's MultiQC report, then the FastQC results the workflow did
      *     not declare (`kind` `detected`, `format` `fastqc`, grouped by sample the same way, then any no
-     *     sample owns). */
+     *     sample owns).
+     */
     RunReportList: {
       reports: components['schemas']['RunReport'][];
     };
@@ -2724,10 +3076,13 @@ export interface components {
     };
     /** @description `POST /runs` request: launch a frozen workflow version with resolved parameters. */
     RunSubmitRequest: {
-      /** @description Launch the run into this experiment (of the version's project); recorded on the run from
-       *     birth (`RunSubmitted.experiment_id`). */
+      /**
+       * @description Launch the run into this experiment (of the version's project); recorded on the run from
+       *     birth (`RunSubmitted.experiment_id`).
+       */
       experiment?: string | null;
-      /** @description Container images a task may name that the version does not declare (repeatable
+      /**
+       * @description Container images a task may name that the version does not declare (repeatable
        *     references). Each is pinned at submit and imported (and, for a Snakemake version, given
        *     the version's runtime) like a declared image; until every one is runnable the run waits in
        *     `preparing_images`. One wins every spelling it has over a version image spelled the same;
@@ -2735,13 +3090,17 @@ export interface components {
        *     run's images) also wins its spelling without the digest (`ubuntu:24.04`).
        *     An image already imported into the deploy (registered, or named at an earlier submit, as a
        *     re-run or resume of that run does) needs only the role that may launch; one new to the
-       *     deploy needs the Developer role, since importing it is what registration does. */
+       *     deploy needs the Developer role, since importing it is what registration does.
+       */
       images?: string[] | null;
-      /** @description Submit-time keep-going: whether the rest of the DAG keeps running after a task fails
+      /**
+       * @description Submit-time keep-going: whether the rest of the DAG keeps running after a task fails
        *     (Snakemake `--keep-going`; Nextflow has no equivalent and ignores it). Absent ⇒ the
-       *     deploy's default (true). */
+       *     deploy's default (true).
+       */
       keep_going?: boolean | null;
-      /** @description Submit-time output prefix: the workflow's default storage location (Snakemake
+      /**
+       * @description Submit-time output prefix: the workflow's default storage location (Snakemake
        *     `--default-storage-prefix`; Nextflow work/publish dir). Must be within the project bucket and
        *     outside the prefixes biffix keeps for itself (`biffix/runs/`, `biffix/cache/`,
        *     `workflow-sources/`); a trailing `/` is added when missing.
@@ -2751,28 +3110,35 @@ export interface components {
        *     per-run `biffix/runs/<run_id>/`. biffix's own run artifacts (events, task records) stay
        *     under `biffix/runs/<run_id>/` either way — only the workflow's data outputs follow this. One
        *     run at a time: a prefix another run is still using (or another submit is launching into) is
-       *     a 409. */
+       *     a 409.
+       */
       output_prefix?: string | null;
       /** @description Parameter values keyed by FormSchema field name: a JSON object (`null` means none given). */
       params: unknown;
-      /** @description A reference bundle id, for a version whose form has a reference dropdown. biffix fills the
+      /**
+       * @description A reference bundle id, for a version whose form has a reference dropdown. biffix fills the
        *     form's reference params from the bundle (replacing any value given for them in `params`) and
-       *     refuses a bundle lacking a key the form requires. */
+       *     refuses a bundle lacking a key the form requires.
+       */
       reference?: string | null;
-      /** @description Resume a previous run: this run re-uses that run's output prefix and work dir, so tasks
+      /**
+       * @description Resume a previous run: this run re-uses that run's output prefix and work dir, so tasks
        *     whose inputs and code are unchanged are satisfied from what it left (Snakemake from the
        *     metadata the prior run synced there; Nextflow also from its engine session's cache). The
        *     prior run must be a finished run of the same workflow (any version) and engine, and a
        *     Nextflow one must have a recorded session; `output_prefix`, if also given, must equal the
        *     prior run's. A resume is
        *     refused (409) while another run is still using that prefix. The server does not inherit
-       *     params: `params` is the complete set (the CLI pre-fills it from the prior run). */
+       *     params: `params` is the complete set (the CLI pre-fills it from the prior run).
+       */
       resume_from?: string | null;
-      /** @description What happens to the run's intermediate files once it ends (Nextflow runs only): `default`
+      /**
+       * @description What happens to the run's intermediate files once it ends (Nextflow runs only): `default`
        *     (the deploy's retention period), `delete_on_success` or `keep`. Results are never deleted;
        *     deleting a run's intermediate files means it can no longer be resumed. Only a run's own
        *     per-run prefix is ever swept, so `delete_on_success` is refused for a custom `output_prefix`
-       *     (or a resume of a run in one). */
+       *     (or a resume of a run in one).
+       */
       retention?: string | null;
       /**
        * Format: int32
@@ -2781,27 +3147,33 @@ export interface components {
        *     still win. Absent ⇒ the deploy's default (3). At most 10.
        */
       retries?: number | null;
-      /** @description The run this one tries again (the Lab view's *Try again* re-run; a resume names it in
+      /**
+       * @description The run this one tries again (the Lab view's *Try again* re-run; a resume names it in
        *     `resume_from`). Its notification is marked read and dismissed for the caller, so it
-       *     leaves *Needs attention*. Must be a run the caller can see. */
+       *     leaves *Needs attention*. Must be a run the caller can see.
+       */
       retry_of?: string | null;
       /** @description A human name for the run, shown in run lists and on the run page. At most 200 characters. */
       run_name?: string | null;
-      /** @description Samplesheet rows by param (`{column: value}` per row), for params whose form declares a
+      /**
+       * @description Samplesheet rows by param (`{column: value}` per row), for params whose form declares a
        *     samplesheet. biffix validates them, writes the sheet under the run's own prefix and sets the
-       *     param to it; a value also given in `params` for that param is replaced. */
+       *     param to it; a value also given in `params` for that param is replaced.
+       */
       tables?: {
         [key: string]: {
           [key: string]: string;
         }[];
       } | null;
-      /** @description Submit-time target to build (engine-agnostic): a Snakemake target rule/output, or a
+      /**
+       * @description Submit-time target to build (engine-agnostic): a Snakemake target rule/output, or a
        *     Nextflow `-entry` workflow. When set, overrides the version's registered target for this
        *     run; when absent, the version's baked target is used. Lets one frozen version drive
        *     different targets (e.g. a quick `smoke` vs the full `all`) without re-registering. One word
        *     of the engine's command line, so a 400 unless it reads as one target: Snakemake, a rule name
        *     or relative file path (ASCII letters, digits and `_ . - + /`, not starting with `-` or `/`);
-       *     Nextflow, a workflow name (an identifier). */
+       *     Nextflow, a workflow name (an identifier).
+       */
       target?: string | null;
       /** @description The frozen workflow version id to launch (`{git_sha}:{content_hash}:{build}`). */
       workflow_version_id: string;
@@ -2812,9 +3184,11 @@ export interface components {
       completed?: number | null;
       /** Format: double */
       completed_at?: number | null;
-      /** @description Whether the run has jobs not priced yet that still can be (its detail's
+      /**
+       * @description Whether the run has jobs not priced yet that still can be (its detail's
        *     `cost.pending_jobs > 0`), so `cost_usd` (or its absence) is not final yet, even for a
-       *     `terminal` run. */
+       *     `terminal` run.
+       */
       cost_pending?: boolean;
       /**
        * Format: double
@@ -2845,9 +3219,11 @@ export interface components {
       outputs_total?: number;
       /** @description Owning project, joined from the workflow version. */
       project?: string | null;
-      /** @description The run resumed another (`--resume-from`), so it may have results it reused from the runs it
+      /**
+       * @description The run resumed another (`--resume-from`), so it may have results it reused from the runs it
        *     resumed though `outputs_total` (what it registered itself) is 0. The run detail names that
-       *     run (`resumed_from`). */
+       *     run (`resumed_from`).
+       */
       resumed?: boolean;
       run_id: string;
       /** @description The run's human name, given at submit or by a later rename (`POST /runs/{id}/name`). */
@@ -2882,18 +3258,22 @@ export interface components {
       tasks_running: number;
       /** Format: int64 */
       tasks_succeeded: number;
-      /** @description Whether `state` is terminal (the run changes no more), as the server's run lifecycle
+      /**
+       * @description Whether `state` is terminal (the run changes no more), as the server's run lifecycle
        *     decides. A client reads this rather than re-deriving it from `state`, an open string whose
        *     set of values may grow. Filled by the API handler; `false` only means "still in flight" when
-       *     the server sent it. */
+       *     the server sent it.
+       */
       terminal?: boolean;
       /** Format: int64 */
       total?: number | null;
       workflow?: string | null;
       /** @description The workflow's display name (joined from the version), for a human-readable label + link. */
       workflow_name?: string | null;
-      /** @description The pipeline's friendly title (the version's form `title`, from `biffix.yaml`), joined from
-       *     the version; absent when its author gave none. */
+      /**
+       * @description The pipeline's friendly title (the version's form `title`, from `biffix.yaml`), joined from
+       *     the version; absent when its author gave none.
+       */
       workflow_title?: string | null;
     };
     /** @description The engine runtime a run's coordinator ran with. */
@@ -2904,50 +3284,68 @@ export interface components {
       /** @description sha256 of the runtime's recipe. */
       runtime_key: string;
     };
-    /** @description The saved bundle, with a warning per URI that could not be found (saved anyway: the files may be
-     *     on their way). */
+    /**
+     * @description The saved bundle, with a warning per URI that could not be found (saved anyway: the files may be
+     *     on their way).
+     */
     SavedReferenceBundle: {
       bundle: components['schemas']['ReferenceBundle'];
       warnings: string[];
     };
-    /** @description `GET /settings` — the customizable site chrome. Both fields optional so an unset deployment
-     *     renders defaults. Also the stored row (`SettingsStore`). */
+    /**
+     * @description `GET /settings` — the customizable site chrome. Both fields optional so an unset deployment
+     *     renders defaults. Also the stored row (`SettingsStore`).
+     */
     SiteSettings: {
-      /** @description The logo as a raster-image `data:` URL (kept small; checked at the API boundary). `None` =
-       *     wordmark only. */
+      /**
+       * @description The logo as a raster-image `data:` URL (kept small; checked at the API boundary). `None` =
+       *     wordmark only.
+       */
       logo_data_url?: string | null;
       support?: components['schemas']['SupportContact'] | null;
       /** @description Display title shown in the header/tab (falls back to "biffix" when unset). */
       title?: string | null;
     };
-    /** @description `PUT /settings` — a partial update. Per field: absent keeps the stored value; `null` or an empty
-     *     (or, for the title, blank) string clears it; any other value replaces it. */
+    /**
+     * @description `PUT /settings` — a partial update. Per field: absent keeps the stored value; `null` or an empty
+     *     (or, for the title, blank) string clears it; any other value replaces it.
+     */
     SiteSettingsUpdateRequest: {
       logo_data_url?: string | null;
       support?: components['schemas']['SupportContact'] | null;
       title?: string | null;
     };
-    /** @description `POST /workflows/source-upload` request: ask the backend to presign a PUT for staging a
+    /**
+     * @description `POST /workflows/source-upload` request: ask the backend to presign a PUT for staging a
      *     workflow-source tarball. The client computes the source identity (`{git_sha}:{content_hash}`)
      *     locally — the id the registered version extends with its build number — so the staged object is
-     *     content-addressed and can be uploaded before the `POST /workflows` call. */
+     *     content-addressed and can be uploaded before the `POST /workflows` call.
+     */
     SourceUploadRequest: {
-      /** @description Stage an image build's context instead of the source: the content hash of the context's
-       *     files (64 hex), which names the tarball beside the source. */
+      /**
+       * @description Stage an image build's context instead of the source: the content hash of the context's
+       *     files (64 hex), which names the tarball beside the source.
+       */
       context_tree_hash?: string | null;
-      /** @description The project the version is registered in, whose bucket the tarball is staged into. A
-       *     deploy of one project stages into it whatever this names. */
+      /**
+       * @description The project the version is registered in, whose bucket the tarball is staged into. A
+       *     deploy of one project stages into it whatever this names.
+       */
       project: string;
-      /** @description The source identity (`{git_sha}:{content_hash}`, a version id without its `:{build}`) the
-       *     source is staged under. Every build registered from this source shares it. */
+      /**
+       * @description The source identity (`{git_sha}:{content_hash}`, a version id without its `:{build}`) the
+       *     source is staged under. Every build registered from this source shares it.
+       */
       version_id: string;
     };
     /** @description `POST /workflows/source-upload` response: where and how to upload the tarball. */
     SourceUploadTarget: {
-      /** @description Headers the PUT must send as given (the URL's signature covers them). A source's PUT is
+      /**
+       * @description Headers the PUT must send as given (the URL's signature covers them). A source's PUT is
        *     write-once (`If-None-Match: *`): a version runs whatever its staged key holds, so a staged
        *     source is never replaced, and a 412 means this source is already staged there. A build
-       *     context's PUT has none (its build checks the tarball's sha256). */
+       *     context's PUT has none (its build checks the tarball's sha256).
+       */
       headers?: {
         [key: string]: string;
       };
@@ -2998,8 +3396,10 @@ export interface components {
       declared_ref: string;
       source_ref: string;
     };
-    /** @description `POST /runs` response: the new run's id and state, plus its coordinator job / assumed role once
-     *     it has launched. */
+    /**
+     * @description `POST /runs` response: the new run's id and state, plus its coordinator job / assumed role once
+     *     it has launched.
+     */
     SubmittedRun: {
       /** @description Absent while the run is preparing images. */
       assumed_role_arn?: string | null;
@@ -3031,9 +3431,11 @@ export interface components {
        *     included; absent until one is priced.
        */
       cost_usd?: number | null;
-      /** @description Task keys of the tasks in this run that this one depends on (produced its inputs). Its
+      /**
+       * @description Task keys of the tasks in this run that this one depends on (produced its inputs). Its
        *     inverse is `feeds`, which only `POST /runs/{id}/tasks/query` fills: a reader of
-       *     `GET /runs/{id}`'s whole task list derives it from the list. */
+       *     `GET /runs/{id}`'s whole task list derives it from the list.
+       */
       deps?: string[];
       /**
        * Format: int64
@@ -3041,17 +3443,21 @@ export interface components {
        *     or an attempt that has not terminated yet).
        */
       exit_code?: number | null;
-      /** @description The run's tasks that depend on this one (the inverse of `deps`). Filled by
+      /**
+       * @description The run's tasks that depend on this one (the inverse of `deps`). Filled by
        *     `POST /runs/{id}/tasks/query`, which pages tasks and so cannot leave the inverse to the
-       *     client; empty in `GET /runs/{id}`'s task list. */
+       *     client; empty in `GET /runs/{id}`'s task list.
+       */
       feeds?: string[];
       /** Format: double */
       finished_at?: number | null;
       /** @description The DAG node (rule/process) this task rolls up onto, when known. */
       group?: string | null;
       host?: components['schemas']['Host'] | null;
-      /** @description The container image the task ran in (its display attempt's), as the engine reported it at
-       *     submit; absent when the engine did not report one. */
+      /**
+       * @description The container image the task ran in (its display attempt's), as the engine reported it at
+       *     submit; absent when the engine did not report one.
+       */
       image?: string | null;
       instance_id?: string | null;
       log_stream?: string | null;
@@ -3080,12 +3486,16 @@ export interface components {
       state: string;
       task_key: string;
       termination_category?: string | null;
-      /** @description Why the workflow engine failed this task although its AWS Batch job did not fail (e.g. it
-       *     did not write its declared outputs); absent otherwise. */
+      /**
+       * @description Why the workflow engine failed this task although its AWS Batch job did not fail (e.g. it
+       *     did not write its declared outputs); absent otherwise.
+       */
       verdict_reason?: string | null;
     };
-    /** @description One AWS Batch attempt of a task. A task retried after a spot reclaim has several; `Task`
-     *     summarizes only the display attempt (the succeeded one, else the highest-numbered). */
+    /**
+     * @description One AWS Batch attempt of a task. A task retried after a spot reclaim has several; `Task`
+     *     summarizes only the display attempt (the succeeded one, else the highest-numbered).
+     */
     TaskAttempt: {
       /**
        * Format: int64
@@ -3128,21 +3538,27 @@ export interface components {
        * @description Attempt start / finish as epoch seconds.
        */
       started_at?: number | null;
-      /** @description The attempt's own last observed state: created, submitted, queued, running, succeeded or
-       *     failed. */
+      /**
+       * @description The attempt's own last observed state: created, submitted, queued, running, succeeded or
+       *     failed.
+       */
       state: string;
       /** @description Batch's human-readable reason for a failed attempt. */
       status_reason?: string | null;
       termination_category?: string | null;
     };
-    /** @description `POST /runs/{id}/attempts/query`: every attempt of one task, ordered by attempt number
-     *     (unnumbered last), then Batch job id. */
+    /**
+     * @description `POST /runs/{id}/attempts/query`: every attempt of one task, ordered by attempt number
+     *     (unnumbered last), then Batch job id.
+     */
     TaskAttemptList: {
       attempts: components['schemas']['TaskAttempt'][];
       task_key: string;
     };
-    /** @description Which task's attempts to return: the JSON body of `POST /runs/{id}/attempts/query` (the task key
-     *     kept out of the request URL). */
+    /**
+     * @description Which task's attempts to return: the JSON body of `POST /runs/{id}/attempts/query` (the task key
+     *     kept out of the request URL).
+     */
     TaskAttemptsRequest: {
       /** @description The task key. */
       task: string;
@@ -3161,16 +3577,20 @@ export interface components {
       /** Format: int64 */
       succeeded: number;
     };
-    /** @description Which page of one task's log to return: the JSON body of `POST /runs/{id}/task-logs/query`. A
+    /**
+     * @description Which page of one task's log to return: the JSON body of `POST /runs/{id}/task-logs/query`. A
      *     body keeps the task key (whose wildcards name a sample) out of the request URL, and so out of
-     *     every access log. */
+     *     every access log.
+     */
     TaskLogsRequest: {
       /** @description Opaque CloudWatch cursor from a prior page (`next_forward_token`/`next_backward_token`). */
       cursor?: string | null;
       /** @description `forward` (live-tail toward newer events) or `backward`/absent (tail — newest first). */
       direction?: string | null;
-      /** @description One attempt's Batch job id (from the task's attempts); absent ⇒ the task's display attempt.
-       *     Must be an attempt of this task of this run, else 404. */
+      /**
+       * @description One attempt's Batch job id (from the task's attempts); absent ⇒ the task's display attempt.
+       *     Must be an attempt of this task of this run, else 404.
+       */
       job?: string | null;
       /**
        * Format: int32
@@ -3186,10 +3606,12 @@ export interface components {
       counts: components['schemas']['TaskFilterCounts'];
       /** Format: int64 */
       limit: number;
-      /** @description The CloudWatch log group the tasks' `log_stream`s are in, when it is not the fleet-wide
+      /**
+       * @description The CloudWatch log group the tasks' `log_stream`s are in, when it is not the fleet-wide
        *     `/aws/batch/job`: a run's tasks log to their project's task log group. Omitted ⇒
        *     `/aws/batch/job`. (A run launched before its project had that group logged to
-       *     `/aws/batch/job`; the log routes fall back to it, a console link built from this does not.) */
+       *     `/aws/batch/job`; the log routes fall back to it, a console link built from this does not.)
+       */
       log_group?: string | null;
       /** Format: int64 */
       offset: number;
@@ -3200,9 +3622,11 @@ export interface components {
        */
       total: number;
     };
-    /** @description Which page of a run's tasks to return: the JSON body of `POST /runs/{id}/tasks/query`. A body
+    /**
+     * @description Which page of a run's tasks to return: the JSON body of `POST /runs/{id}/tasks/query`. A body
      *     keeps a search term or a task key (which names a sample through its wildcards) out of the
-     *     request URL, and so out of every access log. */
+     *     request URL, and so out of every access log.
+     */
     TaskQueryRequest: {
       /** @description Only this group (rule/process). */
       group?: string | null;
@@ -3223,8 +3647,10 @@ export interface components {
       /** @description key | state | duration | started (default key). */
       sort?: string | null;
       state?: components['schemas']['TaskStateFilter'] | null;
-      /** @description Only the task with exactly this key (e.g. a linked task, which a substring search can bury
-       *     under the many keys that contain it). */
+      /**
+       * @description Only the task with exactly this key (e.g. a linked task, which a substring search can bury
+       *     under the many keys that contain it).
+       */
       task_key?: string | null;
     };
     /**
@@ -3233,8 +3659,10 @@ export interface components {
      * @enum {string}
      */
     TaskStateFilter: 'all' | 'active' | 'succeeded' | 'failed';
-    /** @description A typical run of a workflow: the median wall time of its recent successful runs, and their
-     *     median cost when at least two of them are priced. */
+    /**
+     * @description A typical run of a workflow: the median wall time of its recent successful runs, and their
+     *     median cost when at least two of them are priced.
+     */
     TypicalRun: {
       /**
        * Format: double
@@ -3268,16 +3696,22 @@ export interface components {
     UploadCompleteRequest: {
       key: string;
       parts: components['schemas']['UploadCompletePart'][];
-      /** @description The project whose bucket the upload is in; absent ⇒ the deploy's default project. A deploy
-       *     of one project uses it whatever this names. */
+      /**
+       * @description The project whose bucket the upload is in; absent ⇒ the deploy's default project. A deploy
+       *     of one project uses it whatever this names.
+       */
       project?: string | null;
     };
-    /** @description `POST /data/uploads/{upload_id}/status` and `/abort` request: the upload's object key, in the
-     *     body so a file name never reaches a request URL or an access log. */
+    /**
+     * @description `POST /data/uploads/{upload_id}/status` and `/abort` request: the upload's object key, in the
+     *     body so a file name never reaches a request URL or an access log.
+     */
     UploadKeyRequest: {
       key: string;
-      /** @description The project whose bucket the upload is in; absent ⇒ the deploy's default project. A deploy
-       *     of one project uses it whatever this names. */
+      /**
+       * @description The project whose bucket the upload is in; absent ⇒ the deploy's default project. A deploy
+       *     of one project uses it whatever this names.
+       */
       project?: string | null;
     };
     UploadPartUrl: {
@@ -3293,8 +3727,10 @@ export interface components {
     UploadPartsRequest: {
       key: string;
       part_numbers: number[];
-      /** @description The project whose bucket the upload is in; absent ⇒ the deploy's default project. A deploy
-       *     of one project uses it whatever this names. */
+      /**
+       * @description The project whose bucket the upload is in; absent ⇒ the deploy's default project. A deploy
+       *     of one project uses it whatever this names.
+       */
       project?: string | null;
     };
     /** @description `POST /data/uploads`: start a resumable upload into the project bucket. */
@@ -3302,8 +3738,10 @@ export interface components {
       content_type?: string | null;
       /** @description The object key in the project bucket; must be under `uploads/`. */
       key: string;
-      /** @description The project whose bucket the upload is in; absent ⇒ the deploy's default project. A deploy
-       *     of one project uses it whatever this names. */
+      /**
+       * @description The project whose bucket the upload is in; absent ⇒ the deploy's default project. A deploy
+       *     of one project uses it whatever this names.
+       */
       project?: string | null;
       /**
        * Format: int64
@@ -3369,12 +3807,16 @@ export interface components {
       /** Format: double */
       total_usd: number;
     };
-    /** @description `GET /me/prefs` — the caller's own display preferences. Also the stored row (`SettingsStore`).
-     *     A user with no stored row gets the defaults: no view chosen (the UI shows Lab), nothing pinned. */
+    /**
+     * @description `GET /me/prefs` — the caller's own display preferences. Also the stored row (`SettingsStore`).
+     *     A user with no stored row gets the defaults: no view chosen (the UI shows Lab), nothing pinned.
+     */
     UserPrefs: {
-      /** @description Pinned pipelines, in the order the user pinned them. Each is an opaque key the client
+      /**
+       * @description Pinned pipelines, in the order the user pinned them. Each is an opaque key the client
        *     chooses (the UI stores `JSON.stringify([project, name])`), not a workflow name: the server
-       *     only trims, de-duplicates and caps them. */
+       *     only trims, de-duplicates and caps them.
+       */
       pinned_workflows?: string[];
       /**
        * Format: double
@@ -3385,22 +3827,28 @@ export interface components {
     };
     /** @description `PUT /me/prefs` — a partial update. Per field: absent keeps the stored value. */
     UserPrefsUpdateRequest: {
-      /** @description Pin one key (opaque to the server, see [`UserPrefs::pinned_workflows`]), atomically against
+      /**
+       * @description Pin one key (opaque to the server, see [`UserPrefs::pinned_workflows`]), atomically against
        *     the stored list: appended when absent (the order kept), a no-op when already pinned.
        *     Trimmed; 1 to 512 characters. A pin past the cap of 50 is a 400 and stores nothing. At most
-       *     one of this and `unpin` per update (400 otherwise). */
+       *     one of this and `unpin` per update (400 otherwise).
+       */
       pin?: string | null;
       /** @description `true` records the tour as done now; `false` clears it (replay the tour). */
       tour_done?: boolean | null;
-      /** @description Unpin one key, atomically against the stored list; a no-op when it is not pinned. Trimmed;
-       *     1 to 512 characters. */
+      /**
+       * @description Unpin one key, atomically against the stored list; a no-op when it is not pinned. Trimmed;
+       *     1 to 512 characters.
+       */
       unpin?: string | null;
       view?: components['schemas']['ViewMode'] | null;
     };
-    /** @description Whether a version is released now, and by whom: the one release shape every workflow read
+    /**
+     * @description Whether a version is released now, and by whom: the one release shape every workflow read
      *     carries (`GET /workflows`, `GET /workflows/{id}`, `PUT /workflows/{id}/release`).
      *     `at_micros`, `by` and `by_label` describe the change that released it, so they are set only
-     *     while `released`. */
+     *     while `released`.
+     */
     VersionRelease: {
       /**
        * Format: int64
@@ -3442,8 +3890,10 @@ export interface components {
      * @enum {string}
      */
     ViewMode: 'lab' | 'expert';
-    /** @description `GET /workflows/{id}/estimate?samples=N`: a launch's cost and time from the workflow's recent
-     *     successful runs. `estimate` is absent until it has two runs with a cost and a sample count. */
+    /**
+     * @description `GET /workflows/{id}/estimate?samples=N`: a launch's cost and time from the workflow's recent
+     *     successful runs. `estimate` is absent until it has two runs with a cost and a sample count.
+     */
     WorkflowEstimate: {
       estimate?: components['schemas']['LaunchEstimate'] | null;
       typical?: components['schemas']['TypicalRun'] | null;
@@ -3458,11 +3908,15 @@ export interface components {
       capabilities?: Record<string, never>;
       /** @description As declared (a built image: its name). */
       declared_ref: string;
-      /** @description The image tasks run when it is derived (a Snakemake image with the version's engine runtime
-       *     added: `<tenant workflow repo>@sha256:…`), once derived. */
+      /**
+       * @description The image tasks run when it is derived (a Snakemake image with the version's engine runtime
+       *     added: `<tenant workflow repo>@sha256:…`), once derived.
+       */
       derived_image?: string | null;
-      /** @description The derive's state (`unbuilt` | `building` | `failed` | `ready`), for a derived image whose
-       *     import is done. */
+      /**
+       * @description The derive's state (`unbuilt` | `building` | `failed` | `ready`), for a derived image whose
+       *     import is done.
+       */
       derived_state?: string | null;
       /** @description The Dockerfile biffix generated to build it (a `pixi` image). */
       generated_dockerfile?: string | null;
@@ -3475,8 +3929,10 @@ export interface components {
       name: string;
       /** @description Why it cannot be used (a failed import or derive, or an image unsuited to the engine). */
       reason?: string | null;
-      /** @description Pinned at registration: `<registry>/<repo>[:tag]@sha256:…`; a built image: what it is built
-       *     from (`dockerfile:docker/align/Dockerfile`, `pixi:envs/worker`). */
+      /**
+       * @description Pinned at registration: `<registry>/<repo>[:tag]@sha256:…`; a built image: what it is built
+       *     from (`dockerfile:docker/align/Dockerfile`, `pixi:envs/worker`).
+       */
       source_ref: string;
       /** @description `unbuilt` | `building` | `failed` | `ready`. */
       state: string;
@@ -3494,20 +3950,26 @@ export interface components {
       /** @description Who last set it (actor id); absent when unknown. */
       updated_by?: string | null;
     };
-    /** @description `PUT /workflows/listing` request: hide (or show again) a workflow on the Lab's pipeline cards.
+    /**
+     * @description `PUT /workflows/listing` request: hide (or show again) a workflow on the Lab's pipeline cards.
      *     Applies to every version of the (project, name). A curator's setting, unlike the author's
-     *     `catalog:` block. */
+     *     `catalog:` block.
+     */
     WorkflowListingUpdateRequest: {
       hidden: boolean;
       /** @description The workflow's name (may contain `/`, hence the body rather than the path). */
       name: string;
       project: string;
     };
-    /** @description A version's release in full (the `PUT /workflows/{id}/release` answer): whether it is released
-     *     now, every release and un-release of it, newest first, and whether the caller may change it. */
+    /**
+     * @description A version's release in full (the `PUT /workflows/{id}/release` answer): whether it is released
+     *     now, every release and un-release of it, newest first, and whether the caller may change it.
+     */
     WorkflowRelease: {
-      /** @description Whether the caller may release or un-release it (a Developer or Admin). A hint for the UI;
-       *     the `PUT` is authorized on its own. */
+      /**
+       * @description Whether the caller may release or un-release it (a Developer or Admin). A hint for the UI;
+       *     the `PUT` is authorized on its own.
+       */
       can_change?: boolean;
       /** @description Every change, newest first; empty for a version never released. */
       history?: components['schemas']['WorkflowReleaseChange'][];
@@ -3529,13 +3991,17 @@ export interface components {
       /** @description `true`: released; `false`: un-released. */
       released: boolean;
     };
-    /** @description `PUT /workflows/{id}/release` request: release a version, or (`false`) take the release back
-     *     so it is a developer version again. */
+    /**
+     * @description `PUT /workflows/{id}/release` request: release a version, or (`false`) take the release back
+     *     so it is a developer version again.
+     */
     WorkflowReleaseUpdateRequest: {
       released: boolean;
     };
-    /** @description `GET /workflows/{id}` detail: the full frozen version, including the `form_schema` the CLI
-     *     validates params against. */
+    /**
+     * @description `GET /workflows/{id}` detail: the full frozen version, including the `form_schema` the CLI
+     *     validates params against.
+     */
     WorkflowVersionDetail: {
       /** @description The version's About page (Markdown), when it has one. */
       about_markdown?: string | null;
@@ -3544,9 +4010,11 @@ export interface components {
        * @description The build number among versions frozen from this same source (0 for the first).
        */
       build: number;
-      /** @description Whether the caller may release or un-release it (a Developer or Admin). A hint for the UI,
+      /**
+       * @description Whether the caller may release or un-release it (a Developer or Admin). A hint for the UI,
        *     like [`WorkflowRelease::can_change`]; `PUT /workflows/{id}/release` is authorized on its
-       *     own. */
+       *     own.
+       */
       can_release?: boolean;
       /**
        * Format: int64
@@ -3591,9 +4059,11 @@ export interface components {
       /** @description `WorkflowSource`-shaped: `{"kind":"git",..}` or `{"kind":"s3",..}`. */
       source: unknown;
       source_content_hash: string;
-      /** @description `ready` (it can run) | `pending` (its runtime or an image is still being built) |
+      /**
+       * @description `ready` (it can run) | `pending` (its runtime or an image is still being built) |
        *     `failed` (one failed; see `runtime` / `images`). Absent when its readiness could not be
-       *     read. */
+       *     read.
+       */
       state?: string | null;
       target?: string | null;
     };
@@ -3612,10 +4082,12 @@ export interface components {
       engine: string;
       engine_version: string;
       git_sha: string;
-      /** @description Hidden from the Lab's pipeline cards (`PUT /workflows/listing`), set for every version of
+      /**
+       * @description Hidden from the Lab's pipeline cards (`PUT /workflows/listing`), set for every version of
        *     the workflow's (project, name). The Expert list still shows it. Read from the workflow's
        *     listing in `GET /workflows` and in a registration's (or re-registration's) response alike.
-       *     Distinct from `catalog`, which is the author's, frozen with the version. */
+       *     Distinct from `catalog`, which is the author's, frozen with the version.
+       */
       hidden?: boolean;
       id: string;
       image_digest: string;
@@ -3632,22 +4104,28 @@ export interface components {
       name: string;
       project: string;
       queue_classes: string[];
-      /** @description Whether this exact version is released (`PUT /workflows/{id}/release`): a Developer or
+      /**
+       * @description Whether this exact version is released (`PUT /workflows/{id}/release`): a Developer or
        *     Admin promoted it; every other version is a developer version. Per version, unlike
-       *     `hidden`. A registration's (or re-registration's) new version is never released. */
+       *     `hidden`. A registration's (or re-registration's) new version is never released.
+       */
       release?: components['schemas']['VersionRelease'];
       /**
        * Format: int64
        * @description Number of runs launched from this exact version (joined from the runs projection).
        */
       run_count: number;
-      /** @description After a registration: `ready` | `pending` | `failed` (see `GET /workflows/{id}`). Absent in
-       *     lists. */
+      /**
+       * @description After a registration: `ready` | `pending` | `failed` (see `GET /workflows/{id}`). Absent in
+       *     lists.
+       */
       state?: string | null;
       /** @description A one-line summary: the form's description, else the first sentence of the About page. */
       summary?: string | null;
-      /** @description The pipeline's friendly title (its form's `title`, from `biffix.yaml`); absent when the
-       *     author gave none, and the name is the title. */
+      /**
+       * @description The pipeline's friendly title (its form's `title`, from `biffix.yaml`); absent when the
+       *     author gave none, and the name is the title.
+       */
       title?: string | null;
       typical?: components['schemas']['TypicalRun'] | null;
     };
@@ -3690,8 +4168,10 @@ export interface operations {
   list_sources: {
     parameters: {
       query?: {
-        /** @description The project whose sources to use (its bucket is the `project` source); absent ⇒ the
-         *     deploy's default project. A deploy of one project uses it whatever this names. */
+        /**
+         * @description The project whose sources to use (its bucket is the `project` source); absent ⇒ the
+         *     deploy's default project. A deploy of one project uses it whatever this names.
+         */
         project?: string;
       };
       header?: never;
@@ -4630,10 +5110,12 @@ export interface operations {
   experiment_samples_csv: {
     parameters: {
       query?: {
-        /** @description The downloader's time zone, an IANA name (`America/New_York`), for the start times in
+        /**
+         * @description The downloader's time zone, an IANA name (`America/New_York`), for the start times in
          *     unnamed analyses' names: each read with the zone's rules for that instant, daylight saving
          *     included, as the UI shows it. Absent or blank: UTC. A name the server does not know is a
-         *     400. */
+         *     400.
+         */
         tz?: string;
       };
       header?: never;
@@ -5107,20 +5589,26 @@ export interface operations {
   list_runs: {
     parameters: {
       query?: {
-        /** @description Which runs by state (default all). A string here, parsed with `RunFilter::parse` once the
-         *     caller may list runs: an unknown one is a 400. */
+        /**
+         * @description Which runs by state (default all). A string here, parsed with `RunFilter::parse` once the
+         *     caller may list runs: an unknown one is a 400.
+         */
         filter?: components['schemas']['RunFilter'];
-        /** @description Free-text search: a case-insensitive substring of one of run id, run name, workflow name,
+        /**
+         * @description Free-text search: a case-insensitive substring of one of run id, run name, workflow name,
          *     the pipeline's title (its form's `title`), workflow-version id, submitter, submitter label,
          *     project or engine. A name the UI derives for an unnamed run is not searched as a whole, but
-         *     its pipeline title is. */
+         *     its pipeline title is.
+         */
         q?: string;
         /** @description Exact frozen workflow-version id to scope to (runs of one registered version). */
         workflow?: string;
         /** @description `true`: only runs the caller submitted ("my runs"). Default: everyone's. */
         mine?: boolean;
-        /** @description `true`: only the caller's failed runs they have not dismissed (the Lab home's *Needs
-         *     attention*; opening or reading one leaves it there). Implies `mine`. */
+        /**
+         * @description `true`: only the caller's failed runs they have not dismissed (the Lab home's *Needs
+         *     attention*; opening or reading one leaves it there). Implies `mine`.
+         */
         attention?: boolean;
         /** @description Only the runs in this experiment. */
         experiment?: string;
@@ -5262,8 +5750,10 @@ export interface operations {
   get_run: {
     parameters: {
       query?: {
-        /** @description `false` leaves out the task table (an empty `tasks`): a client that pages tasks through
-         *     `POST /runs/{id}/tasks/query` polls the run without re-fetching every task. Default `true`. */
+        /**
+         * @description `false` leaves out the task table (an empty `tasks`): a client that pages tasks through
+         *     `POST /runs/{id}/tasks/query` polls the run without re-fetching every task. Default `true`.
+         */
         tasks?: boolean;
       };
       header?: never;
@@ -5395,8 +5885,10 @@ export interface operations {
       query?: {
         /** @description Opaque CloudWatch cursor from a prior page. */
         cursor?: string;
-        /** @description `forward` (from the given cursor toward newer events, or from the start of the stream when
-         *     no cursor is given) or `backward`/absent (tail — newest first). */
+        /**
+         * @description `forward` (from the given cursor toward newer events, or from the start of the stream when
+         *     no cursor is given) or `backward`/absent (tail — newest first).
+         */
         direction?: string;
         /** @description Max events to return (default 200, clamped to 1..=1000). */
         limit?: number;
@@ -5653,8 +6145,10 @@ export interface operations {
       query?: {
         /** @description A reference bundle id to show the alignment against, instead of the run's own. */
         reference?: string;
-        /** @description Find where to open (`locus`; default true). `false` skips reading the index and header, for
-         *     a client only renewing its links: the response then has no `locus`. */
+        /**
+         * @description Find where to open (`locus`; default true). `false` skips reading the index and header, for
+         *     a client only renewing its links: the response then has no `locus`.
+         */
         locus?: boolean;
       };
       header?: never;
@@ -6612,8 +7106,10 @@ export interface operations {
   list_workflows: {
     parameters: {
       query?: {
-        /** @description Only released (`true`) or only developer (`false`) versions; absent: every version. A value
-         *     other than `true`/`false` is a 400. */
+        /**
+         * @description Only released (`true`) or only developer (`false`) versions; absent: every version. A value
+         *     other than `true`/`false` is a 400.
+         */
         released?: boolean;
       };
       header?: never;
