@@ -5,10 +5,10 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.spi.FileSystemProvider
 import java.util.function.LongSupplier
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.networknt.schema.JsonSchema
-import com.networknt.schema.JsonSchemaFactory
-import com.networknt.schema.SpecVersion
+import com.networknt.schema.InputFormat
+import com.networknt.schema.Schema
+import com.networknt.schema.SchemaRegistry
+import com.networknt.schema.SpecificationVersion
 import groovy.json.JsonOutput
 import nextflow.Session
 import nextflow.cloud.CloudSpotTerminationException
@@ -44,13 +44,13 @@ class BiffixObserverSpec extends Specification {
 
     /** The engine wire contract ({@code schemas/wire.engine.schema.json}), as BiffixEventsSpec reads it. */
     @Shared
-    JsonSchema wire
+    Schema wire
 
     def setupSpec() {
         final candidates = ['../../schemas/wire.engine.schema.json', 'schemas/wire.engine.schema.json']
         final file = candidates.collect { new File(it) }.find { it.exists() }
         assert file != null: "wire.engine.schema.json not found from ${System.getProperty('user.dir')}"
-        wire = JsonSchemaFactory.getInstance(SpecVersion.VersionFlag.V202012).getSchema(file.text)
+        wire = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12).getSchema(file.text)
     }
 
     /**
@@ -59,9 +59,8 @@ class BiffixObserverSpec extends Specification {
      * plugin's test_schema_conformance does for its handler).
      */
     def cleanup() {
-        final mapper = new ObjectMapper()
         posted.each { event ->
-            final errors = wire.validate(mapper.readTree(JsonOutput.toJson(event)))
+            final errors = wire.validate(JsonOutput.toJson(event), InputFormat.JSON)
             assert errors.isEmpty(): "${event.kind} does not conform: ${errors}"
         }
     }
