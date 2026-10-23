@@ -425,7 +425,7 @@ log() { :; }; warn() { :; }; die() { printf '%s\\n' "$*" >&2; exit 1; }
 INFRA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$INFRA_DIR/script_lib.sh"
 assume_role "$1" biffix-deploy
-stat -f %Lp "$ROLE_CONFIG" 2>/dev/null || stat -c %a "$ROLE_CONFIG"
+stat -c %a "$ROLE_CONFIG" 2>/dev/null || stat -f %Lp "$ROLE_CONFIG"
 cat "$ROLE_CONFIG"
 printf -- '---\\n'
 env | grep '^AWS_' | sort

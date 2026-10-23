@@ -98,7 +98,7 @@ DATA_STACK="$(cfg data_stack)"
 IMPORTED_BUCKETS="$(cfg imported_buckets)"
 NETWORK_STACK="$(cfg network_stack)"
 PERSISTENCE_STACK="$(cfg persistence_stack)"
-[ -n "$TENANT" ] && [ -n "$REGION" ] || die "$CONFIG: tenant and region must be set"
+{ [ -n "$TENANT" ] && [ -n "$REGION" ]; } || die "$CONFIG: tenant and region must be set"
 export AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION"
 
 # The temp files this run makes (--assume-role's AWS config, the placeholder UI build), removed
@@ -147,7 +147,7 @@ for s in $STACKS; do
     --query "StackResourceSummaries[].[ResourceType,LogicalResourceId,PhysicalResourceId]" --output text)" \
     || die "could not list the resources of $s"
   while IFS=$'\t' read -r type logical phys; do
-    [ -n "${phys:-}" ] && [ "$phys" != "None" ] || continue
+    { [ -n "${phys:-}" ] && [ "$phys" != "None" ]; } || continue
     case "$type" in
       AWS::RDS::DBCluster) CLUSTERS="$(add "$CLUSTERS" "$phys")" ;;
       AWS::S3::Bucket)

@@ -26,7 +26,7 @@ groovy_str() {
 # version# glob alone cannot tell apart (`nf-amazon-2fa-1.0.0`).
 layer_plugin_version() {
   local -a dirs=("$NXF_PLUGINS_DIR/$1"-[0-9]*)
-  [ "${#dirs[@]}" = 1 ] && [ -d "${dirs[0]}" ] \
+  { [ "${#dirs[@]}" = 1 ] && [ -d "${dirs[0]}" ]; } \
     || runtime_error "the runtime layer must carry exactly one $1 plugin (found: ${dirs[*]})"
   local version=${dirs[0]##*/"$1"-}
   [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]*$ ]] \

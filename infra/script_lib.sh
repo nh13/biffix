@@ -4,7 +4,7 @@
 
 # The value of option $1, which must be present and not look like another option.
 optarg() {
-  [ $# -ge 2 ] && [ -n "$2" ] && [ "${2#-}" = "$2" ] || die "$1 requires a value (see --help)"
+  { [ $# -ge 2 ] && [ -n "$2" ] && [ "${2#-}" = "$2" ]; } || die "$1 requires a value (see --help)"
   printf '%s' "$2"
 }
 
