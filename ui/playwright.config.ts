@@ -15,6 +15,8 @@ import { defineConfig, devices } from '@playwright/test';
 // Locally, `PW_EXE` may name an already-installed Chromium to skip `npx playwright install`.
 export default defineConfig({
   testDir: 'e2e',
+  // Loads every route once before the tests, so no test pays a cold dev server's compile.
+  globalSetup: './e2e/global-setup.ts',
   fullyParallel: true,
   retries: process.env.CI ? 1 : 0,
   // A page can take longer than the default 5 s to settle while every worker shares the one mock
