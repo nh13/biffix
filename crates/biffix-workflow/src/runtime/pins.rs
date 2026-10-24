@@ -23,7 +23,7 @@ pub(super) fn snakemake_9() -> SnakemakePins {
                 .into(),
         },
         storage_s3: "0.3.6".into(),
-        executor_sha: "7e26924a366364c0347934fe82d9d20dd972163f".into(),
+        executor_sha: "a0aaf7a725bfb5120721413afc920f4a21737c53".into(),
         logger_version: "0.2.2".into(),
         exclude_newer: "2026-09-26T00:00:00Z".into(),
     }

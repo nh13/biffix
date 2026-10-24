@@ -69,10 +69,13 @@ pub struct SnakemakePins {
     /// `snakemake-storage-plugin-s3` release (task I/O goes through S3).
     pub storage_s3: String,
     /// Commit of the AWS Batch executor fork, built into a wheel in the base image. The fork
-    /// (branch `biffix-pin/2026-10-03`) is upstream (as of #54; per-rule queues are upstream's
+    /// (branch `biffix-pin/2026-10-24`) is upstream (as of #54; per-rule queues are upstream's
     /// #40, `--aws-batch-spot-attempts` its #62) plus three open upstream PRs: #55 (remote job-state
-    /// events, with the job's image), #60 (the strict container image map) and #61
-    /// (`--aws-batch-log-group`). Re-pin to upstream once they merge.
+    /// events, with the job's image, and a pre-formatted log message), #60 (the strict container
+    /// image map) and #61 (`--aws-batch-log-group`). On top are three fixes to upstream's own code:
+    /// no TerminateJob on a job that already finished, an iam:GetRole preflight denial logged at
+    /// debug, and a batch:TagResource probe denial reported as inconclusive. Re-pin to upstream
+    /// once they merge.
     pub executor_sha: String,
     /// `snakemake-logger-plugin-biffix` version, built into a wheel in the base image.
     pub logger_version: String,
