@@ -84,13 +84,20 @@ run_nextflow() {
   } > "$NF_DEFAULTS"
   # Every value from the environment is written as an escaped Groovy string (groovy_str): the
   # output prefix, for one, is caller-chosen, and a `'` in it would otherwise end the string.
-  local queue image run_id project region role workdir cache logs_group plugin
+  local executor="'awsbatch'" queue image run_id project region role workdir cache logs_group plugin
   queue=$(groovy_str "$SNAKEMAKE_AWS_BATCH_JOB_QUEUE" "the worker queue")
   run_id=$(groovy_str "$BIFFIX_RUN_ID" "BIFFIX_RUN_ID")
   project=$(groovy_str "$BIFFIX_PROJECT" "BIFFIX_PROJECT")
   region=$(groovy_str "$BIFFIX_REGION" "the region")
   role=$(groovy_str "$SNAKEMAKE_AWS_BATCH_JOB_ROLE" "the job role")
   workdir=$(groovy_str "${STORE}work" "the output prefix")
+  # A dry run writes nothing to S3: -preview still opens the work dir as the session starts (on S3,
+  # a PutObject of its directory marker), and the AWS Batch executor requires an S3 one. So it
+  # previews against a local work dir with the local executor, which submits nothing either way.
+  if [ -n "${BIFFIX_DRY_RUN:-}" ]; then
+    executor="'local'"
+    workdir=$(groovy_str "$WORK/nf-work" "the work root")
+  fi
   cache=$(groovy_str "${STORE}.nextflow/cache" "the output prefix")
   plugin=""
   [ "$NF_PLUGIN_MODE" = defaults ] || plugin=$(groovy_str "nf-biffix@${NF_BIFFIX_VERSION}" "the nf-biffix version")
@@ -98,7 +105,12 @@ run_nextflow() {
   [ -z "${BIFFIX_WORKER_IMAGE:-}" ] || image=$(groovy_str "$BIFFIX_WORKER_IMAGE" "BIFFIX_WORKER_IMAGE")
   logs_group=$(groovy_str "$BIFFIX_TASK_LOG_GROUP" "BIFFIX_TASK_LOG_GROUP")
   {
-    echo "process.executor = 'awsbatch'"
+    echo "process.executor = ${executor}"
+    # The pipeline's own `withName:`/`withLabel:` selectors and process `executor` directives outrank
+    # process.executor, and -preview still constructs each process's executor, so a dry run pins
+    # every process to the local one with a match-all selector: this file is read after the
+    # pipeline's, so its selector applies last (verified on Nextflow 25.10).
+    [ -z "${BIFFIX_DRY_RUN:-}" ] || echo "process { withName: '.*' { executor = 'local' } }"
     echo "process.queue = ${queue}"
     [ -z "$image" ] || echo "process.container = ${image}"
     # Tag every task's Batch job with the run and project it belongs to (nf-amazon submits
