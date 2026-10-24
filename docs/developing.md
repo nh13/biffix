@@ -37,6 +37,9 @@ docs/              these docs
   and the Snakemake plugin.
 - **Java 17** for the Nextflow plugin.
 - **Docker** (or a compatible runtime) for the local Postgres.
+- **[shellcheck](https://github.com/koalaman/shellcheck) v0.11.0**, the version CI's lint job
+  pins (`.github/workflows/ci.yml`); other versions flag differently. The pre-push hook warns on a
+  mismatch.
 
 ## Rust
 

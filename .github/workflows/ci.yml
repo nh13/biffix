@@ -246,12 +246,27 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The runner ships Go and shellcheck. `go install` at an exact version is checked against the
-      # Go checksum database, so no download script or release checksum is kept here.
+      # The runner ships Go. `go install` at an exact version is checked against the Go checksum
+      # database, so no download script or release checksum is kept for actionlint.
       - name: install actionlint
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      # The runner's apt shellcheck is older than what contributors run and flags differently, so
+      # install the pinned release (docs/developing.md names the same version) first on PATH, where
+      # both the shellcheck step and actionlint's check of `run:` blocks find it.
+      - name: install shellcheck
+        env:
+          SHELLCHECK_VERSION: v0.11.0
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          tarball="shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${tarball}"
+          echo "${SHELLCHECK_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
       - name: actionlint
         run: |
+          shellcheck --version
           "$(go env GOPATH)/bin/actionlint" -color
       - name: shellcheck
         run: git ls-files -z '*.sh' .githooks/ | xargs -0 shellcheck -x

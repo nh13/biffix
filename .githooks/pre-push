@@ -78,6 +78,13 @@ else
   skip "actionlint" "actionlint not found"
 fi
 if command -v shellcheck >/dev/null 2>&1; then
+  # CI pins this version (the install-shellcheck step in ci.yml); others flag differently.
+  SHELLCHECK_PIN=0.11.0
+  sc_version="$(shellcheck --version | sed -n 's/^version: //p')"
+  if [ "$sc_version" != "$SHELLCHECK_PIN" ]; then
+    printf '  warn shellcheck %s differs from CI'\''s %s; results may differ\n' \
+      "${sc_version:-unknown}" "$SHELLCHECK_PIN" >&2
+  fi
   check "shellcheck -x" "git ls-files -z '*.sh' .githooks/ | xargs -0 shellcheck -x"
 else
   skip "shellcheck" "shellcheck not found"
