@@ -31,6 +31,9 @@
         >{v.queued} queued</span
       >{/if}
     {#if v.failed > 0}<span class="chip fail">{v.failed} failed</span>{/if}
+    {#if v.cancelled > 0}<span class="chip pend" title="Ended by the run's cancel"
+        >{v.cancelled} cancelled</span
+      >{/if}
     {#if v.unclassified > 0}<span
         class="chip pend"
         title={v.terminal ? 'Observed tasks whose terminal outcome was never reported' : undefined}

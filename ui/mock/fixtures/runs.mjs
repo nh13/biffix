@@ -14,6 +14,7 @@ export function withTaskCounts(r) {
     tasks_running: n('running'),
     tasks_queued: n('queued'),
     tasks_failed: n('failed'),
+    tasks_cancelled: n('cancelled'),
     tasks_cached: tasks.filter((t) => t.cached).length,
   });
 }
@@ -286,7 +287,11 @@ export const RUNS = [
     params: {},
     dag_nodes: ['SAY', 'REVERSE'],
     dag_edges: [['SAY', 'REVERSE']],
-    tasks: [{ task_key: 'SAY (1)', state: 'succeeded', attempts: 1, group: 'SAY' }],
+    // The task the cancel ended reads cancelled (the fold's `effective_task_state`).
+    tasks: [
+      { task_key: 'SAY (1)', state: 'succeeded', attempts: 1, group: 'SAY' },
+      { task_key: 'REVERSE (1)', state: 'cancelled', attempts: 1, group: 'REVERSE' },
+    ],
   },
   {
     // A --resume-from run: it shares the resumed run's prefix and Nextflow session; one task cached.

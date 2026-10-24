@@ -236,13 +236,14 @@ fn with_task_counts(mut detail: RunDetailView) -> RunDetailView {
     let count = |s: &str| detail.tasks.iter().filter(|t| t.state == s).count() as i64;
     let observed = detail.tasks.len() as i64;
     let (succeeded, running, failed) = (count("succeeded"), count("running"), count("failed"));
-    let queued = count("queued");
+    let (queued, cancelled) = (count("queued"), count("cancelled"));
     let cached = detail.tasks.iter().filter(|t| t.cached).count() as i64;
     detail.run.tasks_observed = observed;
     detail.run.tasks_succeeded = succeeded;
     detail.run.tasks_running = running;
     detail.run.tasks_queued = queued;
     detail.run.tasks_failed = failed;
+    detail.run.tasks_cancelled = cancelled;
     detail.run.tasks_cached = cached;
     // As Postgres reads it: `run_projection.resumed_from IS NOT NULL`.
     detail.run.resumed = detail.resumed_from.is_some();

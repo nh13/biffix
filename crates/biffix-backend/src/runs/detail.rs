@@ -41,8 +41,12 @@ fn build_dag(d: &RunDetailView) -> RunDag {
             Ok(biffix_core::state::TaskState::Running) => node.running += n,
             Ok(biffix_core::state::TaskState::Failed) => node.failed += n,
             // Queued (live attempts, none started yet) rolls up onto the node's pending count, as
-            // does any not-yet-classified state.
-            Ok(biffix_core::state::TaskState::Queued) | Err(_) => node.pending += n,
+            // do a task the run's cancel ended (it never finished) and any not-yet-classified
+            // state.
+            Ok(
+                biffix_core::state::TaskState::Queued | biffix_core::state::TaskState::Cancelled,
+            )
+            | Err(_) => node.pending += n,
         }
         if g.cached {
             node.cached += n;

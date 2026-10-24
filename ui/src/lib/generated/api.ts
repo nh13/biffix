@@ -3239,6 +3239,12 @@ export interface components {
        * @description Of the succeeded tasks, how many were engine cache-hits (a subset of `tasks_succeeded`).
        */
       tasks_cached: number;
+      /**
+       * Format: int64
+       * @description Tasks the run's cancel ended: still open when it was cancelled, or failed only once the
+       *     cancel was requested. 0 unless the run was cancelled.
+       */
+      tasks_cancelled?: number;
       /** Format: int64 */
       tasks_failed: number;
       /**

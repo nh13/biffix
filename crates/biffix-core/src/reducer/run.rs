@@ -455,29 +455,60 @@ impl RunProjection {
     }
 
     /// A task's effective state for display/persistence. Once the *run* is terminal, a task the log
-    /// left open cannot still be running — the run is over — so it surfaces as FAILED. This is a
-    /// pure derivation over the observed event set (both run- and task-terminality are pure), not a
-    /// fabricated event: it never invents a success, only resolves a task stranded `running` on an
-    /// ended run (the "orphaned running task rows on terminal runs" the UI masked). A
-    /// task that reached its own terminal keeps it — success included.
+    /// left open cannot still be running — the run is over — so it surfaces as CANCELLED when the
+    /// run was cancelled, else as FAILED. A task that FAILED on a cancelled run also reads CANCELLED
+    /// when its failure came at or after the cancel request ([`Self::cancel_caused`]): the cancel
+    /// terminated it. This is a pure derivation over the observed event set (run- and
+    /// task-terminality, the cancel request's time and the task's failure time are all pure), not
+    /// a fabricated event: it never invents a success, only resolves a task the run's end left
+    /// without a result of its own (the "orphaned running task rows on terminal runs" the UI
+    /// masked). A task that succeeded keeps it, and one that failed before the cancel was
+    /// requested stays FAILED.
+    ///
+    /// Cancelling a run revokes its capability token, so the engine's last task events (the
+    /// failures the cancel itself caused) are often refused and never reach the log; whether they
+    /// do or not, the task reads the same.
     pub fn effective_task_state(&self, task: &TaskProjection) -> TaskState {
         let state = task.state();
+        let cancelled = self.state == RunState::Cancelled;
         if self.strands(state) {
-            TaskState::Failed
+            if cancelled {
+                TaskState::Cancelled
+            } else {
+                TaskState::Failed
+            }
+        } else if cancelled && state == TaskState::Failed && self.cancel_caused(task) {
+            TaskState::Cancelled
         } else {
             state
         }
     }
 
-    /// Whether `task` is stranded: still open (running or queued) in the log although the run has
-    /// ended, so no result was ever reported for it. [`Self::effective_task_state`] surfaces such a
-    /// task as FAILED; readers use this to say *why* ("no result reported") rather than implying
-    /// the task itself failed.
-    pub fn is_stranded(&self, task: &TaskProjection) -> bool {
-        self.strands(task.state())
+    /// Whether `task`'s failure is the cancel's doing: it was recorded at or after the run's
+    /// `cancel_requested` (within [`CANCEL_CLOCK_SKEW_MICROS`], as for the run's own failure in
+    /// [`Self::failure_was_cancelled`]). The cancel handler records the request before it
+    /// terminates the coordinator and the live jobs, so the failures they cause are stamped later.
+    /// A task with no recorded failure time, or a run cancelled without a recorded request (a bare
+    /// `run_cancelled`), gives no evidence the cancel caused it, so it stays FAILED.
+    fn cancel_caused(&self, task: &TaskProjection) -> bool {
+        match (self.cancel_order, task.failed_at_micros()) {
+            (Some((cancel_at, _)), Some(failed_at)) => {
+                cancel_at <= failed_at.saturating_add(CANCEL_CLOCK_SKEW_MICROS)
+            }
+            _ => false,
+        }
     }
 
-    /// Whether a task whose own state is `state` is stranded by this run having ended.
+    /// Whether `task` is stranded: still open (running or queued) in the log although the run has
+    /// ended in success or failure, so no result was ever reported for it.
+    /// [`Self::effective_task_state`] surfaces such a task as FAILED; readers use this to say *why*
+    /// ("no result reported") rather than implying the task itself failed. A task a cancelled run
+    /// left open is not stranded: it reads CANCELLED, which already says why.
+    pub fn is_stranded(&self, task: &TaskProjection) -> bool {
+        self.state != RunState::Cancelled && self.strands(task.state())
+    }
+
+    /// Whether a task whose own state is `state` is left open by this run having ended.
     fn strands(&self, state: TaskState) -> bool {
         self.state.is_terminal() && matches!(state, TaskState::Running | TaskState::Queued)
     }
@@ -495,6 +526,7 @@ impl RunProjection {
                 TaskState::Running => counts.running += 1,
                 TaskState::Queued => counts.queued += 1,
                 TaskState::Failed => counts.failed += 1,
+                TaskState::Cancelled => counts.cancelled += 1,
             }
             if task.cached {
                 counts.cached += 1;
@@ -513,5 +545,7 @@ pub struct TaskOutcomeCounts {
     pub running: u64,
     pub queued: u64,
     pub failed: u64,
+    /// Tasks a cancelled run ended (see [`RunProjection::effective_task_state`]).
+    pub cancelled: u64,
     pub cached: u64,
 }

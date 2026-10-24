@@ -73,10 +73,10 @@ async fn upsert_run(
               reference_bundle, sample_count, retention, work_deleted_at, launched_at,
               samples, samples_total, samples_done, samples_failed, samples_declared, cancelled_by,
               experiment_id, coordinator_exit_code, coordinator_status_reason,
-              coordinator_termination_category, updated_at)
+              coordinator_termination_category, tasks_cancelled, updated_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
                    $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,
-                   $42,$43,$44,$45, now())
+                   $42,$43,$44,$45,$46, now())
            ON CONFLICT (run_id) DO UPDATE SET
              state = EXCLUDED.state, completed = EXCLUDED.completed,
              total = EXCLUDED.total, submitted_at = EXCLUDED.submitted_at,
@@ -108,6 +108,7 @@ async fn upsert_run(
              coordinator_exit_code = EXCLUDED.coordinator_exit_code,
              coordinator_status_reason = EXCLUDED.coordinator_status_reason,
              coordinator_termination_category = EXCLUDED.coordinator_termination_category,
+             tasks_cancelled = EXCLUDED.tasks_cancelled,
              updated_at = now()",
     )
     .bind(run_id)
@@ -155,6 +156,7 @@ async fn upsert_run(
     .bind(rp.coordinator_exit_code)
     .bind(rp.coordinator_status_reason.as_deref())
     .bind(rp.coordinator_termination_category.as_deref())
+    .bind(counts.cancelled as i64)
     .execute(&mut *conn)
     .await?;
     upsert_notification(conn, run_id, rp, was_terminal).await?;
@@ -278,8 +280,8 @@ async fn upsert_tasks(
         // Per-task display detail comes from the task's "display attempt" (a pure selector).
         let da = tp.display_attempt();
         task_keys.push(task_key);
-        // A task the log left `running` on a run that has since terminated is surfaced as FAILED —
-        // a task cannot be running once its run is over.
+        // A task the log left `running` on a run that has since terminated is surfaced as FAILED
+        // (CANCELLED on a cancelled run) — a task cannot be running once its run is over.
         states.push(rp.effective_task_state(tp).as_str());
         attempts.push(tp.attempts.len() as i32);
         exit_codes.push(da.and_then(|a| a.exit_code));

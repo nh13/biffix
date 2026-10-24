@@ -20,6 +20,7 @@ use biffix_core::time::Timestamp;
 use common::{fold_in_order, permutations};
 
 mod attempts;
+mod cancellation;
 mod coordinator;
 mod experiments;
 mod invariant;
