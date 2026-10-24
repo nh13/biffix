@@ -301,6 +301,16 @@ def test_batch_retries_a_coordinator_only_after_an_infrastructure_failure(
         ], strategy
 
 
+def test_the_sweep_function_is_an_output_for_deploy_sh(default_stacks: Stacks) -> None:
+    """deploy.sh finds the sweep it invokes to build a new base image's variants by this output."""
+    api = default_stacks["api"]
+    t = Template.from_stack(api)
+    t.has_output(
+        "SweepFunctionName",
+        {"Value": {"Ref": _logical_id(api, api.sweep_lambda)}},
+    )
+
+
 def test_backend_and_sweep_can_build_and_register_coordinator_variants(
     default_stacks: Stacks,
 ) -> None:

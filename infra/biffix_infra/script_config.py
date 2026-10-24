@@ -39,6 +39,7 @@ _KEYS: dict[str, Callable[[DeployConfig], str | list[str] | None]] = {
     "stack_names": lambda c: c.stack_names(),
     "data_stack": lambda c: c.stack_name("data"),
     "edge_stack": lambda c: c.stack_name("edge"),
+    "api_stack": lambda c: c.stack_name("api"),
     "network_stack": lambda c: c.stack_name("network"),
     "persistence_stack": lambda c: c.stack_name("persistence"),
     # Buckets a project references but biffix does not own; teardown must never delete them.

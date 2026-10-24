@@ -9,7 +9,9 @@
 //! so a build that just finished launches what waited on it now rather than at the next schedule,
 //! and it runs only the sweeps a build can advance (coordinator variants, image imports and
 //! derives, and the launches waiting on them; the provenance sweep is reported as `null`). The
-//! schedule's payload folds nothing and runs every sweep.
+//! schedule's payload folds nothing and runs every sweep. The payload `{"sweep": "variants"}`
+//! (`infra/deploy.sh` invokes it after a deploy) runs only the coordinator-variants sweep and returns
+//! its report, so the deploy can start the builds a new base image needs and wait for them.
 //!
 //! The schedule fires every 5 minutes, on the minutes that are multiples of 5. A scheduled
 //! invocation first asks AWS Batch, not the database, whether a coordinator job is active or
@@ -109,11 +111,23 @@ async fn main() -> Result<(), lambda_runtime::Error> {
     .await
 }
 
-/// One invocation's sweeps for its `payload` (a build state change, or the schedule's event).
+/// Whether `payload` asks for the coordinator-variants sweep alone (`{"sweep": "variants"}`).
+fn variants_only(payload: &Value) -> bool {
+    payload.get("sweep").and_then(Value::as_str) == Some("variants")
+}
+
+/// One invocation's sweeps for its `payload` (a build state change, the schedule's event, or a
+/// request for the variants sweep alone).
 async fn sweep(
     state: &biffix_backend::AppState,
     payload: &Value,
 ) -> Result<Value, lambda_runtime::Error> {
+    if variants_only(payload) {
+        let mut sweeps = Sweeps::default();
+        let variants = sweeps
+            .outcome("coordinator variants", biffix_backend::images::variants::sweep(state).await);
+        return sweeps.finish(variants);
+    }
     // A build state change: fold it before the sweeps read the builds. Its failure is logged and
     // reported; the sweeps run regardless (the ingest copy lands it anyway).
     let folded = biffix_backend::images::build_follow::fold_build_event(state, payload).await;
@@ -153,6 +167,19 @@ async fn sweep(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_variants_payload_runs_the_variants_sweep_alone() {
+        assert!(variants_only(&serde_json::json!({ "sweep": "variants" })));
+        for other in [
+            serde_json::json!({ "detail-type": "Scheduled Event", "time": "2026-10-24T00:05:00Z" }),
+            serde_json::json!({ "sweep": "images" }),
+            serde_json::json!({ "sweep": true }),
+            Value::Null,
+        ] {
+            assert!(!variants_only(&other), "{other}");
+        }
+    }
 
     #[test]
     fn an_invocation_fails_when_any_sweep_did_naming_them() {
