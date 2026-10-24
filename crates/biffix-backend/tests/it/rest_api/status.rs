@@ -103,19 +103,36 @@ async fn status_history_sizes_its_buckets_and_groups_by_component() {
         ok: 3,
         degraded: 0,
         down: 0,
+        covered_until: bucket + 3_600,
+        lapsed: false,
+        last: "ok".into(),
     };
     // In the order Postgres returns them (`ORDER BY bucket, component`); the double hands rows
     // back as seeded.
     *store.status_buckets.lock().unwrap() =
         vec![row(0, "alarms"), row(0, "reconciler"), row(960, "reconciler")];
+    *store.status_carried_in.lock().unwrap() = vec![StatusCarriedView {
+        component: "reconciler".into(),
+        covered_until: 120,
+        last: "down".into(),
+    }];
     let mut st = state(MemStore::new(), DeployConfig::default());
     st.store = store.clone();
     let (status, v) = get_json(api::router(st.clone()), "/status/history?window=1d").await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(
-        (&v["window_secs"], &v["bucket_secs"], &v["expected_per_bucket"]),
-        (&json!(86_400), &json!(960), &json!(3))
+        (&v["window_secs"], &v["bucket_secs"], &v["expected_per_bucket"], &v["grace_secs"]),
+        (&json!(86_400), &json!(960), &json!(3), &json!(300))
     );
+    // Each bar carries its samples' promise: how far it covers, any gap, and its newest tier.
+    let bar = &v["components"][1]["buckets"][1];
+    assert_eq!(
+        (&bar["covered_until"], &bar["lapsed"], &bar["last"]),
+        (&json!(4_560), &json!(false), &json!("ok"))
+    );
+    // And a component's sample from before the window, which only it has.
+    assert_eq!(v["components"][1]["carried_in"], json!({ "covered_until": 120, "last": "down" }));
+    assert!(v["components"][0].get("carried_in").is_none(), "{v}");
     // Components in order of first appearance, each with its own buckets in row order.
     let series: Vec<(String, Vec<i64>)> = v["components"]
         .as_array()

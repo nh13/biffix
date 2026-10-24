@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getStatusHistory, type StatusHistory, type StatusWindow } from '#lib/api/index.js';
   import { startPoll } from '#lib/util/poll.js';
-  import { barTier, bucketTimeline, historyByComponent, uptime } from '#lib/status/history.js';
+  import { barTiers, bucketTimeline, historyByComponent, uptime } from '#lib/status/history.js';
   import { liveStatus, watchStatus } from '#lib/status/live.svelte.js';
 
   // The live report comes from the status poll the layout's health badge shares (one GET /status
@@ -173,13 +173,14 @@
         {/if}
         {#if c.detail}<span class="detail">{c.detail}</span>{/if}
         {#if history}
+          {@const tiers = barTiers(history, c.name, bucketTimelineNow, error ? null : c.status)}
           <div class="bars">
             {#each bucketTimelineNow as t, i}
               {@const b = byT?.get(t)}
               {@const isCurrent = i === bucketTimelineNow.length - 1}
               <span
-                class={`bar ${barTier(b, history.expected_per_bucket, isCurrent, error ? null : c.status)}`}
-                title={`${fmtBucket(t)}${b ? ` — ${b.ok} ok, ${b.degraded} degraded, ${b.down} down` : isCurrent ? (error ? ' — now (unreachable)' : ' — now (live)') : ' — no data'}`}
+                class={`bar ${tiers[i]}`}
+                title={`${fmtBucket(t)}${b ? ` — ${b.ok} ok, ${b.degraded} degraded, ${b.down} down` : isCurrent ? (error ? ' — now (unreachable)' : ' — now (live)') : tiers[i] === 'none' ? ' — no data' : tiers[i] === 'partial' ? ' — sample overdue' : ' — no sample due (idle)'}`}
               ></span>
             {/each}
           </div>
@@ -329,8 +330,9 @@
   .bar.none {
     background: color-mix(in srgb, var(--border) 60%, transparent);
   }
-  /* A completed bucket that was materially under-sampled: a data gap, drawn grey (hatched to
-     distinguish it from an all-absent 'none' bar) rather than a misleading green. */
+  /* A bucket the probe did not cover throughout (a sample came later than the one before it
+     promised): a data gap, drawn grey (hatched to distinguish it from an all-absent 'none' bar)
+     rather than a misleading green. */
   .bar.partial {
     background: repeating-linear-gradient(
       -45deg,

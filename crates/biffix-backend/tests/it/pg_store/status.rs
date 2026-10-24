@@ -100,11 +100,12 @@ async fn provenance_due_tracks_ended_runs_and_their_newest_event() {
 }
 
 /// The status page's reads: the newest sample per component, and the per-bucket rollup over a
-/// window (buckets aligned to the epoch, window and bucket clamped to a minute or more).
+/// window (buckets aligned to the epoch, window and bucket clamped to a minute or more), each
+/// bucket with how far its newest sample promised the next and whether a sample came late.
 #[tokio::test]
 #[ignore = "requires --features pg + the Postgres harness"]
 async fn status_reads_the_newest_sample_and_buckets_the_window() {
-    use biffix_backend::store::status::{StatusBucketView, StatusComponentView};
+    use biffix_backend::store::status::{StatusBucketView, StatusCarriedView, StatusComponentView};
     let pool = migrated_pool("status_reads").await;
     // The database's clock, which the window is measured on (`now()`), in whole seconds so every
     // sample time reads back exactly.
@@ -120,6 +121,11 @@ async fn status_reads_the_newest_sample_and_buckets_the_window() {
         // A minute inside a day's window, and a minute outside it.
         (now - day + 60.0, "edge", "ok", Some(300)),
         (now - day - 60.0, "api", "ok", Some(300)),
+        // An idle tenant's hourly samples: the second within the first's promise and grace, the
+        // third past the second's.
+        (base + 30.0, "idle", "ok", Some(3600)),
+        (base + hour + 200.0, "idle", "ok", Some(3600)),
+        (base + 2.0 * hour + 600.0, "idle", "ok", Some(3600)),
     ] {
         sqlx::query(
             "INSERT INTO status_samples (sampled_at, component, status, detail, next_within_secs) \
@@ -147,31 +153,58 @@ async fn status_reads_the_newest_sample_and_buckets_the_window() {
             latest("api", "down", base + 120.0, Some(3600)),
             latest("db", "degraded", base + hour + 10.0, Some(300)),
             latest("edge", "ok", now - day + 60.0, Some(300)),
+            latest("idle", "ok", base + 2.0 * hour + 600.0, Some(3600)),
             latest("probe", "ok", now - 10.0, None),
         ]
     );
-    let bucket = |at: f64, component: &str, ok, degraded, down| StatusBucketView {
+    // (bucket start, component, (ok, degraded, down), covered until, lapsed, newest tier)
+    let bucket = |at: f64,
+                  component: &str,
+                  (ok, degraded, down): (i64, i64, i64),
+                  until: f64,
+                  lapsed: bool,
+                  last: &str| StatusBucketView {
         bucket: at as i64,
         component: component.into(),
         ok,
         degraded,
         down,
+        covered_until: until as i64,
+        lapsed,
+        last: last.into(),
     };
     let probe_hour = ((now - 10.0) / hour).floor() * hour;
+    let edge_hour = ((now - day + 60.0) / hour).floor() * hour;
     assert_eq!(
         store.status_history(86400, 3600).await.unwrap(),
         vec![
-            bucket(((now - day + 60.0) / hour).floor() * hour, "edge", 1, 0, 0),
-            bucket(base, "api", 1, 0, 1),
-            bucket(base + hour, "db", 0, 1, 0),
-            bucket(probe_hour, "probe", 1, 0, 0),
+            // No sample before it within the hour.
+            bucket(edge_hour, "edge", (1, 0, 0), now - day + 360.0, true, "ok"),
+            // Judged against the sample before the window, whose 5-minute promise ran out long
+            // ago; covered to its newest sample's hour.
+            bucket(base, "api", (1, 0, 1), base + 120.0 + hour, true, "down"),
+            bucket(base, "idle", (1, 0, 0), base + 30.0 + hour, true, "ok"),
+            bucket(base + hour, "db", (0, 1, 0), base + hour + 310.0, true, "degraded"),
+            bucket(base + hour, "idle", (1, 0, 0), base + 2.0 * hour + 200.0, false, "ok"),
+            bucket(base + 2.0 * hour, "idle", (1, 0, 0), base + 3.0 * hour + 600.0, true, "ok"),
+            // A sample with no promise is held to the hour.
+            bucket(probe_hour, "probe", (1, 0, 0), now - 10.0 + hour, true, "ok"),
         ]
+    );
+    // Before the day's window: the API's sample a minute before it, whose promise runs into it.
+    assert_eq!(
+        store.status_carried_in(86400).await.unwrap(),
+        vec![StatusCarriedView {
+            component: "api".into(),
+            covered_until: (now - day + 240.0) as i64,
+            last: "ok".into(),
+        }]
     );
     // Clamped to a minute's window in minute buckets: only the probe's sample.
     let probe_minute = ((now - 10.0) / 60.0).floor() * 60.0;
     assert_eq!(
         store.status_history(1, 1).await.unwrap(),
-        vec![bucket(probe_minute, "probe", 1, 0, 0)]
+        vec![bucket(probe_minute, "probe", (1, 0, 0), now - 10.0 + hour, true, "ok")]
     );
 }
 

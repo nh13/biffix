@@ -29,7 +29,32 @@ pub struct StatusBucketView {
     pub ok: i64,
     pub degraded: i64,
     pub down: i64,
+    /// Epoch seconds by which the bucket's newest sample promised the next one (its time plus its
+    /// `next_within_secs`, or plus [`UNPROMISED_SECS`] without one), before the grace.
+    pub covered_until: i64,
+    /// A sample in the bucket came more than [`GRACE_SECS`] after the sample before it promised
+    /// the next, or had no sample before it within [`UNPROMISED_SECS`] plus the grace.
+    pub lapsed: bool,
+    /// The tier of the bucket's newest sample, as recorded.
+    pub last: String,
 }
+
+/// A component's newest sample before a history window: how far its promise runs into it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StatusCarriedView {
+    pub component: String,
+    /// As [`StatusBucketView::covered_until`].
+    pub covered_until: i64,
+    /// The sample's tier, as recorded.
+    pub last: String,
+}
+
+/// The promise a sample written before samples carried one is held to: the idle, hourly cadence.
+pub const UNPROMISED_SECS: i64 = 3_600;
+
+/// How long past its promised next sample a sample still counts: one tick, for the probe running
+/// late in its tick (an Aurora resume, a slow reconcile step).
+pub const GRACE_SECS: i64 = 300;
 
 /// The status probe's samples (latest and rolled up), and whether the store is reachable.
 #[async_trait]
@@ -46,6 +71,14 @@ pub trait StatusStore: Send + Sync {
         window_secs: i64,
         bucket_secs: i64,
     ) -> Result<Vec<StatusBucketView>, StoreError>;
+
+    /// Per component, the newest sample before the last `window_secs` (clamped as
+    /// [`StatusStore::status_history`] clamps it) whose promise, plus [`GRACE_SECS`], could still
+    /// reach into the window: what covers the window's start until its first sample.
+    async fn status_carried_in(
+        &self,
+        window_secs: i64,
+    ) -> Result<Vec<StatusCarriedView>, StoreError>;
 
     /// Cheap store-reachability probe for readiness/status. Must NOT scan the projection tables:
     /// readiness is polled frequently, so a full `list_runs` per probe is wasteful. DB-backed stores

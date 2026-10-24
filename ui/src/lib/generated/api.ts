@@ -1536,6 +1536,16 @@ export interface components {
        */
       run_ids: string[];
     };
+    /** @description A sample from before a [`StatusHistory`] window, as far as it covers the window. */
+    CarriedCoverage: {
+      /**
+       * Format: int64
+       * @description As [`UptimeBucket::covered_until`].
+       */
+      covered_until: number;
+      /** @description The sample's tier. */
+      last: components['schemas']['HealthStatus'];
+    };
     /**
      * @description A version's entry in the Lab's pipeline catalog (`catalog:` in `biffix.yaml`, frozen with the
      *     form).
@@ -1571,6 +1581,7 @@ export interface components {
     /** @description One component's uptime history within a [`StatusHistory`], buckets in time order. */
     ComponentHistory: {
       buckets: components['schemas']['UptimeBucket'][];
+      carried_in?: components['schemas']['CarriedCoverage'] | null;
       name: string;
     };
     /** @description The estimate grouped by the host type (and lifecycle) the jobs ran on. */
@@ -3375,10 +3386,16 @@ export interface components {
       components: components['schemas']['ComponentHistory'][];
       /**
        * Format: int64
-       * @description Samples expected per full bucket at the probe cadence (a bucket with fewer is a partial/data
-       *     gap, drawn grey rather than a false green).
+       * @description Samples expected per full bucket at the 5-minute probe cadence. Only a tenant running a
+       *     workflow samples that often, so whether a bucket is covered is read from its samples'
+       *     promises ([`UptimeBucket::covered_until`], [`UptimeBucket::lapsed`]), not from this count.
        */
       expected_per_bucket: number;
+      /**
+       * Format: int64
+       * @description How long past its promise a sample still counts, in seconds (the grace `GET /status` allows).
+       */
+      grace_secs: number;
       /**
        * Format: int64
        * @description The full window span in seconds.
@@ -3765,12 +3782,34 @@ export interface components {
       /** Format: int64 */
       size: number;
     };
-    /** @description One bar of a component's uptime history: how many probe samples in the bucket saw each tier. */
+    /**
+     * @description One bar of a component's uptime history: how many probe samples in the bucket saw each tier,
+     *     and how far past them their promise of the next sample runs.
+     *
+     *     The probe samples every 5 minutes while a coordinator is active but only hourly on an idle
+     *     tenant, and each sample promises the next within its `next_within_secs`. A bucket is covered
+     *     when none of its samples came later than the sample before it promised (plus
+     *     [`StatusHistory::grace_secs`]) and its newest sample's promise runs to the bucket's end; an
+     *     empty bucket after it is covered while that promise runs, at that sample's tier.
+     */
     UptimeBucket: {
+      /**
+       * Format: int64
+       * @description Epoch seconds by which the bucket's newest sample promised the next one, before the grace (a
+       *     sample written before samples carried a promise is held to the hour).
+       */
+      covered_until: number;
       /** Format: int64 */
       degraded: number;
       /** Format: int64 */
       down: number;
+      /**
+       * @description A sample in the bucket came later than the sample before it promised, plus the grace, or had
+       *     no sample before it within the hour: the probe missed part of the bucket.
+       */
+      lapsed: boolean;
+      /** @description The tier of the bucket's newest sample. */
+      last: components['schemas']['HealthStatus'];
       /** Format: int64 */
       ok: number;
       /**

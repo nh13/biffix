@@ -14,7 +14,7 @@ use crate::store::outputs::{ObjectMeta, OutputPage, OutputQuery, OutputRow, Outp
 use crate::store::pending::PendingLaunchStore;
 use crate::store::provenance::ProvenanceStore;
 use crate::store::runs::{RunPage, RunQuery, RunReads};
-use crate::store::status::{StatusBucketView, StatusComponentView, StatusStore};
+use crate::store::status::{StatusBucketView, StatusCarriedView, StatusComponentView, StatusStore};
 use crate::store::tasks::TaskReads;
 use crate::store::{RunDetailView, StoreError};
 use async_trait::async_trait;
@@ -50,9 +50,12 @@ pub struct MemStore {
     pub status_samples: Mutex<Vec<crate::store::status::StatusComponentView>>,
     /// What `status_history` returns, whatever window it is asked for.
     pub status_buckets: Mutex<Vec<StatusBucketView>>,
+    /// What `status_carried_in` returns, whatever window it is asked for.
+    pub status_carried_in: Mutex<Vec<StatusCarriedView>>,
     /// Every `status_history` call's `(window_secs, bucket_secs)`.
     pub status_history_asked: Mutex<Vec<(i64, i64)>>,
-    /// Make `status_components` and `status_history` fail (the samples cannot be read).
+    /// Make `status_components`, `status_history` and `status_carried_in` fail (the samples cannot
+    /// be read).
     pub fail_status: std::sync::atomic::AtomicBool,
     /// Make `health_check` fail (the database is unreachable).
     pub unhealthy: std::sync::atomic::AtomicBool,
@@ -1110,6 +1113,16 @@ impl StatusStore for MemStore {
         }
         self.status_history_asked.lock().unwrap().push((window_secs, bucket_secs));
         Ok(self.status_buckets.lock().unwrap().clone())
+    }
+
+    async fn status_carried_in(
+        &self,
+        _window_secs: i64,
+    ) -> Result<Vec<StatusCarriedView>, StoreError> {
+        if self.fail_status.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(StoreError::Unavailable("status samples: timed out".into()));
+        }
+        Ok(self.status_carried_in.lock().unwrap().clone())
     }
 
     async fn health_check(&self) -> Result<(), StoreError> {

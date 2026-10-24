@@ -8,13 +8,16 @@ use biffix_api::StatusHistoryQuery;
 use crate::api::ApiError;
 use crate::auth::actor::{authorize_msg, AuthedActor};
 use crate::auth::rbac::Capability;
-use crate::store::status::{StatusBucketView, StatusComponentView};
+use crate::store::status::{
+    StatusBucketView, StatusCarriedView, StatusComponentView, GRACE_SECS, UNPROMISED_SECS,
+};
 use crate::AppState;
 
 // The status tier, report and history types are the shared wire contract (biffix-api). The tier's
 // worse/parse helpers live on the type there; the handler rolls components up with them below.
 pub(crate) use biffix_api::{
-    ComponentHealth, ComponentHistory, HealthStatus, StatusHistory, StatusReport, UptimeBucket,
+    CarriedCoverage, ComponentHealth, ComponentHistory, HealthStatus, StatusHistory, StatusReport,
+    UptimeBucket,
 };
 
 /// Liveness — the process is up. Always 200 if we can serve.
@@ -32,13 +35,13 @@ pub(crate) async fn readyz(State(state): State<AppState>) -> StatusCode {
     }
 }
 
-/// The reconcile schedule's period, and the most time between two full ticks on an idle tenant
-/// (`biffix_db::idle::{TICK_SECS, HOURLY_SECS}`, which the API surface builds without).
+/// The reconcile schedule's period (`biffix_db::idle::TICK_SECS`, which the API surface builds
+/// without).
 const TICK_SECS: i64 = 300;
-const HOURLY_SECS: i64 = 3_600;
-/// How long past its promised next sample a sample still counts as fresh: one tick, for the probe
-/// running late in its tick (an Aurora resume, a slow reconcile step).
-const GRACE_SECS: i64 = TICK_SECS;
+// How long past its promise a sample still counts (`GRACE_SECS`, one tick) and the promise a sample
+// without one is held to (`UNPROMISED_SECS`: the most time between two full ticks on an idle
+// tenant, `biffix_db::idle::HOURLY_SECS`) are the store's, which computes the history's coverage
+// with them too.
 
 /// Whether `sample` is still current at `now`: it is no older than the time it promised its next
 /// sample within, plus [`GRACE_SECS`]. The probe samples only on a tick that runs in full: every 5
@@ -50,7 +53,7 @@ const GRACE_SECS: i64 = TICK_SECS;
 /// to the hour. Telling idle from down this way needs no database write on a skipped tick, which
 /// would keep the database from pausing.
 fn fresh(sample: &StatusComponentView, now: f64) -> bool {
-    let promised = sample.next_within_secs.unwrap_or(HOURLY_SECS);
+    let promised = sample.next_within_secs.unwrap_or(UNPROMISED_SECS);
     let max_age = promised.saturating_add(GRACE_SECS) as f64;
     sample.sampled_at.is_some_and(|at| now - at <= max_age)
 }
@@ -175,24 +178,51 @@ pub(crate) async fn status_history(
     })?;
     // No history is not an empty history: a store failure is reported, not drawn as no bars.
     let rows = state.store.status_history(window_secs, bucket_secs).await?;
+    let carried = state.store.status_carried_in(window_secs).await?;
     Ok(Json(StatusHistory {
         bucket_secs,
         window_secs,
         expected_per_bucket: (bucket_secs / PROBE_CADENCE_SECS).max(1),
-        components: group_history(rows),
+        grace_secs: GRACE_SECS,
+        components: group_history(rows, carried),
     }))
 }
 
 /// Group the flat (bucket, component) rollup into per-component series, components in order of
-/// first appearance and each one's buckets in row order.
-fn group_history(rows: Vec<StatusBucketView>) -> Vec<ComponentHistory> {
+/// first appearance and each one's buckets in row order, then attach each component's sample from
+/// before the window (a component with only that one comes last).
+fn group_history(
+    rows: Vec<StatusBucketView>,
+    carried: Vec<StatusCarriedView>,
+) -> Vec<ComponentHistory> {
     let mut components: Vec<ComponentHistory> = Vec::new();
+    let series = |name: String| ComponentHistory { name, buckets: vec![], carried_in: None };
     for row in rows {
-        let bar =
-            UptimeBucket { t: row.bucket, ok: row.ok, degraded: row.degraded, down: row.down };
+        let bar = UptimeBucket {
+            t: row.bucket,
+            ok: row.ok,
+            degraded: row.degraded,
+            down: row.down,
+            covered_until: row.covered_until,
+            lapsed: row.lapsed,
+            last: HealthStatus::parse(&row.last),
+        };
         match components.iter_mut().find(|c| c.name == row.component) {
             Some(c) => c.buckets.push(bar),
-            None => components.push(ComponentHistory { name: row.component, buckets: vec![bar] }),
+            None => {
+                components.push(ComponentHistory { buckets: vec![bar], ..series(row.component) });
+            }
+        }
+    }
+    for sample in carried {
+        let coverage = CarriedCoverage {
+            covered_until: sample.covered_until,
+            last: HealthStatus::parse(&sample.last),
+        };
+        match components.iter_mut().find(|c| c.name == sample.component) {
+            Some(c) => c.carried_in = Some(coverage),
+            None => components
+                .push(ComponentHistory { carried_in: Some(coverage), ..series(sample.component) }),
         }
     }
     components
@@ -225,7 +255,8 @@ pub(super) fn open_routes() -> axum::Router<AppState> {
         HealthStatus,
         biffix_api::StatusHistory,
         biffix_api::ComponentHistory,
-        biffix_api::UptimeBucket
+        biffix_api::UptimeBucket,
+        biffix_api::CarriedCoverage
     ))
 )]
 pub(super) struct Doc;
@@ -238,7 +269,7 @@ mod tests {
     /// The oldest a sample from a tick that saw an active coordinator stays fresh: 10 minutes.
     const ACTIVE_MAX_AGE: f64 = (TICK_SECS + GRACE_SECS) as f64;
     /// The oldest any other tick's sample stays fresh: 65 minutes.
-    const IDLE_MAX_AGE: f64 = (HOURLY_SECS + GRACE_SECS) as f64;
+    const IDLE_MAX_AGE: f64 = (UNPROMISED_SECS + GRACE_SECS) as f64;
 
     /// A sample `age_secs` old from a tick that saw an active coordinator.
     fn sample(name: &str, status: &str, age_secs: Option<f64>) -> StatusComponentView {
@@ -321,9 +352,9 @@ mod tests {
         // The status probe on an idle tenant: an hour-old sample is what the idle gate leaves.
         let idle = |age: f64| {
             [
-                promising(sample("reconciler", "ok", Some(age)), Some(HOURLY_SECS)),
-                promising(sample("event_ingest", "ok", Some(age)), Some(HOURLY_SECS)),
-                promising(sample("batch_compute", "ok", Some(age)), Some(HOURLY_SECS)),
+                promising(sample("reconciler", "ok", Some(age)), Some(UNPROMISED_SECS)),
+                promising(sample("event_ingest", "ok", Some(age)), Some(UNPROMISED_SECS)),
+                promising(sample("batch_compute", "ok", Some(age)), Some(UNPROMISED_SECS)),
                 // Written before samples carried a promise: held to the hour too.
                 promising(sample("alarms", "ok", Some(age)), None),
             ]
@@ -356,7 +387,8 @@ mod tests {
     #[test]
     fn the_cadences_are_the_idle_gates() {
         assert_eq!(TICK_SECS, biffix_db::idle::TICK_SECS);
-        assert_eq!(HOURLY_SECS, biffix_db::idle::HOURLY_SECS);
+        assert_eq!(UNPROMISED_SECS, biffix_db::idle::HOURLY_SECS);
+        assert_eq!(GRACE_SECS, TICK_SECS);
     }
 
     #[test]
@@ -412,18 +444,38 @@ mod tests {
             ok,
             degraded: 0,
             down: 1,
+            covered_until: bucket + 3_600,
+            lapsed: ok == 3,
+            last: if ok == 4 { "maintenance".into() } else { "down".into() },
         };
-        let grouped = group_history(vec![
-            row(0, "reconciler", 1),
-            row(0, "alarms", 2),
-            row(300, "reconciler", 3),
-            row(300, "alarms", 4),
-        ]);
+        let carried = |component: &str| StatusCarriedView {
+            component: component.into(),
+            covered_until: 100,
+            last: "ok".into(),
+        };
+        let grouped = group_history(
+            vec![
+                row(0, "reconciler", 1),
+                row(0, "alarms", 2),
+                row(300, "reconciler", 3),
+                row(300, "alarms", 4),
+            ],
+            vec![carried("alarms"), carried("api")],
+        );
         let names: Vec<&str> = grouped.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["reconciler", "alarms"]);
+        assert_eq!(names, ["reconciler", "alarms", "api"]);
+        // The sample before the window joins its component, or stands alone without buckets.
+        let before = Some(CarriedCoverage { covered_until: 100, last: HealthStatus::Ok });
+        assert_eq!(grouped[0].carried_in, None);
+        assert_eq!((&grouped[1].carried_in, &grouped[2].carried_in), (&before, &before));
+        assert!(grouped[2].buckets.is_empty());
         let reconciler: Vec<(i64, i64)> = grouped[0].buckets.iter().map(|b| (b.t, b.ok)).collect();
         assert_eq!(reconciler, [(0, 1), (300, 3)]);
         assert_eq!(grouped[1].buckets[1].ok, 4);
-        assert!(group_history(vec![]).is_empty());
+        // The coverage is carried through, and a tier this build cannot read is not called ok.
+        let bar = &grouped[0].buckets[1];
+        assert_eq!((bar.covered_until, bar.lapsed, bar.last), (3_900, true, HealthStatus::Down));
+        assert_eq!(grouped[1].buckets[1].last, HealthStatus::Degraded);
+        assert!(group_history(vec![], vec![]).is_empty());
     }
 }
