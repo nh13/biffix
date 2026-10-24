@@ -196,9 +196,11 @@ class Replay:
                     excerpt = " ".join(e.read(200).decode("utf-8", "replace").split())
                 except Exception:
                     excerpt = ""
+                # Match the server's answer as sent; redact only what gets logged.
+                cancelled = (e.code, excerpt) == CANCELLED
                 excerpt = excerpt.replace(self.token, "<token>") or str(e.reason)
                 detail = f"HTTP {e.code}: {excerpt}"
-                if (e.code, excerpt) == CANCELLED:
+                if cancelled:
                     return "cancelled", detail
                 if e.code in (400, 413):
                     return "split", detail

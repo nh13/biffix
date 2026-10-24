@@ -549,5 +549,12 @@ else
     || die "could not build the biffix CLI for the health check (see the cargo output above)"
   BIFFIX="$TARGET_DIR/release/biffix"
 fi
-"$BIFFIX" health --url "$API_BASE" || die "post-deploy health check failed"
+# A cold Lambda can time out the first request: retry for ~2 min before failing a good deploy.
+attempts=6
+for attempt in $(seq 1 "$attempts"); do
+  "$BIFFIX" health --url "$API_BASE" && break
+  [ "$attempt" -lt "$attempts" ] || die "post-deploy health check failed after $attempts attempts"
+  warn "health check attempt $attempt/$attempts failed; retrying in 20 s"
+  sleep 20
+done
 log "deploy complete and healthy"
