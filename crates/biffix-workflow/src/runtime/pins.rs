@@ -51,5 +51,5 @@ pub(super) fn nextflow_25(release: &str) -> Option<NextflowPins> {
         },
         _ => return None,
     };
-    Some(NextflowPins { nf_biffix_version: "0.6.1".into(), release, workflow_plugins: Vec::new() })
+    Some(NextflowPins { nf_biffix_version: "0.6.2".into(), release, workflow_plugins: Vec::new() })
 }

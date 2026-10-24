@@ -2,7 +2,7 @@ plugins {
     id 'io.nextflow.nextflow-plugin' version '1.0.0-beta.16'
 }
 
-version = '0.6.1'
+version = '0.6.2'
 
 nextflowPlugin {
     // Compile against the one Nextflow release biffix runs (25.10.4, with nf-amazon 3.x): this is

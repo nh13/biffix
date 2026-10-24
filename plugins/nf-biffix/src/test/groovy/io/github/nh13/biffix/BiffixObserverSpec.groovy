@@ -13,6 +13,7 @@ import groovy.json.JsonOutput
 import nextflow.Session
 import nextflow.cloud.CloudSpotTerminationException
 import nextflow.dag.DAG
+import nextflow.exception.AbortSignalException
 import nextflow.exception.MissingFileException
 import nextflow.exception.ProcessFailedException
 import nextflow.executor.Executor
@@ -144,12 +145,14 @@ class BiffixObserverSpec extends Specification {
         return Stub(TaskEvent) { getTrace() >> t; getHandler() >> h }
     }
 
-    private Session session(boolean success, boolean aborted = false, boolean cancelled = false, Object dag = null) {
+    private Session session(boolean success, boolean aborted = false, boolean cancelled = false, Object dag = null,
+                            Throwable error = null) {
         return Stub(Session) {
             isSuccess() >> success
             isAborted() >> aborted
             isCancelled() >> cancelled
             getDag() >> dag
+            getError() >> error
             getUniqueId() >> UUID.fromString('3f6c2a1e-0000-4000-8000-000000000000')
         }
     }
@@ -252,6 +255,89 @@ class BiffixObserverSpec extends Specification {
 
         then:
         1 * p.close()
+    }
+
+    /** A one-process DAG, so {@code onFlowComplete} has a {@code run_dag} to report. */
+    private DAG oneProcessDag() {
+        final dag = new DAG()
+        final a = new DAG.Vertex(dag, DAG.Type.PROCESS, 'a')
+        return Stub(DAG) {
+            getVertices() >> [a]
+            getEdges() >> []
+        }
+    }
+
+    /** The exception Nextflow aborts its session with on {@code signal} (Session.registerSignalHandlers). */
+    private static AbortSignalException signalled(String signal) {
+        return new AbortSignalException(new sun.misc.Signal(signal))
+    }
+
+    def "a run a signal stopped reports no run terminal: the coordinator's exit is its terminal"() {
+        given: 'SIGTERM (a biffix cancel) aborted the session'
+        observer.onFlowCreate(session(false, true, false, oneProcessDag(), signalled('TERM')))
+
+        when:
+        observer.onFlowComplete()
+
+        then: 'its graph and publishes are still reported, but neither run_failed nor run_succeeded'
+        'run_dag' in kinds()
+        kinds().findAll { it in ['run_succeeded', 'run_failed'] }.isEmpty()
+    }
+
+    def "only a signal stops a run without a terminal"() {
+        expect:
+        BiffixObserver.stoppedBySignal(session(false, true, false, null, error)) == want
+        (BiffixObserver.runTerminal(session(false, true, false, null, error))?.kind) == kind
+
+        where:
+        error                                                  || want  | kind
+        signalled('TERM')                                      || true  | null
+        signalled('INT')                                       || true  | null
+        new RuntimeException('wrapped', signalled('HUP'))      || true  | null
+        new ProcessFailedException('task failed')              || false | 'run_failed'
+        null                                                   || false | 'run_failed'
+    }
+
+    def "an aborted session, which notifies completion twice, reports its DAG and terminal once"() {
+        given: 'a task failure aborted the session (errorStrategy terminate)'
+        observer.onFlowCreate(session(false, true, false, oneProcessDag(), new ProcessFailedException('task failed')))
+
+        when: 'Session.abort notifies completion, then Session.destroy notifies it again'
+        observer.onFlowComplete()
+        observer.onFlowComplete()
+
+        then:
+        kinds().count { it == 'run_dag' } == 1
+        kinds().findAll { it in ['run_succeeded', 'run_failed'] } == ['run_failed']
+    }
+
+    def "a signal-stopped session, which notifies completion twice, still reports no terminal"() {
+        given:
+        observer.onFlowCreate(session(false, true, false, oneProcessDag(), signalled('TERM')))
+
+        when:
+        observer.onFlowComplete()
+        observer.onFlowComplete()
+
+        then: 'one run_dag, and no terminal from either call'
+        kinds().count { it == 'run_dag' } == 1
+        kinds().findAll { it in ['run_succeeded', 'run_failed'] }.isEmpty()
+    }
+
+    def "a publish between the two completion notifications is still sent"() {
+        given:
+        final s = s3Session(false)
+        s.isAborted() >> true
+        observer.onFlowCreate(s)
+        observer.onFlowComplete()
+        observer.onTaskSubmit(event(trace([name: 'SAY (1)', process: 'SAY', attempt: 1]), taskWithOutputs('s3://b/work/ab/cdef01', [:])))
+
+        when: 'a file of the task is published after the first notification, before the second'
+        observer.onFilePublish(new FilePublishEvent(s3Path('s3://b/work/ab/cdef01/out.txt'), s3Path('s3://b/results/out.txt')))
+        observer.onFlowComplete()
+
+        then:
+        ofKind('task_outputs').collect { [it.task_key, it.outputs*.s3_uri] } == [['SAY (1)', ['s3://b/results/out.txt']]]
     }
 
     def "a cached task registers task_created (with its group) before task_cached"() {

@@ -9,8 +9,10 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.function.LongSupplier
 import nextflow.Session
+import nextflow.exception.AbortSignalException
 import nextflow.extension.FilesEx
 import nextflow.processor.TaskHandler
 import nextflow.script.params.FileOutParam
@@ -97,6 +99,12 @@ class BiffixObserver implements TraceObserverV2 {
      */
     private final Set<String> cachedTaskKeys = ConcurrentHashMap.<String>newKeySet()
     private final PublishBuffer publishes = new PublishBuffer()
+    /**
+     * Set by the first {@link #onFlowComplete}: an aborted session notifies it twice (once from
+     * {@code Session.abort}, again from {@code Session.destroy}), and the run's DAG and terminal are
+     * reported once.
+     */
+    private final AtomicBoolean flowCompleted = new AtomicBoolean()
     /** Flushes a quiet publish buffer on time; started by {@link #onFlowCreate}, stopped by {@link #onFlowComplete}. */
     private ScheduledExecutorService publishTimer
     /** Test seam: the wall clock the publish flush interval is measured on. */
@@ -805,15 +813,60 @@ class BiffixObserver implements TraceObserverV2 {
     void onWorkflowOutput(WorkflowOutputEvent event) {
     }
 
+    /**
+     * Whether a signal stopped the run: Nextflow aborts its session with an
+     * {@link AbortSignalException} on SIGTERM, SIGINT or SIGHUP (the coordinator passes on the
+     * SIGTERM a biffix cancel, a job timeout or a host shutting down sends it; lib/signals.sh). Best-effort: false when unknown.
+     */
+    @PackageScope
+    static boolean stoppedBySignal(Session session) {
+        try {
+            int depth = 0
+            for (Throwable e = session?.error; e != null && depth < 16; e = e.cause == e ? null : e.cause) {
+                if (e instanceof AbortSignalException) {
+                    return true
+                }
+                depth++
+            }
+        } catch (Throwable t) {
+            log.debug("nf-biffix: could not read the session's error: ${t.message}")
+        }
+        return false
+    }
+
+    /**
+     * The run terminal for the completed {@code session}: {@code run_succeeded} or
+     * {@code run_failed}, or null when a signal stopped the run.
+     *
+     * {@code session.isSuccess()} is Nextflow's authoritative whole-run verdict — it already accounts
+     * for failures that never surface as a task error (a job-def 403, a post-start config/compile
+     * error, an abort). Defer to it directly. A per-task failure latch must NOT be AND-ed in: a task
+     * can fail while the run still succeeds (errorStrategy 'ignore', or a later retry attempt
+     * succeeding), and AND-ing a failure latch could only turn such a true success into a false
+     * run_failed — it can never fix a false success (which isSuccess() already prevents).
+     *
+     * A run a signal stopped did not fail, and the engine wire has no terminal for a stop: like the
+     * Snakemake path, its terminal is then the coordinator job's own (it exits 143), which the
+     * backend folds to CANCELLED after a biffix cancel's {@code cancel_requested}, to FAILED after a
+     * job timeout, and which a Batch retry of a coordinator whose host went away never reports at
+     * all (an engine {@code run_failed} would fail that run while its retry still ran).
+     */
+    @PackageScope
+    static Map<String, Object> runTerminal(Session session) {
+        if (stoppedBySignal(session)) {
+            return null
+        }
+        final ok = session != null && session.isSuccess() && !session.isAborted() && !session.isCancelled()
+        return ok ? BiffixEvents.runSucceeded() : BiffixEvents.runFailed()
+    }
+
     @Override
     void onFlowComplete() {
         if (!active) return
-        // session.isSuccess() is Nextflow's authoritative whole-run verdict — it already accounts
-        // for failures that never surface as a task error (a job-def 403, a post-start config/compile
-        // error, an abort). Defer to it directly. A per-task failure latch must NOT be AND-ed in: a
-        // task can fail while the run still succeeds (errorStrategy 'ignore', or a later retry attempt
-        // succeeding), and AND-ing a failure latch could only turn such a true success into a false
-        // run_failed — it can never fix a false success (which isSuccess() already prevents).
+        // Only the first call reports the DAG and the terminal: an aborted session calls this again
+        // from Session.destroy. Every call drains the publishes and the poster (both idempotent), so
+        // what arrives between the two calls is still sent.
+        final first = flowCompleted.compareAndSet(false, true)
         // Drain the buffered publishes first, so the run's published inventory is complete before
         // its terminal (best-effort; never fatal).
         try {
@@ -822,13 +875,19 @@ class BiffixObserver implements TraceObserverV2 {
         } catch (Throwable t) {
             log.warn("nf-biffix: publish flush failed (swallowed): ${t.message}")
         }
-        // Record the process graph now the DAG is fully known (best-effort; never fatal).
-        emitRunDag()
-        try {
-            final ok = session != null && session.isSuccess() && !session.isAborted() && !session.isCancelled()
-            emit(ok ? BiffixEvents.runSucceeded() : BiffixEvents.runFailed())
-        } catch (Throwable t) {
-            log.warn("nf-biffix: run terminal emission failed (swallowed): ${t.message}")
+        if (first) {
+            // Record the process graph now the DAG is fully known (best-effort; never fatal).
+            emitRunDag()
+            try {
+                final terminal = runTerminal(session)
+                if (terminal != null) {
+                    emit(terminal)
+                } else {
+                    log.info('nf-biffix: the run was stopped by a signal; its terminal is the coordinator\'s')
+                }
+            } catch (Throwable t) {
+                log.warn("nf-biffix: run terminal emission failed (swallowed): ${t.message}")
+            }
         }
         // The poster batches in the background; drain it so the terminal is sent before Nextflow
         // exits (its flusher is a daemon thread).
