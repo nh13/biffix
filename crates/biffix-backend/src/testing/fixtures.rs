@@ -142,6 +142,7 @@ pub fn run_detail(run_id: &str, state: &str) -> RunDetailView {
             tasks_running: 0,
             tasks_queued: 0,
             tasks_failed: 0,
+            tasks_cancelled: 0,
             tasks_cached: 0,
             outputs_total: 0,
             outputs_reused: 0,

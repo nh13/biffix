@@ -110,7 +110,8 @@ async fn incremental_advance_equals_full_replay_across_chunks() {
     // r1 succeeds (its coordinator bound, then ended by a run_id-less terminal); r2 has a task
     // still running until a coordinator failure terminates the run (the task is stranded); r3's
     // task is bound in chunk 1 and ended by a run_id-less terminal in chunk 2; r4's terminal
-    // precedes its own binding within chunk 2.
+    // precedes its own binding within chunk 2; r5 is cancelled with its task still running, so
+    // the task reads cancelled.
     let chunk1 = vec![
         submitted(1.0, "r1-sub", "r1"),
         biffix_core::event::coordinator_submitted(
@@ -131,6 +132,14 @@ async fn incremental_advance_equals_full_replay_across_chunks() {
         ),
         submitted(1.0, "r3-sub", "r3"),
         task_submitted(3.0, "r3-tsub", "r3", "tC", "job-3"),
+        submitted(1.0, "r5-sub", "r5"),
+        task_submitted(3.0, "r5-tsub", "r5", "tE", "job-5"),
+        batch(
+            4.0,
+            "job-5",
+            "r5-tstart",
+            EventData::TaskStarted { started_at: None, log_stream: None },
+        ),
     ];
     let chunk2 = vec![
         run_ev(
@@ -146,6 +155,25 @@ async fn incremental_advance_equals_full_replay_across_chunks() {
             },
         ),
         batch(7.0, "job-3", "r3-tfail", failed(2)),
+        run_ev(
+            6.0,
+            EventSource::BiffixControlPlane,
+            "r5-cancel",
+            "r5",
+            EventData::CancelRequested { actor: "alice".into(), actor_label: None },
+        ),
+        run_ev(
+            7.0,
+            EventSource::AwsBatch,
+            "r5-cfail",
+            "r5",
+            EventData::CoordinatorFailed {
+                log_stream: None,
+                exit_code: None,
+                status_reason: None,
+                termination_category: None,
+            },
+        ),
         batch(8.0, "job-4", "r4-tok", succeeded()),
         submitted(1.0, "r4-sub", "r4"),
         task_submitted(3.0, "r4-tsub", "r4", "tD", "job-4"),
@@ -163,8 +191,8 @@ async fn incremental_advance_equals_full_replay_across_chunks() {
     // (no extra/missing rows).
     let run_rows = sqlx::query(
         "SELECT run_id, state, completed_at, coordinator_job_id, tasks_observed, \
-                tasks_succeeded, tasks_running, tasks_queued, tasks_failed, tasks_cached, \
-                coordinator_exit_code, coordinator_status_reason, \
+                tasks_succeeded, tasks_running, tasks_queued, tasks_failed, tasks_cancelled, \
+                tasks_cached, coordinator_exit_code, coordinator_status_reason, \
                 coordinator_termination_category \
            FROM run_projection",
     )
@@ -204,12 +232,13 @@ async fn incremental_advance_equals_full_replay_across_chunks() {
             "run {run_id} coordinator stop == replay"
         );
         let counts = rp.task_counts();
-        let persisted: [i64; 6] = [
+        let persisted: [i64; 7] = [
             "tasks_observed",
             "tasks_succeeded",
             "tasks_running",
             "tasks_queued",
             "tasks_failed",
+            "tasks_cancelled",
             "tasks_cached",
         ]
         .map(|c| row.get::<i64, _>(c));
@@ -221,6 +250,7 @@ async fn incremental_advance_equals_full_replay_across_chunks() {
                 counts.running,
                 counts.queued,
                 counts.failed,
+                counts.cancelled,
                 counts.cached,
             ]
             .map(|n| n as i64),
@@ -276,8 +306,9 @@ async fn incremental_advance_equals_full_replay_across_chunks() {
     }
 
     // Concretely, so the comparison above cannot pass on a degenerate replay: r1 succeeded via its
-    // bound coordinator, r2 failed with tB stranded, and the run_id-less terminals reached r3/tC
-    // (across chunks) and r4/tD (ahead of its binding in the same chunk).
+    // bound coordinator, r2 failed with tB stranded, the run_id-less terminals reached r3/tC
+    // (across chunks) and r4/tD (ahead of its binding in the same chunk), and r5's cancel ended
+    // tE.
     let persisted_state = {
         let pool = &pool;
         move |sql: &'static str| async move {
@@ -301,6 +332,15 @@ async fn incremental_advance_equals_full_replay_across_chunks() {
         persisted_state("SELECT state FROM task_projection WHERE task_key = 'tD'").await,
         "succeeded"
     );
+    assert_eq!(
+        persisted_state("SELECT state FROM run_projection WHERE run_id = 'r5'").await,
+        "cancelled"
+    );
+    assert_eq!(
+        persisted_state("SELECT state FROM task_projection WHERE task_key = 'tE'").await,
+        "cancelled"
+    );
+    assert_eq!(expected.runs["r5"].task_counts().cancelled, 1);
 
     // Whole rows: the incrementally persisted projection equals a from-scratch refold of the log,
     // column for column (minus `updated_at`, the wall-clock write time), across every table the
@@ -308,7 +348,7 @@ async fn incremental_advance_equals_full_replay_across_chunks() {
     let before = projection_snapshot(&pool).await;
     assert!(!before["attempt_projection"].is_empty());
     let page = refold_runs(&pool, None, 100).await.unwrap();
-    assert_eq!(page.refolded, 4);
+    assert_eq!(page.refolded, 5);
     assert_eq!(projection_snapshot(&pool).await, before, "incremental == full refold");
 }
 

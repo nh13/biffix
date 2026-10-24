@@ -132,7 +132,7 @@ impl TaskStateFilter {
     pub fn includes(self, state: TaskState) -> bool {
         let active = match state {
             TaskState::Queued | TaskState::Running => true,
-            TaskState::Succeeded | TaskState::Failed => false,
+            TaskState::Succeeded | TaskState::Failed | TaskState::Cancelled => false,
         };
         match self {
             Self::All => true,

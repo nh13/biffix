@@ -288,6 +288,25 @@ impl TaskProjection {
         }
     }
 
+    /// When the task's failure happened (epoch micros), for a task whose [`Self::state`] is
+    /// FAILED: the latest of its failed attempts' ends (an attempt the engine rejected ends at its
+    /// verdict), as the last attempt's failure is the one that left the task failed; for a local
+    /// rule, its latest engine-reported failure. `None` when no failure time was recorded. A max
+    /// over the observed event set, so order-independent.
+    pub fn failed_at_micros(&self) -> Option<i64> {
+        if self.attempts.is_empty() {
+            return self.engine_failed_at_micros;
+        }
+        self.attempts
+            .values()
+            .filter(|a| self.counted_state(a) == AttemptState::Failed)
+            .filter_map(|a| match a.state {
+                AttemptState::Failed => a.finished_at_micros,
+                _ => self.rejection(a).map(|v| v.at_micros),
+            })
+            .max()
+    }
+
     /// The attempt whose per-attempt detail (exit_code, log_stream, ...) best represents the task's
     /// outcome — surfaced to the run-detail view. A pure function of the observed event set:
     /// the succeeded attempt if any (by [`Self::counted_state`], so not one the engine

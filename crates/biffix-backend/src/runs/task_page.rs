@@ -150,8 +150,9 @@ pub(crate) fn state_rank(state: &str) -> u8 {
         Ok(TaskState::Failed) => 0,
         Ok(TaskState::Running) => 1,
         Ok(TaskState::Queued) => 2,
-        Ok(TaskState::Succeeded) => 3,
-        Err(_) => 4,
+        Ok(TaskState::Cancelled) => 3,
+        Ok(TaskState::Succeeded) => 4,
+        Err(_) => 5,
     }
 }
 
@@ -243,9 +244,10 @@ mod tests {
             ("failed", false, 0),
             ("running", true, 1),
             ("queued", true, 2),
-            ("succeeded", false, 3),
+            ("cancelled", false, 3),
+            ("succeeded", false, 4),
             // A state no TaskState spells: shown only under All, and sorted last.
-            ("paused", false, 4),
+            ("paused", false, 5),
         ] {
             assert_eq!(TaskStateFilter::Active.matches(state), active, "{state}");
             assert!(TaskStateFilter::All.matches(state), "{state}");
@@ -255,6 +257,8 @@ mod tests {
             TaskStateFilter::Failed.matches("failed") && !TaskStateFilter::Failed.matches("paused")
         );
         assert!(TaskStateFilter::Succeeded.matches("succeeded"));
+        // A cancelled task shows only under All: it neither failed nor is it still going.
+        assert!(!TaskStateFilter::Failed.matches("cancelled"));
     }
 
     #[test]

@@ -88,4 +88,13 @@ describe('statusLine', () => {
     expect(statusLine(run({ state: 'paused_for_review' })).label).toBe('paused for review');
     expect(statusLine(run({ state: 'cancelled' })).tone).toBe('stopped');
   });
+
+  it('says how far a cancelled run got', () => {
+    expect(statusLine(run({ state: 'cancelled', completed: 1, total: 8 }))).toEqual({
+      tone: 'stopped',
+      label: 'Cancelled',
+      detail: '1 of 8 steps done',
+    });
+    expect(statusLine(run({ state: 'cancelled' })).detail).toBe('');
+  });
 });

@@ -63,6 +63,10 @@ pub struct RunSummary {
     #[serde(default)]
     pub tasks_queued: i64,
     pub tasks_failed: i64,
+    /// Tasks the run's cancel ended: still open when it was cancelled, or failed only once the
+    /// cancel was requested. 0 unless the run was cancelled.
+    #[serde(default)]
+    pub tasks_cancelled: i64,
     /// Of the succeeded tasks, how many were engine cache-hits (a subset of `tasks_succeeded`).
     pub tasks_cached: i64,
     /// Output objects the engine registered for this run, excluding work-dir intermediates. 0 when

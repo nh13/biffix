@@ -286,6 +286,10 @@ biffix runs rename <run-id> "new name"     # or --clear
 biffix runs experiment <run-id> <experiment-id>   # or --none
 ```
 
+Cancelling a run stops its coordinator and its running jobs. The tasks it ended read `cancelled`:
+those still queued or running, and those that failed only after the cancel was requested. A task
+that had already finished keeps its outcome, so one that failed on its own still reads `failed`.
+
 ## Monitoring a run
 
 ### The Lab view

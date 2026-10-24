@@ -89,7 +89,7 @@ export function statusLine(run: StatusRun): StatusLine {
       };
     }
     case 'cancelled':
-      return { tone: 'stopped', label: 'Cancelled', detail: '' };
+      return { tone: 'stopped', label: 'Cancelled', detail: progress(run) };
     default:
       return { tone: 'waiting', label: run.state.replaceAll('_', ' '), detail: '' };
   }

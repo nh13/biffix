@@ -417,8 +417,8 @@ mod tests {
         assert_eq!(task_state_sql(TaskStateFilter::Failed), "t.state IN ('failed')");
         assert_eq!(
             task_state_rank_sql(),
-            "CASE t.state WHEN 'queued' THEN 2 WHEN 'running' THEN 1 WHEN 'succeeded' THEN 3 \
-             WHEN 'failed' THEN 0 ELSE 4 END"
+            "CASE t.state WHEN 'queued' THEN 2 WHEN 'running' THEN 1 WHEN 'succeeded' THEN 4 \
+             WHEN 'failed' THEN 0 WHEN 'cancelled' THEN 3 ELSE 5 END"
         );
     }
 }

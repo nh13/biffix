@@ -27,12 +27,17 @@ import { dismissRuns, needsAttention, readRun } from './me.mjs';
 import { frozenCatalog, versionById, workflowTitleOf } from './workflows.mjs';
 
 // End `r` cancelled at `by`'s request (a person's label): only now does it say who cancelled it, as
-// the backend's fold records it only on a run that ended cancelled.
+// the backend's fold records it only on a run that ended cancelled. A task it left open reads
+// cancelled, as the fold's `effective_task_state` has it.
 const endCancelled = (r, by) => {
   CANCEL_REQUESTED.delete(r.run_id);
   r.state = 'cancelled';
   r.completed_at = wallClock();
   if (by) r.cancelled_by = by;
+  for (const t of r.tasks ?? []) {
+    if (t.state === 'running' || t.state === 'queued') t.state = 'cancelled';
+  }
+  withTaskCounts(r);
 };
 
 // The lifecycle and resume facts the server computes for a run
@@ -285,7 +290,7 @@ function pageTasks(all, params, offset, limit) {
       (!taskKey || t.task_key === taskKey) &&
       (!q || t.task_key.toLowerCase().includes(q)),
   );
-  const rank = { failed: 0, running: 1, queued: 2, succeeded: 3 };
+  const rank = { failed: 0, running: 1, queued: 2, cancelled: 3, succeeded: 4 };
   const byKey = (a, b) => bytewise(a.task_key, b.task_key);
   // Longest (or latest) first; a task that never started after every one that did.
   const startedFirst = (va, vb) => (va == null) - (vb == null) || (vb ?? 0) - (va ?? 0);
@@ -294,7 +299,7 @@ function pageTasks(all, params, offset, limit) {
   const duration = (t) => (t.started_at == null ? null : (t.finished_at ?? at) - t.started_at);
   const order = {
     key: byKey,
-    state: (a, b) => (rank[a.state] ?? 4) - (rank[b.state] ?? 4) || byKey(a, b),
+    state: (a, b) => (rank[a.state] ?? 5) - (rank[b.state] ?? 5) || byKey(a, b),
     duration: (a, b) => startedFirst(duration(a), duration(b)) || byKey(a, b),
     started: (a, b) => startedFirst(a.started_at, b.started_at) || byKey(a, b),
   }[sort];
@@ -340,6 +345,7 @@ const SUMMARY_FIELDS = new Set([
   'tasks_running',
   'tasks_queued',
   'tasks_failed',
+  'tasks_cancelled',
   'tasks_cached',
   'outputs_total',
   'outputs_reused',

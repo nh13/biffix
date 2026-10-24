@@ -15,6 +15,7 @@ export type ProgressFacts = Pick<
   | 'tasks_running'
   | 'tasks_queued'
   | 'tasks_failed'
+  | 'tasks_cancelled'
   | 'tasks_cached'
 >;
 
@@ -30,6 +31,8 @@ export interface ProgressView {
   running: number;
   queued: number;
   failed: number;
+  /** Tasks the run's cancel ended (open when it was cancelled, or failed once it was requested). */
+  cancelled: number;
   cached: number;
   observed: number;
   /**
@@ -54,12 +57,14 @@ export function progressView(run: ProgressFacts): ProgressView {
   // Floor, not round: 199 of 200 is 99%, never a "100%" that claims a completion that hasn't
   // happened. Clamped for an engine count that overshoots its plan.
   const pct = determinate ? Math.min(100, Math.max(0, Math.floor((done / total) * 100))) : 0;
-  // The projection resolves a task left open on an ended run (stranded → failed, see the reducer's
-  // `effective_task_state`), so a terminal run's running/queued counts are 0 by construction.
+  // The projection resolves a task left open on an ended run (stranded → failed, or cancelled on a
+  // cancelled run; see the reducer's `effective_task_state`), so a terminal run's running/queued
+  // counts are 0 by construction.
   const running = run.tasks_running ?? 0;
   const queued = run.tasks_queued ?? 0;
   const failed = run.tasks_failed ?? 0;
-  const unclassified = Math.max(0, observed - succeeded - running - queued - failed);
+  const cancelled = run.tasks_cancelled ?? 0;
+  const unclassified = Math.max(0, observed - succeeded - running - queued - failed - cancelled);
   return {
     terminal,
     determinate,
@@ -70,6 +75,7 @@ export function progressView(run: ProgressFacts): ProgressView {
     running,
     queued,
     failed,
+    cancelled,
     cached: run.tasks_cached ?? 0,
     observed,
     unclassified,

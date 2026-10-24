@@ -522,6 +522,7 @@ describe('the mock API', () => {
           detail.tasks_running,
           detail.tasks_queued,
           detail.tasks_failed,
+          detail.tasks_cancelled,
           detail.tasks_cached,
         ],
         id,
@@ -531,6 +532,7 @@ describe('the mock API', () => {
         count('running'),
         count('queued'),
         count('failed'),
+        count('cancelled'),
         all.filter((t) => t.cached).length,
       ]);
       // As are the DAG's node counts.

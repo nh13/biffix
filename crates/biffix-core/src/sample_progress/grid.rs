@@ -15,7 +15,8 @@ use crate::state::{RunState, TaskState};
 pub struct TaskFact {
     pub sample: Option<String>,
     pub group: Option<String>,
-    /// The task's state ([`TaskState`]'s spelling: `queued` | `running` | `succeeded` | `failed`).
+    /// The task's state ([`TaskState`]'s spelling: `queued` | `running` | `succeeded` | `failed` |
+    /// `cancelled`).
     pub state: String,
     pub cached: bool,
     pub attempts: i64,
@@ -62,7 +63,8 @@ impl CellState {
             Ok(TaskState::Succeeded) => CellState::Done,
             Ok(TaskState::Failed) => CellState::Failed,
             Ok(TaskState::Running) => CellState::Running,
-            Ok(TaskState::Queued) | Err(_) => CellState::Waiting,
+            // A task the run's cancel ended never finished; the stopped run settles its sample.
+            Ok(TaskState::Queued | TaskState::Cancelled) | Err(_) => CellState::Waiting,
         }
     }
 

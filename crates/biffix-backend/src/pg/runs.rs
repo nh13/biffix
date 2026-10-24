@@ -46,7 +46,7 @@ const RUN_SORT_KEY: &str = "COALESCE(r.submitted_at, 9223372036854775807)";
 // historical `n_*` names the row mapper expects.
 const TASK_COUNTS_COLS: &str = "r.tasks_observed AS n_obs, r.tasks_succeeded AS n_ok, \
   r.tasks_running AS n_run, r.tasks_queued AS n_queued, r.tasks_failed AS n_fail, \
-  r.tasks_cached AS n_cached, r.outputs_total, r.outputs_reused, r.samples_total, \
+  r.tasks_cancelled AS n_cancelled, r.tasks_cached AS n_cached, r.outputs_total, r.outputs_reused, r.samples_total, \
   r.samples_done, r.samples_failed, r.samples_declared";
 
 /// The other `RunSummary` columns the row mapper reads beside [`TASK_COUNTS_COLS`]: the run's
@@ -114,6 +114,7 @@ fn row_to_run_view(r: &sqlx::postgres::PgRow) -> RunSummary {
         tasks_running: r.get("n_run"),
         tasks_queued: r.get("n_queued"),
         tasks_failed: r.get("n_fail"),
+        tasks_cancelled: r.get("n_cancelled"),
         tasks_cached: r.get("n_cached"),
         outputs_total: r.get("outputs_total"),
         outputs_reused: r.get("outputs_reused"),

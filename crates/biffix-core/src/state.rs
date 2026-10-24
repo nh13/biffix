@@ -88,12 +88,21 @@ pub enum TaskState {
     Running,
     Succeeded,
     Failed,
+    /// The run was cancelled before the task finished: it was still open when the run ended, or
+    /// it failed only once the cancel had been requested. Never reported by an engine or Batch;
+    /// the run-level fold derives it (`RunProjection::effective_task_state`).
+    Cancelled,
 }
 
 impl TaskState {
     /// Every state, in declaration order: what `FromStr` parses.
-    pub const ALL: [TaskState; 4] =
-        [TaskState::Queued, TaskState::Running, TaskState::Succeeded, TaskState::Failed];
+    pub const ALL: [TaskState; 5] = [
+        TaskState::Queued,
+        TaskState::Running,
+        TaskState::Succeeded,
+        TaskState::Failed,
+        TaskState::Cancelled,
+    ];
 
     /// The canonical projection/DB string for this state — the single source of truth every
     /// consumer (the fold's persistence, SQL predicates, filters) derives from.
@@ -103,6 +112,7 @@ impl TaskState {
             TaskState::Running => "running",
             TaskState::Succeeded => "succeeded",
             TaskState::Failed => "failed",
+            TaskState::Cancelled => "cancelled",
         }
     }
 }
@@ -229,6 +239,7 @@ mod tests {
                 TaskState::Running => 1,
                 TaskState::Succeeded => 2,
                 TaskState::Failed => 3,
+                TaskState::Cancelled => 4,
             },
             TaskState::as_str,
         );

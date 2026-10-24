@@ -11,6 +11,7 @@ const base: ProgressFacts = {
   tasks_running: 0,
   tasks_queued: 0,
   tasks_failed: 0,
+  tasks_cancelled: 0,
   tasks_cached: 0,
 };
 
@@ -55,6 +56,26 @@ describe('progressView', () => {
     expect(v.cached).toBe(3);
     // Inconsistent counts never make a negative bucket.
     expect(progressView({ ...base, tasks_observed: 1, tasks_succeeded: 3 }).unclassified).toBe(0);
+  });
+
+  it("counts the tasks a run's cancel ended as cancelled, not unreported", () => {
+    const v = progressView({
+      ...base,
+      terminal: true,
+      tasks_observed: 4,
+      tasks_succeeded: 1,
+      tasks_failed: 1,
+      tasks_cancelled: 2,
+    });
+    expect([v.succeeded, v.failed, v.cancelled, v.unclassified]).toEqual([1, 1, 2, 0]);
+    // A server from before the field: those tasks are unclassified.
+    const old = progressView({
+      ...base,
+      terminal: true,
+      tasks_observed: 2,
+      tasks_cancelled: undefined,
+    });
+    expect([old.cancelled, old.unclassified]).toEqual([0, 2]);
   });
 
   it('shows no jobs for a run that ended without a plan or a task', () => {

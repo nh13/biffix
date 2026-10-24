@@ -7099,6 +7099,11 @@
             "format": "int64",
             "description": "Of the succeeded tasks, how many were engine cache-hits (a subset of `tasks_succeeded`)."
           },
+          "tasks_cancelled": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tasks the run's cancel ended: still open when it was cancelled, or failed only once the\ncancel was requested. 0 unless the run was cancelled."
+          },
           "tasks_failed": {
             "type": "integer",
             "format": "int64"

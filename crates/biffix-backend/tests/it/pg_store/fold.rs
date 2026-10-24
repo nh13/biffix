@@ -102,6 +102,7 @@ async fn a_folded_run_reads_back_as_the_fold_says() {
             got.run.tasks_running,
             got.run.tasks_queued,
             got.run.tasks_failed,
+            got.run.tasks_cancelled,
             got.run.tasks_cached,
         ],
         [
@@ -110,6 +111,7 @@ async fn a_folded_run_reads_back_as_the_fold_says() {
             counts.running,
             counts.queued,
             counts.failed,
+            counts.cancelled,
             counts.cached,
         ]
         .map(|n| n as i64)
@@ -158,6 +160,75 @@ async fn a_folded_run_reads_back_as_the_fold_says() {
     assert_eq!(
         (align.state.as_str(), align.image.as_deref(), align.verdict_reason.as_deref()),
         ("failed", Some("repo/a@sha256:1"), Some("missing A.bam"))
+    );
+}
+
+/// A cancelled run's task that was still running reads back `cancelled`, and the run's summary
+/// counts it under `tasks_cancelled`, not `tasks_failed`.
+#[tokio::test]
+#[ignore = "requires --features pg + the Postgres harness"]
+async fn a_cancelled_runs_open_task_reads_back_cancelled() {
+    use biffix_core::event::EventData;
+    use biffix_core::source::EventSource;
+    use biffix_core::testing::{self, RunEventExt};
+    use biffix_core::time::Timestamp;
+
+    let pool = migrated_pool("cancelled_run_reads_back").await;
+    let run = RunId::new("rc");
+    let ev = |secs: f64, source: EventSource, dedup: &str, data: EventData| {
+        testing::event(secs, source, dedup, data).with_run(run.as_str())
+    };
+    let events = vec![
+        biffix_core::event::run_submitted(
+            &run,
+            Timestamp::from_epoch_seconds(1.0),
+            biffix_core::event::RunSubmitted::new(
+                "v1",
+                "abc",
+                "sha256:x",
+                serde_json::json!({}),
+                vec![],
+            ),
+        ),
+        ev(3.0, EventSource::Snakemake, "sub", EventData::TaskSubmitted { image: None })
+            .with_task("align:s=A")
+            .with_attempt(1)
+            .with_job("job-a"),
+        testing::event(
+            4.0,
+            EventSource::AwsBatch,
+            "start",
+            EventData::TaskStarted { started_at: None, log_stream: None },
+        )
+        .with_job("job-a"),
+        ev(
+            5.0,
+            EventSource::BiffixControlPlane,
+            "cancel",
+            EventData::CancelRequested { actor: "alice".into(), actor_label: None },
+        ),
+        ev(
+            6.0,
+            EventSource::AwsBatch,
+            "coord-failed",
+            EventData::CoordinatorFailed {
+                log_stream: None,
+                exit_code: None,
+                status_reason: None,
+                termination_category: None,
+            },
+        ),
+    ];
+    biffix_db::log::append_and_advance(&pool, &events).await.unwrap();
+
+    let got = PgStore::new(pool).get_run(&run).await.unwrap();
+    assert_eq!(got.run.state, "cancelled");
+    assert_eq!((got.run.tasks_observed, got.run.tasks_failed, got.run.tasks_cancelled), (1, 0, 1));
+    let align = &got.tasks[0];
+    assert_eq!(
+        (align.state.as_str(), align.termination_category.as_deref()),
+        ("cancelled", None),
+        "a cancelled task is not reported as one the run's end left without a result"
     );
 }
 
