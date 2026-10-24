@@ -192,11 +192,7 @@ mod tests {
     #[tokio::test]
     async fn an_unreachable_deployment_says_why() {
         let dir = tempfile::tempdir().unwrap();
-        let port = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
-        };
-        let base = format!("http://127.0.0.1:{port}");
+        let base = format!("http://{}", crate::error::CLOSED_LOOPBACK);
         let err =
             health(&mut session(&base, dir.path().join("credentials.json"))).await.unwrap_err();
         assert!(

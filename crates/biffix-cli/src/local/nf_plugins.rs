@@ -869,13 +869,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_registry_is_named_as_such() {
-        // A port nothing listens on.
-        let port = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
-        };
-        let e =
-            pin_from(&format!("http://127.0.0.1:{port}"), &[("nf-x", "1.0.0")]).await.unwrap_err();
+        let base = format!("http://{}", crate::error::CLOSED_LOOPBACK);
+        let e = pin_from(&base, &[("nf-x", "1.0.0")]).await.unwrap_err();
         assert!(
             matches!(e, CliError::Unavailable(ref m)
                 if m.contains("cannot reach the Nextflow plugin registry")

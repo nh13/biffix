@@ -113,6 +113,14 @@ pub type CliResult<T> = Result<T, CliError>;
 /// before giving up: a blip does not become a spurious "run failed".
 pub(crate) const TRANSIENT_BUDGET: u32 = 20;
 
+/// A loopback address nothing listens on, for tests of an unreachable endpoint: a connection to it
+/// is refused at once. Port 1 lies below every OS's ephemeral range, so no `bind(":0")` in this or
+/// another process is ever handed it, unlike a port bound and released a moment ago, which a
+/// concurrent stub can take (and, closing with the connection queued, turn the refusal into a
+/// reset).
+#[cfg(test)]
+pub(crate) const CLOSED_LOOPBACK: &str = "127.0.0.1:1";
+
 /// The kind of transport failure behind a reqwest error. reqwest itself flags only `is_timeout` /
 /// `is_connect`, so the connect case is split by walking the source chain: an `io::Error` of kind
 /// `ConnectionRefused`, hyper-util's resolver error (rendered `dns error: …`), or a rustls
@@ -199,13 +207,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_refused_connection_is_named_as_such() {
-        // Bind then drop a listener so the port is closed.
-        let port = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
-        };
         let err = reqwest::Client::new()
-            .get(format!("http://127.0.0.1:{port}/"))
+            .get(format!("http://{CLOSED_LOOPBACK}/"))
             .send()
             .await
             .unwrap_err();
