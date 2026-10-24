@@ -1,7 +1,7 @@
 <script lang="ts">
   // What is left to fix, as the launch bar and the wizard's footer say it: a count, the first two
   // problems as links to them, and how many more.
-  import { plural } from '$lib/util/format';
+  import { plural } from '#lib/util/format.js';
   import { problemTitle, type Problem } from '../form';
   import { launchForm } from './launchForm.svelte';
 

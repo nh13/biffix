@@ -1,9 +1,9 @@
 <script lang="ts">
   // The runs list in the Expert view: one row per run with its ids, workflow version, state,
   // engine, project, times, cost, submitter and progress. The page owns the list's state.
-  import Progress from '$lib/components/Progress.svelte';
-  import SortHeader from '$lib/components/SortHeader.svelte';
-  import { fmtDate, fmtWallTime } from '$lib/util/format';
+  import Progress from '#lib/components/Progress.svelte';
+  import SortHeader from '#lib/components/SortHeader.svelte';
+  import { fmtDate, fmtWallTime } from '#lib/util/format.js';
   import type { RunsList } from './runsList.svelte';
   import type { SortKey } from './runsSort';
   import { runTabHref } from './runNav';

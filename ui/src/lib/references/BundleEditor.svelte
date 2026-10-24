@@ -1,9 +1,9 @@
 <script lang="ts">
   // Settings → References: the form that adds or edits one reference bundle, a file picker for each
   // of its paths. The server checks the files and says which it could not find.
-  import { saveReference } from '$lib/api';
-  import { errorMessage } from '$lib/util/format';
-  import FilePicker from '$lib/launch/FilePicker.svelte';
+  import { saveReference } from '#lib/api/index.js';
+  import { errorMessage } from '#lib/util/format.js';
+  import FilePicker from '#lib/launch/FilePicker.svelte';
   import { COMMON_KEYS, KINDS, pickerMode, requestOf, type Editing } from './bundleForm';
 
   interface Props {

@@ -2,7 +2,7 @@
   // A samplesheet param with declared columns: built as rows (the default, which biffix writes as
   // the sheet file), or given as the path of a sheet that already exists. Only rendered for a field
   // with a `samplesheet`; the template's `{:else if field.samplesheet}` just narrows its type.
-  import type { FormField } from '$lib/workflows/schema';
+  import type { FormField } from '#lib/workflows/schema.js';
   import FieldInput from '../FieldInput.svelte';
   import HelpPanel from '../HelpPanel.svelte';
   import SamplesheetBuilder from './SamplesheetBuilder.svelte';

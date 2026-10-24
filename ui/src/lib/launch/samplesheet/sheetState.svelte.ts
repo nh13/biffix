@@ -6,8 +6,8 @@
 // Construct it while a component initialises: its effects live as long as that component.
 
 import { untrack } from 'svelte';
-import type { DetectedSamples } from '$lib/api';
-import type { SheetSpec } from '$lib/generated/samples';
+import type { DetectedSamples } from '#lib/api/index.js';
+import type { SheetSpec } from '#lib/generated/samples.js';
 import { standingSuggestions } from './detect';
 import {
   carryTouched,

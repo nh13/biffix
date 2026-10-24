@@ -8,8 +8,8 @@ import {
   type OutputPreview,
   type OutputUrl,
   type RunOutput,
-} from '$lib/api';
-import { errorMessage } from '$lib/util/format';
+} from '#lib/api/index.js';
+import { errorMessage } from '#lib/util/format.js';
 
 export interface ViewerFile {
   /** Identifies the file: a new key reloads what is shown. */

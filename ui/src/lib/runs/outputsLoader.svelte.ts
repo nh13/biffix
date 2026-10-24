@@ -9,9 +9,9 @@
 //   $effect(() => files.watch({ runId, live }));
 
 import { untrack } from 'svelte';
-import { listAllOutputs, listOutputs, type RunOutput } from '$lib/api';
-import { startPoll } from '$lib/util/poll';
-import { sameOutputs } from '$lib/runs/outputs';
+import { listAllOutputs, listOutputs, type RunOutput } from '#lib/api/index.js';
+import { startPoll } from '#lib/util/poll.js';
+import { sameOutputs } from '#lib/runs/outputs.js';
 
 /** Rows per request. */
 const PAGE = 2000;

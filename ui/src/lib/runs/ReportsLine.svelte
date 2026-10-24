@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { getQcGeneralStats, type QcGeneralStats, type RunReport } from '$lib/api';
-  import { runTabHref } from '$lib/runs/runNav';
-  import { withViewParams } from '$lib/util/urlParam';
-  import { resultCards } from '$lib/runs/results';
+  import { getQcGeneralStats, type QcGeneralStats, type RunReport } from '#lib/api/index.js';
+  import { runTabHref } from '#lib/runs/runNav.js';
+  import { withViewParams } from '#lib/util/urlParam.js';
+  import { resultCards } from '#lib/runs/results.js';
   import { qcStatus } from './qcStats';
-  import { plural } from '$lib/util/format';
+  import { plural } from '#lib/util/format.js';
 
   // On a run's Overview: a pointer to its QC report (MultiQC) — with how many samples it covers and
   // which fail MultiQC's own rules — or to its other reports, when it has any.

@@ -8,22 +8,22 @@
     type TaskPage,
     type TaskSort,
     type TaskStateFilter,
-  } from '$lib/api';
-  import { debounce } from '$lib/util/debounce';
-  import { errorMessage } from '$lib/util/format';
-  import { replaceUrl } from '$lib/util/replaceUrl';
-  import { startPoll } from '$lib/util/poll';
-  import { isLiveRun } from '$lib/runs/runState';
-  import { UrlEcho } from '$lib/util/urlEcho';
-  import { viewParams } from '$lib/util/urlParam';
-  import { jobsViewHref, parseJobsView, STATE_FILTERS, type JobsView } from '$lib/runs/jobsUrl';
-  import { runTabHref } from '$lib/runs/runNav';
-  import { fetchWindow, newestOnly } from '$lib/runs/taskWindow';
-  import { nextJobIndex } from '$lib/runs/jobsTable';
-  import { focusRadio, radioKeyTarget } from '$lib/util/radioGroup';
-  import { overlayOpen, shortcutBlocked } from '$lib/runs/analysis/analysisNav';
-  import JobPane from '$lib/runs/JobPane.svelte';
-  import JobsTable from '$lib/runs/JobsTable.svelte';
+  } from '#lib/api/index.js';
+  import { debounce } from '#lib/util/debounce.js';
+  import { errorMessage } from '#lib/util/format.js';
+  import { replaceUrl } from '#lib/util/replaceUrl.js';
+  import { startPoll } from '#lib/util/poll.js';
+  import { isLiveRun } from '#lib/runs/runState.js';
+  import { UrlEcho } from '#lib/util/urlEcho.js';
+  import { viewParams } from '#lib/util/urlParam.js';
+  import { jobsViewHref, parseJobsView, STATE_FILTERS, type JobsView } from '#lib/runs/jobsUrl.js';
+  import { runTabHref } from '#lib/runs/runNav.js';
+  import { fetchWindow, newestOnly } from '#lib/runs/taskWindow.js';
+  import { nextJobIndex } from '#lib/runs/jobsTable.js';
+  import { focusRadio, radioKeyTarget } from '#lib/util/radioGroup.js';
+  import { overlayOpen, shortcutBlocked } from '#lib/runs/analysis/analysisNav.js';
+  import JobPane from '#lib/runs/JobPane.svelte';
+  import JobsTable from '#lib/runs/JobsTable.svelte';
 
   type Task = TaskPage['tasks'][number];
 
@@ -153,7 +153,7 @@
 
   // Selecting a job pushes history, so Back closes the pane again.
   function select(taskKey: string | null) {
-    return goto(viewHref({ ...view, job: taskKey }), { keepFocus: true, noScroll: true });
+    return goto(viewHref({ ...view, job: taskKey }), { reset: false });
   }
 
   // The search box updates the URL once typing pauses, not on every keystroke. The URL's `q` comes

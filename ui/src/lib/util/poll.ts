@@ -20,7 +20,7 @@
 //     });
 //   });
 
-import { errorMessage } from '$lib/util/format';
+import { errorMessage } from '#lib/util/format.js';
 
 export interface PollHandlers<T> {
   /** Fetch the latest value. Re-invoked on each tick until stopped. */

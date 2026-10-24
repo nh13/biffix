@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { RunReport } from '$lib/api';
+import type { RunReport } from '#lib/api/index.js';
 import {
   formatLabel,
   noResultsReason,

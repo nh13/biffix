@@ -7,12 +7,12 @@
   // one) so links stay stable. This page reads the place off the URL and loads the projects and
   // the project's sources; the browser does the rest.
   import { page } from '$app/state';
-  import { listProjects, type Project } from '$lib/api';
-  import DataBrowser from '$lib/data/DataBrowser.svelte';
-  import { ProjectSources } from '$lib/data/projectSources.svelte';
-  import { dataLocation, requestedProject } from '$lib/data/paths';
-  import { presentationFor } from '$lib/data/presentation';
-  import { view } from '$lib/state/userPrefs.svelte';
+  import { listProjects, type Project } from '#lib/api/index.js';
+  import DataBrowser from '#lib/data/DataBrowser.svelte';
+  import { ProjectSources } from '#lib/data/projectSources.svelte.js';
+  import { dataLocation, requestedProject } from '#lib/data/paths.js';
+  import { presentationFor } from '#lib/data/presentation.js';
+  import { view } from '#lib/state/userPrefs.svelte.js';
 
   // The deploy's projects, for the choice of project; `null` until (or unless) they load, when the
   // page browses the default project as a deploy of one does.

@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { getAttempts, getTaskLogs, type TaskAttempt } from '$lib/api';
-  import { attemptLabel } from '$lib/runs/attempts';
-  import LogStream from '$lib/components/LogStream.svelte';
-  import { errorMessage } from '$lib/util/format';
+  import { getAttempts, getTaskLogs, type TaskAttempt } from '#lib/api/index.js';
+  import { attemptLabel } from '#lib/runs/attempts.js';
+  import LogStream from '#lib/components/LogStream.svelte';
+  import { errorMessage } from '#lib/util/format.js';
 
   // The expanded panel under a task row: its logs, plus — when the task ran more than once (e.g. a
   // spot reclaim then a retry) — a picker to read any attempt's logs, not just the one that won.

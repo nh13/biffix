@@ -1,9 +1,9 @@
 // One experiment's detail, as both views show it: loaded, then polled while any of its analyses is
 // running.
 
-import { getExperiment, type Experiment, type ExperimentDetail } from '$lib/api';
-import { errorKind as toErrorKind, type ErrorKind } from '$lib/components/errorPage';
-import { PollNudge, startPoll } from '$lib/util/poll';
+import { getExperiment, type Experiment, type ExperimentDetail } from '#lib/api/index.js';
+import { errorKind as toErrorKind, type ErrorKind } from '#lib/components/errorPage.js';
+import { PollNudge, startPoll } from '#lib/util/poll.js';
 import { anyLive } from './experiments';
 
 export class ExperimentLoader {

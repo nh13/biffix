@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { getProvenance, type RunDetail } from '$lib/api';
-  import { saveBlob } from '$lib/util/download';
-  import { isTerminalRun } from '$lib/runs/runState';
-  import { getRunContext } from '$lib/runs/runContext.svelte';
-  import { workflowTabHref } from '$lib/workflows/workflowNav';
-  import { errorMessage } from '$lib/util/format';
+  import { getProvenance, type RunDetail } from '#lib/api/index.js';
+  import { saveBlob } from '#lib/util/download.js';
+  import { isTerminalRun } from '#lib/runs/runState.js';
+  import { getRunContext } from '#lib/runs/runContext.svelte.js';
+  import { workflowTabHref } from '#lib/workflows/workflowNav.js';
+  import { errorMessage } from '#lib/util/format.js';
 
   // What can be done to the run from anywhere on its page: Cancel while it is live; once it has
   // ended, Re-run it (and Resume a Nextflow run from its cache). Both open the workflow's Run tab

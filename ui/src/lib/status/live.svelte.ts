@@ -5,10 +5,10 @@
 // later failure sets `error` (keeping the last good `report` for context), so neither the badge nor
 // the page keeps saying "operational" while the control plane is unreachable.
 
-import { getStatus, type StatusReport } from '$lib/api';
-import { startPoll } from '$lib/util/poll';
+import { getStatus, type StatusReport } from '#lib/api/index.js';
+import { startPoll } from '#lib/util/poll.js';
 import { healthOfStatus, type Health } from './health';
-import { errorMessage } from '$lib/util/format';
+import { errorMessage } from '#lib/util/format.js';
 
 export const STATUS_POLL_MS = 15000;
 

@@ -2,9 +2,9 @@
 // what it is — the key results the pipeline declares first, then its other results, then its logs
 // and measurements — with plain names, no task or role columns. Pure, so it is unit-tested.
 
-import type { RunOutput, RunReport } from '$lib/api';
-import { folderOf } from '$lib/data/paths';
-import { isAlignment, isFastqcReport, isServable, openKind, type OpenKind } from '$lib/qc/open';
+import type { RunOutput, RunReport } from '#lib/api/index.js';
+import { folderOf } from '#lib/data/paths.js';
+import { isAlignment, isFastqcReport, isServable, openKind, type OpenKind } from '#lib/qc/open.js';
 
 /** One file as the list shows it. */
 export interface LabFile {

@@ -7,8 +7,8 @@
 //   const why = new FailureSummaryLoader();
 //   $effect(() => why.watch(runId, failed));
 
-import { getFailureSummary, type FailureSummary } from '$lib/api';
-import { errorMessage } from '$lib/util/format';
+import { getFailureSummary, type FailureSummary } from '#lib/api/index.js';
+import { errorMessage } from '#lib/util/format.js';
 
 export class FailureSummaryLoader {
   summary = $state<FailureSummary | null>(null);

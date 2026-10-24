@@ -5,7 +5,7 @@
 
 import { API_BASE } from './base';
 import { getAccessToken, reauthenticate, reauthHeld } from './auth';
-import type { operations, paths } from '$lib/generated/api';
+import type { operations, paths } from '#lib/generated/api.js';
 
 // Every route this client calls, checked against the generated OpenAPI paths: a backend route
 // rename fails `svelte-check` here instead of 404ing at runtime. Fill a template with `pathFor`.

@@ -1,18 +1,18 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { page } from '$app/state';
-  import { getWorkflow, listWorkflows } from '$lib/api';
-  import { startPoll } from '$lib/util/poll';
-  import { errorMessage } from '$lib/util/format';
-  import { groupVersions, workflowKey } from '$lib/workflows/version';
-  import { WorkflowState, setWorkflowContext } from '$lib/workflows/workflowContext.svelte';
-  import { workflowTabs, workflowTabHref, activeWorkflowTab } from '$lib/workflows/workflowNav';
-  import { view } from '$lib/state/userPrefs.svelte';
-  import { LAB_WORKFLOW_TABS } from '$lib/view/viewRoutes';
-  import ExpertHint from '$lib/shell/ExpertHint.svelte';
-  import VersionHeader from '$lib/workflows/VersionHeader.svelte';
-  import ErrorPage from '$lib/components/ErrorPage.svelte';
-  import { errorKind } from '$lib/components/errorPage';
+  import { getWorkflow, listWorkflows } from '#lib/api/index.js';
+  import { startPoll } from '#lib/util/poll.js';
+  import { errorMessage } from '#lib/util/format.js';
+  import { groupVersions, workflowKey } from '#lib/workflows/version.js';
+  import { WorkflowState, setWorkflowContext } from '#lib/workflows/workflowContext.svelte.js';
+  import { workflowTabs, workflowTabHref, activeWorkflowTab } from '#lib/workflows/workflowNav.js';
+  import { view } from '#lib/state/userPrefs.svelte.js';
+  import { LAB_WORKFLOW_TABS } from '#lib/view/viewRoutes.js';
+  import ExpertHint from '#lib/shell/ExpertHint.svelte';
+  import VersionHeader from '#lib/workflows/VersionHeader.svelte';
+  import ErrorPage from '#lib/components/ErrorPage.svelte';
+  import { errorKind } from '#lib/components/errorPage.js';
 
   // One workflow version: loads it and its sibling versions, and renders the header and the tabs
   // (Run, About, Parameters, Versions, Provenance), each its own route.
@@ -119,7 +119,7 @@
         href={workflowTabHref(id, t)}
         class:active={tab === t}
         aria-current={tab === t ? 'page' : undefined}
-        data-sveltekit-noscroll>{t}</a
+        data-sveltekit-reset="false">{t}</a
       >
     {/each}
   </nav>

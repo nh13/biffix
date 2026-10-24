@@ -2,7 +2,7 @@
   // QC at a glance's previews: each sample's FastQC (the pipeline's own) and
   // its alignments in the genome browser, a sample picker and an Open each. Raw FASTQ inputs get
   // nothing here: only what the pipeline itself wrote.
-  import type { RunReport } from '$lib/api';
+  import type { RunReport } from '#lib/api/index.js';
   import { qcChoices, type OpenTarget, type QcChoice } from './open';
   import ResultViewer from './ResultViewer.svelte';
 

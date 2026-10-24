@@ -1,8 +1,8 @@
 <script lang="ts">
-  import type { RunDetail } from '$lib/api';
-  import { fmtUsd } from '$lib/util/format';
-  import { costBasis } from '$lib/runs/runFacts';
-  import { lifecycleLabel } from '$lib/runs/attempts';
+  import type { RunDetail } from '#lib/api/index.js';
+  import { fmtUsd } from '#lib/util/format.js';
+  import { costBasis } from '#lib/runs/runFacts.js';
+  import { lifecycleLabel } from '#lib/runs/attempts.js';
 
   // The run's estimated cost: totals and a breakdown by instance type.
   interface Props {

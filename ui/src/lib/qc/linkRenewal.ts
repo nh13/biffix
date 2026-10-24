@@ -4,8 +4,8 @@
 // when igv's own reads are refused (403). Free of igv and of the page, so the rules are unit-tested
 // with fake timers and a fake XMLHttpRequest.
 
-import type { AlignmentLinks } from '$lib/api';
-import { errorMessage } from '$lib/util/format';
+import type { AlignmentLinks } from '#lib/api/index.js';
+import { errorMessage } from '#lib/util/format.js';
 
 /** Re-mint this long before the links expire. */
 export const REMINT_LEAD_SECONDS = 120;

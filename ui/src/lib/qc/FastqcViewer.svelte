@@ -11,12 +11,12 @@
     type FastqcModule,
     type FastqcReport,
     type RunOutput,
-  } from '$lib/api';
-  import Dialog from '$lib/components/Dialog.svelte';
-  import { errorKind } from '$lib/components/errorPage';
-  import { errorMessage } from '$lib/util/format';
-  import OutputViewer from '$lib/components/OutputViewer.svelte';
-  import { outputViewerFile, type ViewerFile } from '$lib/components/viewerFile';
+  } from '#lib/api/index.js';
+  import Dialog from '#lib/components/Dialog.svelte';
+  import { errorKind } from '#lib/components/errorPage.js';
+  import { errorMessage } from '#lib/util/format.js';
+  import OutputViewer from '#lib/components/OutputViewer.svelte';
+  import { outputViewerFile, type ViewerFile } from '#lib/components/viewerFile.js';
   import FastqcPlot from './FastqcPlot.svelte';
   import { extrasOf, statusOf, statusSummary, viewOf } from './fastqc';
 

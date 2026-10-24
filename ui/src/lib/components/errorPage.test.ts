@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ApiError, AuthRequiredError } from '$lib/api';
+import { ApiError, AuthRequiredError } from '#lib/api/index.js';
 import { errorKind, errorWords } from './errorPage';
 
 describe('errorKind', () => {

@@ -1,13 +1,17 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { getQcGeneralStats, type QcGeneralStats as Stats, type RunReport } from '$lib/api';
-  import QcGeneralStats from '$lib/runs/QcGeneralStats.svelte';
-  import { replaceUrl } from '$lib/util/replaceUrl';
-  import { viewParams, withViewParams } from '$lib/util/urlParam';
-  import { getRunContext } from '$lib/runs/runContext.svelte';
-  import { outputViewerFile, type ViewerFile } from '$lib/components/viewerFile';
-  import OutputViewer from '$lib/components/OutputViewer.svelte';
-  import { resultCards } from '$lib/runs/results';
+  import {
+    getQcGeneralStats,
+    type QcGeneralStats as Stats,
+    type RunReport,
+  } from '#lib/api/index.js';
+  import QcGeneralStats from '#lib/runs/QcGeneralStats.svelte';
+  import { replaceUrl } from '#lib/util/replaceUrl.js';
+  import { viewParams, withViewParams } from '#lib/util/urlParam.js';
+  import { getRunContext } from '#lib/runs/runContext.svelte.js';
+  import { outputViewerFile, type ViewerFile } from '#lib/components/viewerFile.js';
+  import OutputViewer from '#lib/components/OutputViewer.svelte';
+  import { resultCards } from '#lib/runs/results.js';
   import {
     isServable,
     openKind,
@@ -15,9 +19,9 @@
     sampleLabels,
     unservedText,
     type OpenTarget,
-  } from '$lib/qc/open';
-  import ResultViewer from '$lib/qc/ResultViewer.svelte';
-  import ReusedFrom from '$lib/runs/ReusedFrom.svelte';
+  } from '#lib/qc/open.js';
+  import ResultViewer from '#lib/qc/ResultViewer.svelte';
+  import ReusedFrom from '#lib/runs/ReusedFrom.svelte';
 
   // The run's reports (its workflow's declared ones, then a MultiQC report, then FastQC results found
   // by name): pick one, see it in the page. A per-sample report is one choice with a sample picker.

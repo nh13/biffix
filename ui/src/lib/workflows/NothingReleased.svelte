@@ -1,7 +1,7 @@
 <script lang="ts">
   // What a Workflows page says when the Developer filter left out every pipeline: none has a
   // released version yet. Never an empty page without a reason, and the way to see them all.
-  import { setShowDeveloper } from '$lib/state/localPrefs.svelte';
+  import { setShowDeveloper } from '#lib/state/localPrefs.svelte.js';
 
   let { count, noun = 'pipeline' }: { count: number; noun?: string } = $props();
 </script>

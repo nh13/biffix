@@ -6,7 +6,8 @@
 // id (chosen by the deploy) is in the path. Carried verbatim, a folder whose name is empty or a
 // dot (`a//`, `../`) round-trips too.
 
-import { viewParams, withViewParams } from '$lib/util/urlParam';
+import type { ReadonlyURL } from '$app/state';
+import { viewParams, withViewParams } from '#lib/util/urlParam.js';
 
 export interface Crumb {
   label: string;
@@ -83,7 +84,7 @@ export function offersProjectChoice(projects: readonly ProjectChoice[] | null): 
  * The project the Data page names in its reads and links: the URL's `project`, or `null` (the
  * deploy's default project) when it names none.
  */
-export function requestedProject(url: URL): string | null {
+export function requestedProject(url: ReadonlyURL): string | null {
   return url.searchParams.get('project')?.trim() || null;
 }
 
@@ -108,7 +109,7 @@ export interface DataLocation {
  * The location a Data page URL names. `rest` is the route param after `/data/` (the source id),
  * which SvelteKit has already decoded (so it is not decoded again: a literal `%` stays).
  */
-export function dataLocation(url: URL, rest: string): DataLocation {
+export function dataLocation(url: ReadonlyURL, rest: string): DataLocation {
   const view = viewParams(url);
   const path = view.get('path');
   return {

@@ -4,8 +4,8 @@
 //
 // Construct it while a component initialises: its effect lives as long as that component.
 
-import { getWorkflowEstimate } from '$lib/api';
-import { delayed } from '$lib/util/debounce';
+import { getWorkflowEstimate } from '#lib/api/index.js';
+import { delayed } from '#lib/util/debounce.js';
 import { describeEstimate } from '../estimate';
 
 /** What the estimate is asked for: read through getters, so they stay current. */

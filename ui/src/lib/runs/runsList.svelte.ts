@@ -7,15 +7,15 @@
 
 import { untrack } from 'svelte';
 import { page } from '$app/state';
-import { replaceQueryParam } from '$lib/util/replaceUrl';
-import { validParam } from '$lib/util/urlParam';
-import { listExperiments, listRuns, type RunSummary, type RunFilter } from '$lib/api';
-import { PollNudge, startPoll } from '$lib/util/poll';
-import { delayed } from '$lib/util/debounce';
-import type { SortDir } from '$lib/util/sort';
+import { replaceQueryParam } from '#lib/util/replaceUrl.js';
+import { validParam } from '#lib/util/urlParam.js';
+import { listExperiments, listRuns, type RunSummary, type RunFilter } from '#lib/api/index.js';
+import { PollNudge, startPoll } from '#lib/util/poll.js';
+import { delayed } from '#lib/util/debounce.js';
+import type { SortDir } from '#lib/util/sort.js';
 import { nextPage, pageRange, pastLastPage, prevPage, type PageRequest } from './runsPager';
-import { view } from '$lib/state/userPrefs.svelte';
-import { t } from '$lib/view/vocab';
+import { view } from '#lib/state/userPrefs.svelte.js';
+import { t } from '#lib/view/vocab.js';
 import { runName } from './runName';
 import { afterDismissal, sortRuns, type SortKey } from './runsSort';
 import { saveNavList } from './analysis/analysisNav';

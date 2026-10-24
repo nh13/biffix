@@ -4,8 +4,8 @@
 //
 // Construct it while a component initialises: its effects live as long as that component.
 
-import { listExperiments, type Experiment } from '$lib/api';
-import { errorMessage } from '$lib/util/format';
+import { listExperiments, type Experiment } from '#lib/api/index.js';
+import { errorMessage } from '#lib/util/format.js';
 
 /** What the list is read for: read through getters, so they stay current. */
 export interface ExperimentInputs {

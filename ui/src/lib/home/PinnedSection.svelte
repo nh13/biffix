@@ -2,10 +2,10 @@
   // My work's pinned pipelines: the user's pins that name a registered, listed pipeline, in pin
   // order, as cards. A pin whose pipeline is gone or hidden is listed apart, so it can still be
   // unpinned.
-  import PipelineCard from '$lib/catalog/PipelineCard.svelte';
-  import { togglePin, view } from '$lib/state/userPrefs.svelte';
-  import type { WorkflowCatalog, WorkflowGroup } from '$lib/workflows/catalog.svelte';
-  import { pinName } from '$lib/workflows/version';
+  import PipelineCard from '#lib/catalog/PipelineCard.svelte';
+  import { togglePin, view } from '#lib/state/userPrefs.svelte.js';
+  import type { WorkflowCatalog, WorkflowGroup } from '#lib/workflows/catalog.svelte.js';
+  import { pinName } from '#lib/workflows/version.js';
 
   let { catalog }: { catalog: WorkflowCatalog } = $props();
 

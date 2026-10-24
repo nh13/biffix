@@ -1,6 +1,6 @@
-import type { TaskAttempt, Host } from '$lib/api';
-import { fmtBytes, fmtWallTime } from '$lib/util/format';
-import { jobCostText } from '$lib/runs/cost';
+import type { TaskAttempt, Host } from '#lib/api/index.js';
+import { fmtBytes, fmtWallTime } from '#lib/util/format.js';
+import { jobCostText } from '#lib/runs/cost.js';
 
 /**
  * Why an attempt ended, as one lowercase cause ranked the way the server's failure diagnosis ranks

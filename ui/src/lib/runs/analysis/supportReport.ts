@@ -2,11 +2,11 @@
 // bundle of what the page already shows (about 1 KB, never a secret), and the email that asks for
 // help. Built in the browser from data already fetched. Pure, so it is unit-tested.
 
-import type { FailureSummary, RunDetail } from '$lib/api';
-import { REDACTED_SECRET_PLACEHOLDER } from '$lib/launch/form';
+import type { FailureSummary, RunDetail } from '#lib/api/index.js';
+import { REDACTED_SECRET_PLACEHOLDER } from '#lib/launch/form.js';
 import { failureLine } from './failure';
-import { runName } from '$lib/runs/runName';
-import { paramEntries } from '$lib/runs/runFacts';
+import { runName } from '#lib/runs/runName.js';
+import { paramEntries } from '#lib/runs/runFacts.js';
 
 type SupportContact = NonNullable<FailureSummary['support']>;
 

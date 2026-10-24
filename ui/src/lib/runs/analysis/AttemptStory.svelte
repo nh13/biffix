@@ -2,7 +2,7 @@
   // A failed step's tries in *Why?*, one plain line each (`attemptStory`): when, on what kind of
   // machine, why it ended, and whether it was tried again. Read from the step's attempt records,
   // asked once per step; until they come (or if they cannot), the count of tries the summary gave.
-  import { getAttempts, type TaskAttempt } from '$lib/api';
+  import { getAttempts, type TaskAttempt } from '#lib/api/index.js';
   import { attemptStory, tryText } from './attemptStory';
 
   interface Props {

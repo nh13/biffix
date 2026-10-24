@@ -1,6 +1,6 @@
 <script lang="ts">
   // Settings › Notifications (Lab view): what the bell tells you, and a way to mark it all read.
-  import { markRead, notifications } from '$lib/notifications/notifications.svelte';
+  import { markRead, notifications } from '#lib/notifications/notifications.svelte.js';
   import { unreadText } from './settings';
 
   // A refused read, said here where it was asked for (the count goes back up on its own).

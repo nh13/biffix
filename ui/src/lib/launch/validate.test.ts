@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import cases from '../../../../schemas/validate-cases.json';
 import { inactiveFields, parseDecimal, sharedPattern, validateParams, valueKey } from './validate';
-import type { FormField } from '$lib/workflows/schema';
+import type { FormField } from '#lib/workflows/schema.js';
 
 interface Case {
   name: string;

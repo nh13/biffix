@@ -1,10 +1,10 @@
 // The Lab analysis page's Results: one card per key result the pipeline
 // declares, a per-sample result (its files for each sample, sharing a name) folded into one card
-// with a sample picker. Pure, so it is unit-tested. How a result opens is `$lib/qc/open`'s.
+// with a sample picker. Pure, so it is unit-tested. How a result opens is `#lib/qc/open`'s.
 
-import type { RunReport } from '$lib/api';
-import { withoutFastqcTwins } from '$lib/qc/open';
-import { plural } from '$lib/util/format';
+import type { RunReport } from '#lib/api/index.js';
+import { withoutFastqcTwins } from '#lib/qc/open.js';
+import { plural } from '#lib/util/format.js';
 
 /** One card: a report, or a per-sample report's entries (each sample's files). */
 export interface ResultCard {

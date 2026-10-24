@@ -3,9 +3,9 @@
 // the file's columns, by name and by common aliases, and the user confirms or changes the match
 // before anything is imported. The import parser itself is `sheet.ts`'s.
 
-import type { SheetColumn, SheetSpec } from '$lib/generated/samples';
-import { plural } from '$lib/util/format';
-import { readPref, writePref } from '$lib/util/storage';
+import type { SheetColumn, SheetSpec } from '#lib/generated/samples.js';
+import { plural } from '#lib/util/format.js';
+import { readPref, writePref } from '#lib/util/storage.js';
 import { emptyRow, type SheetRow } from './sheet';
 
 export { readSheetTable, type SheetTable } from './sheet';

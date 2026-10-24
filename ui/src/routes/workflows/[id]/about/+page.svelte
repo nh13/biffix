@@ -1,9 +1,9 @@
 <script lang="ts">
   // The version's About page: the Markdown its author named with `about:` in biffix.yaml, rendered
-  // safely (see $lib/markdown).
-  import { renderMarkdown } from '$lib/markdown/markdown';
-  import { getWorkflowContext } from '$lib/workflows/workflowContext.svelte';
-  import { workflowTabHref } from '$lib/workflows/workflowNav';
+  // safely (see #lib/markdown).
+  import { renderMarkdown } from '#lib/markdown/markdown.js';
+  import { getWorkflowContext } from '#lib/workflows/workflowContext.svelte.js';
+  import { workflowTabHref } from '#lib/workflows/workflowNav.js';
 
   const wf = getWorkflowContext();
   const html = $derived(

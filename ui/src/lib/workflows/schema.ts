@@ -14,8 +14,8 @@ import type {
   Preset,
   ShowIf,
   WidgetHint,
-} from '$lib/generated/formschema';
-import { plural } from '$lib/util/format';
+} from '#lib/generated/formschema.js';
+import { plural } from '#lib/util/format.js';
 
 /**
  * A form field. `default` and `prefill` may be any JSON value; the JSON Schema says so (they are

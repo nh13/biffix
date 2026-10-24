@@ -4,12 +4,12 @@
   // result with every analysis's card side by side (to compare them), or each analysis with its
   // cards. A sample filter shows one sample's per-sample results everywhere. The view is remembered
   // in this browser; the reports are loaded once for every view (`RunReportList`).
-  import type { RunSummary } from '$lib/api';
-  import { readPref, writePref } from '$lib/util/storage';
-  import type { OpenTarget } from '$lib/qc/open';
+  import type { RunSummary } from '#lib/api/index.js';
+  import { readPref, writePref } from '#lib/util/storage.js';
+  import type { OpenTarget } from '#lib/qc/open.js';
   import ExperimentRunResults from './ExperimentRunResults.svelte';
-  import ResultCard from '$lib/runs/analysis/ResultCard.svelte';
-  import ResultCell from '$lib/runs/analysis/ResultCell.svelte';
+  import ResultCard from '#lib/runs/analysis/ResultCard.svelte';
+  import ResultCell from '#lib/runs/analysis/ResultCell.svelte';
   import {
     cardFor,
     initialView,
@@ -19,10 +19,10 @@
     type ResultsView,
     type RunCards,
   } from './resultMatrix';
-  import { resultCards } from '$lib/runs/results';
+  import { resultCards } from '#lib/runs/results.js';
   import { RunReportList } from './runReports.svelte';
-  import { runName } from '$lib/runs/runName';
-  import { runTabHref } from '$lib/runs/runNav';
+  import { runName } from '#lib/runs/runName.js';
+  import { runTabHref } from '#lib/runs/runNav.js';
 
   interface Props {
     /** The analyses whose results are shown (those that may have some), newest first. */

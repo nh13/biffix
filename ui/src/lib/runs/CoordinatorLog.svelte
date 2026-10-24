@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { getCoordinatorLogs, type RunDetail } from '$lib/api';
-  import { isLiveRun } from '$lib/runs/runState';
-  import LogStream from '$lib/components/LogStream.svelte';
+  import { getCoordinatorLogs, type RunDetail } from '#lib/api/index.js';
+  import { isLiveRun } from '#lib/runs/runState.js';
+  import LogStream from '#lib/components/LogStream.svelte';
 
   // The coordinator job's log, live-tailed while the run is going.
   interface Props {

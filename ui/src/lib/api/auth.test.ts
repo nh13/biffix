@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { base64UrlEncode } from '$lib/util/base64url';
+import { base64UrlEncode } from '#lib/util/base64url.js';
 
 import {
   beginLogin,

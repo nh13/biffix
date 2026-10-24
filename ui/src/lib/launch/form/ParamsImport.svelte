@@ -2,7 +2,7 @@
   // *Import YAML*: a params file (YAML or JSON, the one `biffix runs submit --params` takes), pasted
   // or chosen, filling the form by parameter name. Its card is `.import`, which ⌘/Ctrl+Enter never
   // launches from.
-  import { errorMessage } from '$lib/util/format';
+  import { errorMessage } from '#lib/util/format.js';
   import FormCard from './FormCard.svelte';
   import { launchForm } from './launchForm.svelte';
 

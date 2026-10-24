@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { listTasks, type RunDetail, type TaskPage } from '$lib/api';
-  import { fmtWallTime } from '$lib/util/format';
-  import { terminationLabel } from '$lib/runs/attempts';
-  import { startPoll } from '$lib/util/poll';
-  import { isLiveRun } from '$lib/runs/runState';
-  import { jobsHref } from '$lib/runs/jobsUrl';
-  import { uniqueBy } from '$lib/runs/taskWindow';
+  import { listTasks, type RunDetail, type TaskPage } from '#lib/api/index.js';
+  import { fmtWallTime } from '#lib/util/format.js';
+  import { terminationLabel } from '#lib/runs/attempts.js';
+  import { startPoll } from '#lib/util/poll.js';
+  import { isLiveRun } from '#lib/runs/runState.js';
+  import { jobsHref } from '#lib/runs/jobsUrl.js';
+  import { uniqueBy } from '#lib/runs/taskWindow.js';
 
   type Task = TaskPage['tasks'][number];
 

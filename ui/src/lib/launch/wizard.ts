@@ -3,8 +3,8 @@
 // state: it says which fields a step shows, which problems block it, and how the Review step
 // summarizes the form.
 
-import type { ReferenceBundle } from '$lib/api';
-import type { FormField, FormSchema } from '$lib/workflows/schema';
+import type { ReferenceBundle } from '#lib/api/index.js';
+import type { FormField, FormSchema } from '#lib/workflows/schema.js';
 import {
   isChanged,
   isOutdir,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { StatusHistory } from '$lib/api';
+import type { StatusHistory } from '#lib/api/index.js';
 import {
   MAX_BUCKETS,
   barTier,

@@ -1,7 +1,7 @@
 <script lang="ts">
   // The Workflows pages' Developer filter: off, they list only pipelines with a released version;
   // on, every pipeline. Remembered in this browser.
-  import { prefs, setShowDeveloper } from '$lib/state/localPrefs.svelte';
+  import { prefs, setShowDeveloper } from '#lib/state/localPrefs.svelte.js';
 </script>
 
 <label class="developer" title="Also list pipelines and versions still in development">

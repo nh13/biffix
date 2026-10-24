@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import 'swagger-ui-dist/swagger-ui.css';
-  import spec from '$lib/generated/openapi.json';
-  import { errorMessage } from '$lib/util/format';
+  import spec from '#lib/generated/openapi.json';
+  import { errorMessage } from '#lib/util/format.js';
 
   let container = $state<HTMLDivElement | undefined>();
   let error = $state<string | null>(null);

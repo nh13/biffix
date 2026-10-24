@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { runTabHref } from '$lib/runs/runNav';
+  import { runTabHref } from '#lib/runs/runNav.js';
 
   // Beside an output a resumed run reused rather than wrote again (the engine skipped the task): a
   // link to the nearest run it resumed that registered it (`RunOutput.reused_from`), not

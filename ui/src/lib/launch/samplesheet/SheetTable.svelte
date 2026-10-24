@@ -4,7 +4,7 @@
   // column and its problems in words beneath it. A sample to point out on arrival is scrolled to,
   // focused and briefly highlighted.
   import { untrack } from 'svelte';
-  import type { SheetSpec } from '$lib/generated/samples';
+  import type { SheetSpec } from '#lib/generated/samples.js';
   import {
     columnLabel,
     firstProblemColumn,

@@ -2,13 +2,13 @@
   // *Inputs used*: the samples, the reference, the options that differ from the
   // pipeline's standard settings, the name and where the results are (read-only), and the params
   // file a bioinformatician can relaunch it from.
-  import type { RunDetail, WorkflowDetail } from '$lib/api';
-  import { saveBlob } from '$lib/util/download';
-  import { plural } from '$lib/util/format';
-  import { paramsYaml } from '$lib/launch/form';
-  import { asRetention } from '$lib/launch/retention';
-  import { renderSheet } from '$lib/launch/samplesheet/sheet';
-  import { parseSchema } from '$lib/workflows/schema';
+  import type { RunDetail, WorkflowDetail } from '#lib/api/index.js';
+  import { saveBlob } from '#lib/util/download.js';
+  import { plural } from '#lib/util/format.js';
+  import { paramsYaml } from '#lib/launch/form.js';
+  import { asRetention } from '#lib/launch/retention.js';
+  import { renderSheet } from '#lib/launch/samplesheet/sheet.js';
+  import { parseSchema } from '#lib/workflows/schema.js';
   import {
     allSettings,
     s3Uris,
@@ -20,11 +20,11 @@
     usedSheets,
     type UsedSheet,
   } from './inputs';
-  import S3Location from '$lib/data/S3Location.svelte';
-  import { DataLinks } from '$lib/data/dataLinks.svelte';
-  import { runVersionHref, runVersionLabel } from '$lib/runs/runVersion';
-  import { pipelineTitle, runName } from '$lib/runs/runName';
-  import { asRecord } from '$lib/runs/runFacts';
+  import S3Location from '#lib/data/S3Location.svelte';
+  import { DataLinks } from '#lib/data/dataLinks.svelte.js';
+  import { runVersionHref, runVersionLabel } from '#lib/runs/runVersion.js';
+  import { pipelineTitle, runName } from '#lib/runs/runName.js';
+  import { asRecord } from '#lib/runs/runFacts.js';
 
   interface Props {
     run: RunDetail;

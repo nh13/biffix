@@ -1,8 +1,8 @@
 // Pure helpers for the file picker: where a URI lives among the data sources, and the file-type
-// filter. (Breadcrumbs and where an upload goes, shared with the Data page, are in $lib/data and
-// $lib/upload.)
+// filter. (Breadcrumbs and where an upload goes, shared with the Data page, are in #lib/data and
+// #lib/upload.)
 
-import type { DataSource } from '$lib/api';
+import type { DataSource } from '#lib/api/index.js';
 
 /** Whether a file name ends in one of `suffixes` (case-insensitive); no suffixes ⇒ any. */
 export function matchesSuffix(name: string, suffixes: readonly string[]): boolean {

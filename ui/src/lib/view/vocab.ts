@@ -2,7 +2,7 @@
 // Results); Expert keeps the engine's (Run, Workflow, Outputs). URLs and API fields never change.
 // Only words a page chooses by view live here; a page that is Lab-only or Expert-only just says it.
 
-import type { ViewMode } from '$lib/view/viewRoutes';
+import type { ViewMode } from '#lib/view/viewRoutes.js';
 
 const WORDS = {
   runs: { lab: 'Analyses', expert: 'Runs' },

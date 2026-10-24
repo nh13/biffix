@@ -1,7 +1,7 @@
 // Copying text to the clipboard, which can fail (no permission, an insecure context, an old
 // browser): one definition, so every copy button handles that the same way.
 
-import { debounce } from '$lib/util/debounce';
+import { debounce } from '#lib/util/debounce.js';
 
 /** Put `text` on the clipboard; `false` when the browser refused. */
 export async function copyText(text: string): Promise<boolean> {

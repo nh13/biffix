@@ -1,5 +1,5 @@
 // Typed client for the biffix control-plane API, one module per resource over the request core in
-// `client.ts`. This re-exports them all, so a caller imports any of it from `$lib/api`.
+// `client.ts`. This re-exports them all, so a caller imports any of it from `#lib/api/index.js`.
 
 export { ApiError, AuthRequiredError, authedFetch, responseError } from './client';
 export * from './data';

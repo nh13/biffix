@@ -2,18 +2,18 @@
   // One key result on the Lab analysis page: its name, format and description, a preview (a table's
   // first rows, an image as itself), Open (the output viewer, the FastQC viewer or the genome
   // browser, by its format) and Download. A per-sample result picks its sample first.
-  import { getOutputPreview, getOutputViewUrl } from '$lib/api';
-  import { headerlessFormatOf, parseTable } from '$lib/util/tsv';
-  import { unservedText, type OpenTarget } from '$lib/qc/open';
-  import ReusedFrom from '$lib/runs/ReusedFrom.svelte';
-  import { DataLinks } from '$lib/data/dataLinks.svelte';
+  import { getOutputPreview, getOutputViewUrl } from '#lib/api/index.js';
+  import { headerlessFormatOf, parseTable } from '#lib/util/tsv.js';
+  import { unservedText, type OpenTarget } from '#lib/qc/open.js';
+  import ReusedFrom from '#lib/runs/ReusedFrom.svelte';
+  import { DataLinks } from '#lib/data/dataLinks.svelte.js';
   import {
     formatLabel,
     previewKind,
     sampleCount,
     samplesText,
     type ResultCard,
-  } from '$lib/runs/results';
+  } from '#lib/runs/results.js';
   import { ResultChoice } from './resultChoice.svelte';
 
   interface Props {

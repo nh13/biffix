@@ -2,7 +2,7 @@
 // the public `GET /auth/config` once per page load. Shared `$state`, so a link rendered before the
 // config arrives fills in when it does.
 
-import { loadOAuthConfig } from '$lib/api/auth';
+import { loadOAuthConfig } from '#lib/api/auth.js';
 
 export const deploy = $state<{ region: string | null; userPoolId: string | null }>({
   region: null,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { storageWith } from '$lib/api/testing';
-import type { FormField, FormSchema } from '$lib/workflows/schema';
+import { storageWith } from '#lib/api/testing.js';
+import type { FormField, FormSchema } from '#lib/workflows/schema.js';
 import {
   defaultOutdir,
   draftValues,

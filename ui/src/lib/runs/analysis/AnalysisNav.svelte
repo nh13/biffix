@@ -5,10 +5,10 @@
   // drawer or tour). The walk covers the page of the list the user saw: it ends at that page's
   // edge, which the position says.
   import { goto } from '$app/navigation';
-  import { runTabHref } from '$lib/runs/runNav';
-  import { listRuns } from '$lib/api';
+  import { runTabHref } from '#lib/runs/runNav.js';
+  import { listRuns } from '#lib/api/index.js';
   import { loadNavList, navKey, neighbours, overlayOpen, type NavItem } from './analysisNav';
-  import { runName } from '$lib/runs/runName';
+  import { runName } from '#lib/runs/runName.js';
 
   interface Props {
     runId: string;

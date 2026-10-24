@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { completeLogin } from '$lib/api/auth';
-  import { errorMessage } from '$lib/util/format';
+  import { completeLogin } from '#lib/api/auth.js';
+  import { errorMessage } from '#lib/util/format.js';
   import { onMount } from 'svelte';
 
   let error = $state<string | null>(null);
@@ -9,7 +9,7 @@
   onMount(async () => {
     try {
       const returnTo = await completeLogin(new URL(window.location.href));
-      await goto(returnTo, { replaceState: true });
+      await goto(returnTo, { replace: true });
     } catch (reason) {
       error = errorMessage(reason);
     }

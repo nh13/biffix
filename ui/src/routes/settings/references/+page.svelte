@@ -1,11 +1,11 @@
 <script lang="ts">
   // Settings → References: the reference bundles launch forms offer. Anyone can
   // look; adding, editing and deleting needs admin (the server says so when it refuses).
-  import { deleteReference, listReferences, type ReferenceBundle } from '$lib/api';
-  import { errorMessage } from '$lib/util/format';
-  import { bundleForm, newBundleForm, type Editing } from '$lib/references/bundleForm';
-  import BundleEditor from '$lib/references/BundleEditor.svelte';
-  import BundleList from '$lib/references/BundleList.svelte';
+  import { deleteReference, listReferences, type ReferenceBundle } from '#lib/api/index.js';
+  import { errorMessage } from '#lib/util/format.js';
+  import { bundleForm, newBundleForm, type Editing } from '#lib/references/bundleForm.js';
+  import BundleEditor from '#lib/references/BundleEditor.svelte';
+  import BundleList from '#lib/references/BundleList.svelte';
 
   let bundles = $state<ReferenceBundle[]>([]);
   let loading = $state(true);

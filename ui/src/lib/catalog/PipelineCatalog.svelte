@@ -3,13 +3,13 @@
   // it does rather than by version ids. Pipelines a developer hid from the listing are left out, and
   // so, unless the viewer turns on Developer, are pipelines with no released version.
   import type { Snippet } from 'svelte';
-  import { WorkflowCatalog, type WorkflowGroup as Group } from '$lib/workflows/catalog.svelte';
+  import { WorkflowCatalog, type WorkflowGroup as Group } from '#lib/workflows/catalog.svelte.js';
   import PipelineCard from './PipelineCard.svelte';
-  import { loadPins, view } from '$lib/state/userPrefs.svelte';
-  import { catalogTitle as titleOf, launchVersion } from '$lib/workflows/release';
-  import DeveloperToggle from '$lib/workflows/DeveloperToggle.svelte';
-  import NothingReleased from '$lib/workflows/NothingReleased.svelte';
-  import { plural } from '$lib/util/format';
+  import { loadPins, view } from '#lib/state/userPrefs.svelte.js';
+  import { catalogTitle as titleOf, launchVersion } from '#lib/workflows/release.js';
+  import DeveloperToggle from '#lib/workflows/DeveloperToggle.svelte';
+  import NothingReleased from '#lib/workflows/NothingReleased.svelte';
+  import { plural } from '#lib/util/format.js';
 
   interface Props {
     /** The page's heading. */

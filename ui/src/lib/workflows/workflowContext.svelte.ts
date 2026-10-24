@@ -2,14 +2,14 @@
 // its tab pages. The pure tab helpers live in `workflowNav.ts`.
 
 import { getContext, setContext } from 'svelte';
-import type { WorkflowDetail, WorkflowSummary } from '$lib/api';
+import type { WorkflowDetail, WorkflowSummary } from '#lib/api/index.js';
 
 export class WorkflowState {
   detail = $state<WorkflowDetail | null>(null);
   loading = $state(true);
   error = $state<string | null>(null);
   /** What kind of failure `error` is, for the error page's words. */
-  errorKind = $state<import('$lib/components/errorPage').ErrorKind>('server');
+  errorKind = $state<import('#lib/components/errorPage.js').ErrorKind>('server');
   /** Bumped by the error page's Try again: the layout loads the version again. */
   loadAttempt = $state(0);
   /** Every version of the same (project, name), newest first. */

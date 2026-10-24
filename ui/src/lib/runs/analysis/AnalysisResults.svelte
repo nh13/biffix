@@ -2,15 +2,15 @@
   // *Results* on the Lab analysis page: a card per key result the pipeline declares
   // (a per-sample one folded into one card), each opening in the viewer its format calls for (the
   // output viewer, FastQC's or the genome browser); every file is one link away.
-  import type { RunDetail, WorkflowDetail } from '$lib/api';
-  import { currentSubject } from '$lib/api/auth';
-  import { view } from '$lib/state/userPrefs.svelte';
-  import ResultViewer from '$lib/qc/ResultViewer.svelte';
-  import { getRunContext } from '$lib/runs/runContext.svelte';
-  import { isTerminalRun } from '$lib/runs/runState';
+  import type { RunDetail, WorkflowDetail } from '#lib/api/index.js';
+  import { currentSubject } from '#lib/api/auth.js';
+  import { view } from '#lib/state/userPrefs.svelte.js';
+  import ResultViewer from '#lib/qc/ResultViewer.svelte';
+  import { getRunContext } from '#lib/runs/runContext.svelte.js';
+  import { isTerminalRun } from '#lib/runs/runState.js';
   import ResultCard from './ResultCard.svelte';
-  import type { OpenTarget } from '$lib/qc/open';
-  import { noResultsReason, resultCards, showsAuthorHint } from '$lib/runs/results';
+  import type { OpenTarget } from '#lib/qc/open.js';
+  import { noResultsReason, resultCards, showsAuthorHint } from '#lib/runs/results.js';
 
   interface Props {
     run: RunDetail;

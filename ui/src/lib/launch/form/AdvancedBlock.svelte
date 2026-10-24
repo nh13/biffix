@@ -3,7 +3,7 @@
   // names each group (a dot on one changed from its defaults), each group collapsed in turn unless
   // it was changed or every parameter is shown.
   import { untrack } from 'svelte';
-  import { plural } from '$lib/util/format';
+  import { plural } from '#lib/util/format.js';
   import type { Card } from '../form';
   import FieldControl from './FieldControl.svelte';
   import { launchForm } from './launchForm.svelte';

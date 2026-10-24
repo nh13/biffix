@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { DataSource } from '$lib/api';
+import type { DataSource } from '#lib/api/index.js';
 import { expertPresentation, labPresentation } from './presentation';
 
 const project = {

@@ -2,8 +2,8 @@
 // again when its results could have changed (it produced more, or it ended). Shared by every view
 // of results across analyses, so switching view never asks again.
 
-import { listRunReports, type RunReport, type RunSummary } from '$lib/api';
-import { errorMessage } from '$lib/util/format';
+import { listRunReports, type RunReport, type RunSummary } from '#lib/api/index.js';
+import { errorMessage } from '#lib/util/format.js';
 import { untrack } from 'svelte';
 
 export interface RunReportsEntry {

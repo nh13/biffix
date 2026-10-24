@@ -5,15 +5,15 @@
   import { onMount, tick, type Snippet } from 'svelte';
   import { page } from '$app/state';
   import { afterNavigate } from '$app/navigation';
-  import Icon from '$lib/components/Icon.svelte';
-  import UploadTray from '$lib/upload/UploadTray.svelte';
+  import Icon from '#lib/components/Icon.svelte';
+  import UploadTray from '#lib/upload/UploadTray.svelte';
   import {
     saveSidebarCollapsed,
     savedSidebarCollapsed,
     type Theme,
-  } from '$lib/state/localPrefs.svelte';
-  import { finishTour, view } from '$lib/state/userPrefs.svelte';
-  import { isExpertOnly } from '$lib/view/viewRoutes';
+  } from '#lib/state/localPrefs.svelte.js';
+  import { finishTour, view } from '#lib/state/userPrefs.svelte.js';
+  import { isExpertOnly } from '#lib/view/viewRoutes.js';
   import ExpertBanner from './ExpertBanner.svelte';
   import Tour from './Tour.svelte';
   import { TOUR_ANCHOR, shouldShowTour } from './tour';

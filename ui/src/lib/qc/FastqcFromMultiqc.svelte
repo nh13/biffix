@@ -4,8 +4,8 @@
   // recorded them, with a sample picker (and a section picker when MultiQC ran FastQC more than
   // once: raw and trimmed reads), and the full MultiQC report (which has the plots) a click away.
   // Statuses only: plots need FastQC's zips, which this run did not publish.
-  import type { FastqcStatusReport, RunReport } from '$lib/api';
-  import { outputViewerFile } from '$lib/components/viewerFile';
+  import type { FastqcStatusReport, RunReport } from '#lib/api/index.js';
+  import { outputViewerFile } from '#lib/components/viewerFile.js';
   import { statusOf, statusSummary } from './fastqc';
   import { basicStatRows, samePick, statusSections } from './fastqcStatus';
   import type { OpenTarget } from './open';

@@ -1,7 +1,7 @@
 // Data sources: what the launch form's file picker browses. Their errors carry the server's own
 // message (e.g. which grant a source is missing).
 
-import type { components } from '$lib/generated/api';
+import type { components } from '#lib/generated/api.js';
 import { API_PATHS, get, requestJson, withQuery, type JsonBody } from './client';
 import type { OutputPreview, OutputUrl } from './outputs';
 

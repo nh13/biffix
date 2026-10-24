@@ -2,10 +2,10 @@
 // one scheme `versionLabel` defines: short commit, content hash and build) and the day it was
 // registered, linked to that exact version's page.
 
-import type { RunDetail } from '$lib/api';
-import { localDate } from '$lib/util/date';
-import { versionLabelOfId } from '$lib/workflows/version';
-import { workflowHref } from '$lib/workflows/workflowNav';
+import type { RunDetail } from '#lib/api/index.js';
+import { localDate } from '#lib/util/date.js';
+import { versionLabelOfId } from '#lib/workflows/version.js';
+import { workflowHref } from '#lib/workflows/workflowNav.js';
 
 type RunVersion = Pick<RunDetail, 'workflow' | 'workflow_registered_at_micros'>;
 

@@ -3,7 +3,7 @@
   // (name, pipeline, who started it, Cancel / Try again), the plain status, then its sections in
   // the order its state calls for: what went wrong, results, QC at a glance, samples, inputs used
   // and cost. The run itself comes from the route's layout, which polls it.
-  import { experimentHref } from '$lib/experiments/experiments';
+  import { experimentHref } from '#lib/experiments/experiments.js';
   import {
     getQcFastqcStatus,
     getRun,
@@ -16,18 +16,18 @@
     type RunSummary,
     type WorkflowDetail,
     type WorkflowEstimate,
-  } from '$lib/api';
-  import { currentIdentity } from '$lib/api/auth';
-  import { errorMessage } from '$lib/util/format';
+  } from '#lib/api/index.js';
+  import { currentIdentity } from '#lib/api/auth.js';
+  import { errorMessage } from '#lib/util/format.js';
   import { page } from '$app/state';
-  import FastqcFromMultiqc from '$lib/qc/FastqcFromMultiqc.svelte';
-  import QcPreviews from '$lib/qc/QcPreviews.svelte';
-  import QcGeneralStats from '$lib/runs/QcGeneralStats.svelte';
-  import { getRunContext } from '$lib/runs/runContext.svelte';
-  import { FailureSummaryLoader } from '$lib/runs/failureLoader.svelte';
-  import { runVersionHref, runVersionLabel } from '$lib/runs/runVersion';
-  import { noCostLine } from '$lib/runs/cost';
-  import { isLiveRun, isTerminalRun } from '$lib/runs/runState';
+  import FastqcFromMultiqc from '#lib/qc/FastqcFromMultiqc.svelte';
+  import QcPreviews from '#lib/qc/QcPreviews.svelte';
+  import QcGeneralStats from '#lib/runs/QcGeneralStats.svelte';
+  import { getRunContext } from '#lib/runs/runContext.svelte.js';
+  import { FailureSummaryLoader } from '#lib/runs/failureLoader.svelte.js';
+  import { runVersionHref, runVersionLabel } from '#lib/runs/runVersion.js';
+  import { noCostLine } from '#lib/runs/cost.js';
+  import { isLiveRun, isTerminalRun } from '#lib/runs/runState.js';
   import {
     cancelledBanner,
     costText,
@@ -35,27 +35,27 @@
     sectionOrder,
     startedLine,
   } from './analysis';
-  import AddToExperiment from '$lib/experiments/AddToExperiment.svelte';
+  import AddToExperiment from '#lib/experiments/AddToExperiment.svelte';
   import AnalysisResults from './AnalysisResults.svelte';
-  import { qcChoices } from '$lib/qc/open';
+  import { qcChoices } from '#lib/qc/open.js';
   import InputsUsed from './InputsUsed.svelte';
   import SampleGrid from './SampleGrid.svelte';
   import SharePopover from './SharePopover.svelte';
-  import { statusLine } from '$lib/runs/status';
+  import { statusLine } from '#lib/runs/status.js';
   import TryAgain from './TryAgain.svelte';
   import { sampleToFix, tryAgainModeOf } from './tryAgain';
   import WhatWentWrong from './WhatWentWrong.svelte';
   import AnalysisName from './AnalysisName.svelte';
   import AnalysisNav from './AnalysisNav.svelte';
   import ResumedNote from './ResumedNote.svelte';
-  import { pipelineTitle, runName } from '$lib/runs/runName';
-  import { runNames } from '$lib/runs/runNames.svelte';
+  import { pipelineTitle, runName } from '#lib/runs/runName.js';
+  import { runNames } from '#lib/runs/runNames.svelte.js';
   import { renameInNavList } from './analysisNav';
-  import { site } from '$lib/state/site.svelte';
+  import { site } from '#lib/state/site.svelte.js';
   import LiveProgress from './LiveProgress.svelte';
   import { stepProgress } from './liveProgress';
   import { authorLabels } from './stepLabel';
-  import ExpertHint from '$lib/shell/ExpertHint.svelte';
+  import ExpertHint from '#lib/shell/ExpertHint.svelte';
 
   let { run }: { run: RunDetail } = $props();
 

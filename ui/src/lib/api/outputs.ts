@@ -1,7 +1,7 @@
 // A run's outputs: paging them, one output, its download and view links and previews, and its
 // FastQC and alignment views.
 
-import type { components } from '$lib/generated/api';
+import type { components } from '#lib/generated/api.js';
 import {
   API_PATHS,
   get,

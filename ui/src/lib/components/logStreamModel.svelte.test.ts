@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { LogPage } from '$lib/api';
+import type { LogPage } from '#lib/api/index.js';
 import { LogStreamModel } from './logStreamModel.svelte';
 
 // Each fetch hands back a promise the test settles, in whatever order it likes.

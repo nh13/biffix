@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { RunOutputPage, RunOutput, listOutputs } from '$lib/api';
+import type { RunOutputPage, RunOutput, listOutputs } from '#lib/api/index.js';
 import { runOutputAt } from './runOutput';
 
 const output = (s3_uri: string) => ({ output_id: s3_uri, s3_uri }) as unknown as RunOutput;

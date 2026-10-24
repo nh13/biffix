@@ -2,7 +2,7 @@
 // server does (`biffix_workflow::samples::SheetSpec`), plus CSV/TSV import and export. The server
 // re-validates on submit; these checks are for showing problems as they happen.
 
-import type { SheetColumn, SheetSpec } from '$lib/generated/samples';
+import type { SheetColumn, SheetSpec } from '#lib/generated/samples.js';
 
 export type SheetRow = Record<string, string>;
 

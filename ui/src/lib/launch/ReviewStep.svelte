@@ -4,7 +4,7 @@
   // to the step that sets it. It only shows what it is given; the form's state stays in LaunchForm,
   // and wizard.ts works out the samples, reference and options cards' contents.
   import type { ReviewOption, ReviewReference, ReviewSampleLine, WizardStep } from './wizard';
-  import { plural } from '$lib/util/format';
+  import { plural } from '#lib/util/format.js';
 
   interface Props {
     /** The pipeline's title (its schema's, else its name), its name and its version as named. */

@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { WorkflowSummary } from '$lib/api';
+import type { WorkflowSummary } from '#lib/api/index.js';
 
 let answer: () => Promise<WorkflowSummary[]> = async () => [];
-vi.mock('$lib/api', () => ({ listWorkflows: () => answer() }));
+vi.mock('#lib/api/index.js', () => ({ listWorkflows: () => answer() }));
 
 const { WorkflowCatalog } = await import('./catalog.svelte');
 const { pinName } = await import('./version');
-const { prefs } = await import('$lib/state/localPrefs.svelte');
+const { prefs } = await import('#lib/state/localPrefs.svelte.js');
 
 /** A version of `name` in project `p`, registered at `t` (newest first wins `latest`). */
 const wf = (name: string, t: number, over: Partial<WorkflowSummary> = {}) =>

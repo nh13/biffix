@@ -2,7 +2,7 @@
 // and the uptime figure. Pure functions of the `GET /status/history` payload (and `now`), so the
 // rules below are unit-tested rather than living untested in the route.
 
-import type { StatusHistory } from '$lib/api';
+import type { StatusHistory } from '#lib/api/index.js';
 import { healthOfStatus } from './health';
 
 export type Bucket = { ok: number; degraded: number; down: number };

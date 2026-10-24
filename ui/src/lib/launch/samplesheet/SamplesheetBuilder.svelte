@@ -7,9 +7,9 @@
   // This is the shell: the *Add samples* menu, export and Clear, and the three ways in. The rows'
   // state is `SheetState`, detection's `SampleDetection`, an import's `SheetImporter`; the table,
   // the detected-samples preview and the column-matching step are their own components.
-  import type { SheetSpec } from '$lib/generated/samples';
-  import { saveBlob } from '$lib/util/download';
-  import { plural } from '$lib/util/format';
+  import type { SheetSpec } from '#lib/generated/samples.js';
+  import { saveBlob } from '#lib/util/download.js';
+  import { plural } from '#lib/util/format.js';
   import FilePicker from '../FilePicker.svelte';
   import DetectPreview from './DetectPreview.svelte';
   import ImportMapping from './ImportMapping.svelte';

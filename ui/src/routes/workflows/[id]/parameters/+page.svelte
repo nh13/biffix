@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { getWorkflowContext } from '$lib/workflows/workflowContext.svelte';
-  import Params from '$lib/workflows/Params.svelte';
+  import { getWorkflowContext } from '#lib/workflows/workflowContext.svelte.js';
+  import Params from '#lib/workflows/Params.svelte';
 
   const wf = getWorkflowContext();
 </script>

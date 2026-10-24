@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { storageWith } from '$lib/api/testing';
+import { storageWith } from '#lib/api/testing.js';
 
 // An in-memory Storage for the node test environment (which has no localStorage).
 const memStorage = () => storageWith({});

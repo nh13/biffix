@@ -4,9 +4,9 @@
   // records the new name on the server (an event, so it lasts and says who renamed it); clearing
   // the field goes back to the derived name. Enter saves, Escape cancels.
   import { tick } from 'svelte';
-  import { renameRun, type RunDetail, type RunSummary } from '$lib/api';
-  import { errorMessage } from '$lib/util/format';
-  import { derivedName, isDerivedName, runName, runNameSource } from '$lib/runs/runName';
+  import { renameRun, type RunDetail, type RunSummary } from '#lib/api/index.js';
+  import { errorMessage } from '#lib/util/format.js';
+  import { derivedName, isDerivedName, runName, runNameSource } from '#lib/runs/runName.js';
 
   interface Props {
     run: RunDetail;

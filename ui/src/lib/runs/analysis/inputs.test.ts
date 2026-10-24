@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { FormField, FormSchema } from '$lib/workflows/schema';
+import type { FormField, FormSchema } from '#lib/workflows/schema.js';
 import {
   sheetFile,
   allSettings,

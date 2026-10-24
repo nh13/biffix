@@ -4,7 +4,7 @@
   // show. A non-modal dialog: focus moves to it, Tab leaves it freely, Escape skips the tour, and
   // the page under it stays usable. It floats over the page, so nothing moves when it opens.
   import { onMount, tick } from 'svelte';
-  import { finishTour } from '$lib/state/userPrefs.svelte';
+  import { finishTour } from '#lib/state/userPrefs.svelte.js';
   import { TOUR_ANCHOR, TOUR_STOPS, placePopover, type Placement, type TourAnchor } from './tour';
 
   let index = $state(0);

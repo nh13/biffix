@@ -1,9 +1,9 @@
 // One key result's chosen entry (a per-sample result picks its sample) and how that entry opens
 // and downloads: the state `ResultCard` and the experiment table's `ResultCell` share.
 
-import { outputViewerFile } from '$lib/components/viewerFile';
-import { isServable, openKind, openTarget, sampleLabels } from '$lib/qc/open';
-import type { ResultCard } from '$lib/runs/results';
+import { outputViewerFile } from '#lib/components/viewerFile.js';
+import { isServable, openKind, openTarget, sampleLabels } from '#lib/qc/open.js';
+import type { ResultCard } from '#lib/runs/results.js';
 
 export class ResultChoice {
   readonly #runId: () => string;

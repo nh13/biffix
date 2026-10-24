@@ -1,8 +1,8 @@
 // Runs: the runs list, one run and its tasks, logs and attempts, and launching, cancelling and
 // renaming a run.
 
-import type { components } from '$lib/generated/api';
-import type { SampleGrid } from '$lib/generated/sample-progress';
+import type { components } from '#lib/generated/api.js';
+import type { SampleGrid } from '#lib/generated/sample-progress.js';
 import { API_PATHS, get, pathFor, request, requestJson, withQuery, type JsonBody } from './client';
 
 export type RunPage = JsonBody<'list_runs'>;

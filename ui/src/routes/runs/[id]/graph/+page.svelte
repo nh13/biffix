@@ -1,8 +1,8 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { getRunContext } from '$lib/runs/runContext.svelte';
-  import { jobsHref } from '$lib/runs/jobsUrl';
-  import RunGraph from '$lib/runs/RunGraph.svelte';
+  import { getRunContext } from '#lib/runs/runContext.svelte.js';
+  import { jobsHref } from '#lib/runs/jobsUrl.js';
+  import RunGraph from '#lib/runs/RunGraph.svelte';
 
   const ctx = getRunContext();
 

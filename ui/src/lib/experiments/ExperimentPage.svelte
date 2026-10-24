@@ -2,12 +2,12 @@
   // One experiment, in either view's words: its header (name, description, Start,
   // CSV, Archive), its counts and one total cost, its analyses (the Lab view's rows, the Expert
   // view's table with run ids), the key results across them, and every sample × analysis.
-  import type { Experiment, ExperimentDetail } from '$lib/api';
-  import { t } from '$lib/view/vocab';
-  import type { ViewMode } from '$lib/view/viewRoutes';
-  import ResultViewer from '$lib/qc/ResultViewer.svelte';
-  import type { OpenTarget } from '$lib/qc/open';
-  import RunRow from '$lib/home/RunRow.svelte';
+  import type { Experiment, ExperimentDetail } from '#lib/api/index.js';
+  import { t } from '#lib/view/vocab.js';
+  import type { ViewMode } from '#lib/view/viewRoutes.js';
+  import ResultViewer from '#lib/qc/ResultViewer.svelte';
+  import type { OpenTarget } from '#lib/qc/open.js';
+  import RunRow from '#lib/home/RunRow.svelte';
   import {
     anyLive,
     cappedRunsText,

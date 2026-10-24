@@ -1,8 +1,8 @@
 // The launch footer's estimate: what a run of this many samples usually costs and how long it
 // takes, from the workflow's recent successful runs.
 
-import type { WorkflowEstimate } from '$lib/api';
-import { plural } from '$lib/util/format';
+import type { WorkflowEstimate } from '#lib/api/index.js';
+import { plural } from '#lib/util/format.js';
 
 export interface EstimateFacts {
   usd_low: number;

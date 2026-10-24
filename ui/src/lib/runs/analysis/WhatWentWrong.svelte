@@ -3,18 +3,18 @@
   // in plain words; what to try; *Try again*, *Copy report for support* and *Ask <name>*; and a
   // *Why?* panel (open) with the likely cause, the tries and the last lines of its log. Logs beyond
   // that tail are in the Expert view.
-  import type { FailureSummary, RunDetail, WorkflowDetail } from '$lib/api';
-  import { CopiedFlag } from '$lib/util/clipboard.svelte';
-  import { jobsHref } from '$lib/runs/jobsUrl';
-  import { parseSchema } from '$lib/workflows/schema';
+  import type { FailureSummary, RunDetail, WorkflowDetail } from '#lib/api/index.js';
+  import { CopiedFlag } from '#lib/util/clipboard.svelte.js';
+  import { jobsHref } from '#lib/runs/jobsUrl.js';
+  import { parseSchema } from '#lib/workflows/schema.js';
   import { causeWords, failureLine, groupByCause, triesText } from './failure';
   import { authorLabels, stepLabel } from './stepLabel';
-  import { runName } from '$lib/runs/runName';
+  import { runName } from '#lib/runs/runName.js';
   import { askHref, REPORT_LOG_LINES, supportReport } from './supportReport';
   import TryAgain from './TryAgain.svelte';
   import AttemptStory from './AttemptStory.svelte';
   import type { TryAgainMode } from './tryAgain';
-  import { plural } from '$lib/util/format';
+  import { plural } from '#lib/util/format.js';
 
   interface Props {
     run: RunDetail;

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RunOutputPage, RunOutput } from '$lib/api';
+import type { RunOutputPage, RunOutput } from '#lib/api/index.js';
 
 // Each request is recorded; `rows` and `pending` say what the next ones answer.
 let rows: RunOutput[] = [];
@@ -21,7 +21,7 @@ const list = async (
   } as unknown as RunOutputPage;
 };
 
-vi.mock('$lib/api', () => ({
+vi.mock('#lib/api/index.js', () => ({
   listOutputs: list,
   listAllOutputs: async (runId: string, opts: object) => {
     const page = await list(runId, { ...opts, limit: 2000 });

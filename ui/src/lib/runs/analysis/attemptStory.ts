@@ -4,9 +4,9 @@
 // records only, never its log: logs belong to the Expert view, so the Lab view never shows one.
 // Pure, so unit-tested.
 
-import type { TaskAttempt } from '$lib/api';
-import { fmtBytes, fmtDate } from '$lib/util/format';
-import { attemptEnding } from '$lib/runs/attempts';
+import type { TaskAttempt } from '#lib/api/index.js';
+import { fmtBytes, fmtDate } from '#lib/util/format.js';
+import { attemptEnding } from '#lib/runs/attempts.js';
 import { fmtSpan } from './liveProgress';
 
 export type TryTone = 'ok' | 'bad' | 'live';

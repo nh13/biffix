@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Notification, NotificationList } from '$lib/api';
+import type { Notification, NotificationList } from '#lib/api/index.js';
 import {
   applyRead,
   arrivalText,

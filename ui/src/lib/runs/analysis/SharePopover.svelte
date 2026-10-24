@@ -2,8 +2,8 @@
   // *Share* on the analysis page: the page's own link to copy, and who can open it.
   // No share tokens and no public links: signing in and the project's access decide, as for any
   // page. A disclosure (`Disclosure`): Escape, or a click or focus outside, closes it.
-  import { CopiedFlag } from '$lib/util/clipboard.svelte';
-  import { Disclosure } from '$lib/util/disclosure.svelte';
+  import { CopiedFlag } from '#lib/util/clipboard.svelte.js';
+  import { Disclosure } from '#lib/util/disclosure.svelte.js';
   import { shareSentence } from './analysis';
 
   let { url, project }: { url: string; project: string | null | undefined } = $props();

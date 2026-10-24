@@ -1,6 +1,6 @@
 <script lang="ts">
   // My work before the user's first analysis: the three steps to one, and the way to start.
-  import { TOUR_ANCHOR } from '$lib/shell/tour';
+  import { TOUR_ANCHOR } from '#lib/shell/tour.js';
 </script>
 
 <div class="welcome" data-tour={TOUR_ANCHOR.welcome}>

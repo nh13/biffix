@@ -1,7 +1,7 @@
 // A failed analysis in plain words: each failure's one line, the likely cause
 // behind it, and which failures to show. Pure, so it is unit-tested.
 
-import type { FailureSummary } from '$lib/api';
+import type { FailureSummary } from '#lib/api/index.js';
 import { stepLabel } from './stepLabel';
 
 export type FailureItem = FailureSummary['items'][number];

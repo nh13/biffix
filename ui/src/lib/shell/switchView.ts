@@ -2,8 +2,8 @@
 
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
-import { setView } from '$lib/state/userPrefs.svelte';
-import { toggleTarget, type ViewMode } from '$lib/view/viewRoutes';
+import { setView } from '#lib/state/userPrefs.svelte.js';
+import { toggleTarget, type ViewMode } from '#lib/view/viewRoutes.js';
 
 /** Switch to `mode` (saved for the user) and go to this page's place in it, if it has another. */
 export async function switchViewTo(mode: ViewMode): Promise<void> {

@@ -2,9 +2,9 @@
 // beneath it, so the header and each view read one copy instead of fetching their own.
 
 import { getContext, setContext } from 'svelte';
-import { cancelRun, type RunDetail, type RunReport } from '$lib/api';
-import type { ErrorKind } from '$lib/components/errorPage';
-import { errorMessage } from '$lib/util/format';
+import { cancelRun, type RunDetail, type RunReport } from '#lib/api/index.js';
+import type { ErrorKind } from '#lib/components/errorPage.js';
+import { errorMessage } from '#lib/util/format.js';
 
 /**
  * What the run's action buttons are doing. The header and the pinned bar each show the buttons;

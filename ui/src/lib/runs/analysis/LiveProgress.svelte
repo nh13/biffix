@@ -3,7 +3,7 @@
   // run against how long its pipeline usually takes, the cost so far, and (with no samplesheet to
   // count against) a strip with each step's state in pipeline order. The arithmetic is
   // `liveProgress`; the bar never claims more than the run's facts say.
-  import type { RunDetail, WorkflowEstimate } from '$lib/api';
+  import type { RunDetail, WorkflowEstimate } from '#lib/api/index.js';
   import SampleStateChip from './SampleStateChip.svelte';
   import { liveTimeFacts, stepChips, type StepState } from './liveProgress';
   import { stepLabel } from './stepLabel';

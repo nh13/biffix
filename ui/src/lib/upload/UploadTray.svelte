@@ -2,7 +2,7 @@
   // The upload tray: every upload of this tab with its progress, pause, resume
   // and cancel; uploads a reload interrupted, which resume once their file is chosen again; and
   // uploads another tab is sending, for information only.
-  import { fmtBytes } from '$lib/util/format';
+  import { fmtBytes } from '#lib/util/format.js';
   import { uploads } from './store';
   import type { SavedUpload, Upload, UploadState } from './uploads.svelte';
 

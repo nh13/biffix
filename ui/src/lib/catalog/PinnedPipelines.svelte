@@ -2,10 +2,10 @@
   // The viewer's pinned pipelines as a plain list on Settings, each with Unpin: the pipeline's
   // friendly title when it is in the catalog, else its name read back from the pin (a pipeline
   // since removed or hidden can still be unpinned).
-  import { loadPins, togglePin, view } from '$lib/state/userPrefs.svelte';
-  import { WorkflowCatalog } from '$lib/workflows/catalog.svelte';
-  import { pinName } from '$lib/workflows/version';
-  import { catalogTitle } from '$lib/workflows/release';
+  import { loadPins, togglePin, view } from '#lib/state/userPrefs.svelte.js';
+  import { WorkflowCatalog } from '#lib/workflows/catalog.svelte.js';
+  import { pinName } from '#lib/workflows/version.js';
+  import { catalogTitle } from '#lib/workflows/release.js';
 
   const catalog = new WorkflowCatalog();
   $effect(() => {

@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { viewParams } from '$lib/util/urlParam';
+import { viewParams } from '#lib/util/urlParam.js';
 import {
   DEFAULT_OUTPUTS_VIEW,
   outputsViewHref,

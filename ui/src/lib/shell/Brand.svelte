@@ -1,7 +1,7 @@
 <script lang="ts">
   // The site's name (and logo, when one is set) at the top of the sidebar and the narrow top bar.
   // The site settings are shared with the Settings page, so a save shows here at once.
-  import { DEFAULT_SITE_TITLE, site } from '$lib/state/site.svelte';
+  import { DEFAULT_SITE_TITLE, site } from '#lib/state/site.svelte.js';
 </script>
 
 <span class="brand">

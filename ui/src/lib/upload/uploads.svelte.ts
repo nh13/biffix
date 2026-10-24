@@ -11,9 +11,9 @@
 //
 // The network is behind `UploadTransport` so the engine is unit-tested without a server.
 
-import { AuthRequiredError, type StartedUpload } from '$lib/api';
-import { errorMessage } from '$lib/util/format';
-import { readPref, writePref } from '$lib/util/storage';
+import { AuthRequiredError, type StartedUpload } from '#lib/api/index.js';
+import { errorMessage } from '#lib/util/format.js';
+import { readPref, writePref } from '#lib/util/storage.js';
 
 /** Parts sent at once, retries of one part, and part URLs asked for at a time. */
 export const CONCURRENCY = 4;

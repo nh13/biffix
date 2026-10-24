@@ -1,6 +1,6 @@
 // The caller's own state: display preferences, notifications and *Needs attention*.
 
-import type { components } from '$lib/generated/api';
+import type { components } from '#lib/generated/api.js';
 import { API_PATHS, get, requestJson, withQuery, type JsonBody } from './client';
 
 /** The caller's own display preferences (Lab/Expert view, pins, tour). */

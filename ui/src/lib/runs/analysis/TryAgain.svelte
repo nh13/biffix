@@ -5,7 +5,7 @@
   // (a secret to type again, a reference to choose, a value it reports) also opens the form. The
   // server checks the launch permission, as it does for the Expert view's Re-run and Resume.
   import { goto } from '$app/navigation';
-  import { runTabHref } from '$lib/runs/runNav';
+  import { runTabHref } from '#lib/runs/runNav.js';
   import {
     getWorkflow,
     listExperiments,
@@ -14,8 +14,8 @@
     type ReferenceBundle,
     type RunDetail,
     type WorkflowDetail,
-  } from '$lib/api';
-  import { parseSchema } from '$lib/workflows/schema';
+  } from '#lib/api/index.js';
+  import { parseSchema } from '#lib/workflows/schema.js';
   import {
     fixHref,
     isFixMode,
@@ -25,8 +25,8 @@
     tryAgainRequest,
     type TryAgainMode,
   } from './tryAgain';
-  import { errorMessage } from '$lib/util/format';
-  import Dialog from '$lib/components/Dialog.svelte';
+  import { errorMessage } from '#lib/util/format.js';
+  import Dialog from '#lib/components/Dialog.svelte';
 
   interface Props {
     run: RunDetail;

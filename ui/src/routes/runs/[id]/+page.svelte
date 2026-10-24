@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { getRunContext } from '$lib/runs/runContext.svelte';
-  import { view } from '$lib/state/userPrefs.svelte';
-  import AnalysisPage from '$lib/runs/analysis/AnalysisPage.svelte';
-  import RunOverview from '$lib/runs/RunOverview.svelte';
+  import { getRunContext } from '#lib/runs/runContext.svelte.js';
+  import { view } from '#lib/state/userPrefs.svelte.js';
+  import AnalysisPage from '#lib/runs/analysis/AnalysisPage.svelte';
+  import RunOverview from '#lib/runs/RunOverview.svelte';
 
   // The run's first page: the Lab view's one analysis page, or the Expert view's Overview tab.
   const ctx = getRunContext();

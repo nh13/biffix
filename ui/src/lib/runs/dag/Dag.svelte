@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { components } from '$lib/generated/api';
+  import type { components } from '#lib/generated/api.js';
   import { layout } from './layout';
   import { COUNT_CHARS, fitText, nodeLabel } from './labels';
 

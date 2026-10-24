@@ -3,10 +3,10 @@
   // of its project's experiments (or a new one), move it to another, or take it out. An analysis is
   // in at most one. The server checks the permission; its refusal is shown as it words it. A
   // disclosure (`Disclosure`): Escape, or a click or focus outside, closes it.
-  import { getRun, listExperiments, setRunExperiment, type Experiment } from '$lib/api';
-  import { Disclosure } from '$lib/util/disclosure.svelte';
-  import { errorMessage } from '$lib/util/format';
-  import { getRunContext } from '$lib/runs/runContext.svelte';
+  import { getRun, listExperiments, setRunExperiment, type Experiment } from '#lib/api/index.js';
+  import { Disclosure } from '#lib/util/disclosure.svelte.js';
+  import { errorMessage } from '#lib/util/format.js';
+  import { getRunContext } from '#lib/runs/runContext.svelte.js';
   import NewExperimentForm from './NewExperimentForm.svelte';
   import { experimentHref } from './experiments';
 

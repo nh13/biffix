@@ -3,11 +3,11 @@
   // the analysis) and its files, or the search's results, each file with its actions — view it in
   // place, open it as an analysis's result (an alignment, a FastQC report), download it, copy its
   // path.
-  import type { DataFile, DataSource } from '$lib/api';
-  import type { CopiedFlag } from '$lib/util/clipboard.svelte';
-  import { fmtBytes, fmtRelativeMicros } from '$lib/util/format';
-  import { runNames } from '$lib/runs/runNames.svelte';
-  import { runTabHref } from '$lib/runs/runNav';
+  import type { DataFile, DataSource } from '#lib/api/index.js';
+  import type { CopiedFlag } from '#lib/util/clipboard.svelte.js';
+  import { fmtBytes, fmtRelativeMicros } from '#lib/util/format.js';
+  import { runNames } from '#lib/runs/runNames.svelte.js';
+  import { runTabHref } from '#lib/runs/runNav.js';
   import { opensAs, resultOfOther } from './dataBrowser';
   import type { FolderListing } from './folderListing.svelte';
   import { runFolderId, type Shortcut } from './labPresentation';

@@ -1,7 +1,7 @@
 // The Settings page's pure parts: what a site save sends, whether the support contact changed, the
 // logo's size limit, and the words for an alert recipient's status and the unread count.
 
-import type { SiteSettingsUpdateRequest, SiteSettings } from '$lib/api';
+import type { SiteSettingsUpdateRequest, SiteSettings } from '#lib/api/index.js';
 
 // The server caps the logo's data URL (not the file) at 512 KiB; base64 makes a file about 4/3 its
 // size, so the largest file that fits is about 384 KB.

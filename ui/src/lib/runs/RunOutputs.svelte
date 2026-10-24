@@ -1,19 +1,19 @@
 <script lang="ts">
   import { beforeNavigate } from '$app/navigation';
-  import { getOutput, type RunOutput } from '$lib/api';
-  import { outputViewerFile, type ViewerFile } from '$lib/components/viewerFile';
-  import { debounce } from '$lib/util/debounce';
-  import { UrlEcho } from '$lib/util/urlEcho';
-  import { focusRadio, radioKeyTarget } from '$lib/util/radioGroup';
-  import { errorMessage, fmtBytes, plural } from '$lib/util/format';
-  import { errorKind } from '$lib/components/errorPage';
-  import { CopiedFlag } from '$lib/util/clipboard.svelte';
-  import { s3ConsoleUrl } from '$lib/util/links';
-  import { DataLinks } from '$lib/data/dataLinks.svelte';
-  import OutputViewer from '$lib/components/OutputViewer.svelte';
-  import ReusedFrom from '$lib/runs/ReusedFrom.svelte';
-  import type { OutputsView } from '$lib/runs/outputsUrl';
-  import { OutputsLoader } from '$lib/runs/outputsLoader.svelte';
+  import { getOutput, type RunOutput } from '#lib/api/index.js';
+  import { outputViewerFile, type ViewerFile } from '#lib/components/viewerFile.js';
+  import { debounce } from '#lib/util/debounce.js';
+  import { UrlEcho } from '#lib/util/urlEcho.js';
+  import { focusRadio, radioKeyTarget } from '#lib/util/radioGroup.js';
+  import { errorMessage, fmtBytes, plural } from '#lib/util/format.js';
+  import { errorKind } from '#lib/components/errorPage.js';
+  import { CopiedFlag } from '#lib/util/clipboard.svelte.js';
+  import { s3ConsoleUrl } from '#lib/util/links.js';
+  import { DataLinks } from '#lib/data/dataLinks.svelte.js';
+  import OutputViewer from '#lib/components/OutputViewer.svelte';
+  import ReusedFrom from '#lib/runs/ReusedFrom.svelte';
+  import type { OutputsView } from '#lib/runs/outputsUrl.js';
+  import { OutputsLoader } from '#lib/runs/outputsLoader.svelte.js';
   import {
     buildOutputTree,
     initiallyOpen,
@@ -21,7 +21,7 @@
     reusedFromSummary,
     roleLabel,
     visibleRows,
-  } from '$lib/runs/outputs';
+  } from '#lib/runs/outputs.js';
   // The run's registered outputs, as a directory tree (relative to its output prefix) or a flat
   // list, with per-file download / copy / console actions. Fetched on its own endpoint, so the run
   // page's poll stays cheap; re-fetched while the run is live.

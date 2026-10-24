@@ -1,10 +1,10 @@
 <script lang="ts">
   // An experiment's runs in the Expert view: a table with run ids (the Lab view lists them as rows).
-  import type { RunSummary } from '$lib/api';
-  import { fmtDate } from '$lib/util/format';
-  import StatusPill from '$lib/runs/StatusPill.svelte';
-  import { pipelineTitle, runName } from '$lib/runs/runName';
-  import { runTabHref } from '$lib/runs/runNav';
+  import type { RunSummary } from '#lib/api/index.js';
+  import { fmtDate } from '#lib/util/format.js';
+  import StatusPill from '#lib/runs/StatusPill.svelte';
+  import { pipelineTitle, runName } from '#lib/runs/runName.js';
+  import { runTabHref } from '#lib/runs/runNav.js';
 
   let { runs }: { runs: RunSummary[] } = $props();
 </script>

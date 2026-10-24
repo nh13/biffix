@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { layout } from '$lib/runs/dag/layout';
+import { layout } from '#lib/runs/dag/layout.js';
 import { fmtSpan, liveTimeFacts, stepChips, stepProgress, timeFacts } from './liveProgress';
 
 const counts = (over: Record<string, number | null> = {}) => ({

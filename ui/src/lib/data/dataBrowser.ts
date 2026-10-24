@@ -3,8 +3,8 @@
 // opening a file as its analysis's result came to. Pure, so they are unit-tested; the component
 // keeps the state, and the words are in `presentation.ts`.
 
-import type { DataFile, DataFolder, DataSource } from '$lib/api';
-import { isAlignment, isFastqcReport, type OpenTarget } from '$lib/qc/open';
+import type { DataFile, DataFolder, DataSource } from '#lib/api/index.js';
+import { isAlignment, isFastqcReport, type OpenTarget } from '#lib/qc/open.js';
 import { hiddenIn, type HideRule as SourceRule } from './browse';
 import { RUNS_FOLDER, runFolderId, runOfPath, showsRuns } from './labPresentation';
 import { breadcrumbs } from './paths';

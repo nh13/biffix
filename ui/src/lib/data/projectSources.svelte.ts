@@ -4,8 +4,8 @@
 // already left never replaces the current one's (which would leave the page with no sources to
 // show, or links into the wrong project).
 
-import { listDataSources, type DataSource } from '$lib/api';
-import { errorMessage } from '$lib/util/format';
+import { listDataSources, type DataSource } from '#lib/api/index.js';
+import { errorMessage } from '#lib/util/format.js';
 
 interface Loaded {
   project: string | null;

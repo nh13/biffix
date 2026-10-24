@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { FastqcStatusSample } from '$lib/api';
+import type { FastqcStatusSample } from '#lib/api/index.js';
 import { basicStatRows, samePick, statusChoices, statusSections } from './fastqcStatus';
 
 const result = (fastqc_name: string, sample?: string): FastqcStatusSample => ({

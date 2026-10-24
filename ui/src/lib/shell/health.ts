@@ -1,6 +1,6 @@
-// How the sidebar's Status icon shows the service health (`$lib/status/health` gives the verdict).
+// How the sidebar's Status icon shows the service health (`#lib/status/health.js` gives the verdict).
 
-import type { Health } from '$lib/status/health';
+import type { Health } from '#lib/status/health.js';
 
 /** The icon's color for a verdict (the page's text color while unknown). */
 export function healthColor(health: Health): string {

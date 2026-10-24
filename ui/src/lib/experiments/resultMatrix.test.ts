@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { RunReport } from '$lib/api';
+import type { RunReport } from '#lib/api/index.js';
 import {
   cardFor,
   forSample,
@@ -8,7 +8,7 @@ import {
   resultSamples,
   type RunCards,
 } from './resultMatrix';
-import { resultCards } from '$lib/runs/results';
+import { resultCards } from '#lib/runs/results.js';
 
 let id = 0;
 const report = (name: string, format: string, sample: string | null = null): RunReport =>

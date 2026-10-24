@@ -2,11 +2,11 @@
 // of the pages — name checks, the samples × analyses table, the one total cost, the words — kept
 // apart from rendering so they are unit-tested.
 
-import type { Experiment, ExperimentDetail, RunSummary } from '$lib/api';
-import { fmtRelative, fmtUsd, plural } from '$lib/util/format';
-import { runName } from '$lib/runs/runName';
-import type { ViewMode } from '$lib/view/viewRoutes';
-import { t } from '$lib/view/vocab';
+import type { Experiment, ExperimentDetail, RunSummary } from '#lib/api/index.js';
+import { fmtRelative, fmtUsd, plural } from '#lib/util/format.js';
+import { runName } from '#lib/runs/runName.js';
+import type { ViewMode } from '#lib/view/viewRoutes.js';
+import { t } from '#lib/view/vocab.js';
 
 /** The longest name the server takes (after trimming), in characters (code points, as the server
  * counts them, so an emoji is one). */

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RunDetail } from '$lib/api';
-import { listCostLine } from '$lib/runs/cost';
+import type { RunDetail } from '#lib/api/index.js';
+import { listCostLine } from '#lib/runs/cost.js';
 import {
   cancelledBanner,
   costText,
@@ -9,7 +9,7 @@ import {
   shareSentence,
   startedLine,
 } from './analysis';
-import { fmtDate } from '$lib/util/format';
+import { fmtDate } from '#lib/util/format.js';
 
 describe('sectionOrder', () => {
   it('leads with what matters for the state', () => {

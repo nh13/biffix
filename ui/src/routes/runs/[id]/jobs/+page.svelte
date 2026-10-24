@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { getRunContext } from '$lib/runs/runContext.svelte';
-  import JobsView from '$lib/runs/JobsView.svelte';
+  import { getRunContext } from '#lib/runs/runContext.svelte.js';
+  import JobsView from '#lib/runs/JobsView.svelte';
 
   const ctx = getRunContext();
 </script>

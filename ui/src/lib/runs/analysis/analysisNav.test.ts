@@ -8,7 +8,7 @@ import {
   saveNavList,
   shortcutBlocked,
 } from './analysisNav';
-import { storageWith } from '$lib/api/testing';
+import { storageWith } from '#lib/api/testing.js';
 
 const items = [
   { id: 'a', name: 'A' },

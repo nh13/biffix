@@ -2,16 +2,16 @@
   // One analysis's key results on an experiment's page: its name, then a card per result it
   // declares (the analysis page's cards, `ResultCard`), one sample's files of a per-sample result
   // when a sample is picked. Its reports are loaded by the page (`RunReportList`), for every view.
-  import type { RunSummary } from '$lib/api';
-  import ResultCard from '$lib/runs/analysis/ResultCard.svelte';
-  import type { OpenTarget } from '$lib/qc/open';
+  import type { RunSummary } from '#lib/api/index.js';
+  import ResultCard from '#lib/runs/analysis/ResultCard.svelte';
+  import type { OpenTarget } from '#lib/qc/open.js';
   import { forSample } from './resultMatrix';
-  import { resultCards } from '$lib/runs/results';
+  import { resultCards } from '#lib/runs/results.js';
   import type { RunReportsEntry } from './runReports.svelte';
-  import { runName } from '$lib/runs/runName';
-  import { runTabHref } from '$lib/runs/runNav';
-  import { view } from '$lib/state/userPrefs.svelte';
-  import { t } from '$lib/view/vocab';
+  import { runName } from '#lib/runs/runName.js';
+  import { runTabHref } from '#lib/runs/runNav.js';
+  import { view } from '#lib/state/userPrefs.svelte.js';
+  import { t } from '#lib/view/vocab.js';
 
   interface Props {
     run: RunSummary;

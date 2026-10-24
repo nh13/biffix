@@ -7,20 +7,20 @@
   // work's "See all" links here with `?mine=true`.
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { listExperiments, type Experiment } from '$lib/api';
-  import { WorkflowCatalog } from '$lib/workflows/catalog.svelte';
-  import { errorMessage } from '$lib/util/format';
-  import { replaceQueryParam } from '$lib/util/replaceUrl';
-  import { flagParam, FLAG_ON } from '$lib/util/urlParam';
-  import { view } from '$lib/state/userPrefs.svelte';
-  import { t } from '$lib/view/vocab';
+  import { listExperiments, type Experiment } from '#lib/api/index.js';
+  import { WorkflowCatalog } from '#lib/workflows/catalog.svelte.js';
+  import { errorMessage } from '#lib/util/format.js';
+  import { replaceQueryParam } from '#lib/util/replaceUrl.js';
+  import { flagParam, FLAG_ON } from '#lib/util/urlParam.js';
+  import { view } from '#lib/state/userPrefs.svelte.js';
+  import { t } from '#lib/view/vocab.js';
   import {
     activityText,
     attentionText,
     experimentHref,
     experimentProjects,
-  } from '$lib/experiments/experiments';
-  import NewExperimentForm from '$lib/experiments/NewExperimentForm.svelte';
+  } from '#lib/experiments/experiments.js';
+  import NewExperimentForm from '#lib/experiments/NewExperimentForm.svelte';
 
   const project = $derived(page.url.searchParams.get('project') ?? '');
   const archived = $derived(flagParam(page.url.searchParams, 'archived'));

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { RunDetail } from '$lib/api';
-  import Dag from '$lib/runs/dag/Dag.svelte';
+  import type { RunDetail } from '#lib/api/index.js';
+  import Dag from '#lib/runs/dag/Dag.svelte';
 
   // The run's step graph (the caller shows it only when one was recorded); clicking a node picks
   // that group (rule/process).

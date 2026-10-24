@@ -4,7 +4,7 @@
 // the files themselves load only when the panel asks for one.
 
 import { lexer } from 'marked';
-import { isExpertOnly, type ViewMode } from '$lib/view/viewRoutes';
+import { isExpertOnly, type ViewMode } from '#lib/view/viewRoutes.js';
 
 /** Where the Learn panel's "Read the guide" link goes: the user guide, in the public repository. */
 export const GUIDE_URL = 'https://github.com/nh13/biffix/blob/main/docs/user-guide.md';

@@ -1,7 +1,7 @@
 // Experiments: named groups of a project's runs. Creating, renaming and changing a
 // run's experiment need the launch capability; a 403 keeps the server's own message.
 
-import type { components } from '$lib/generated/api';
+import type { components } from '#lib/generated/api.js';
 import { API_PATHS, get, pathFor, request, requestJson, withQuery } from './client';
 
 export type Experiment = components['schemas']['Experiment'];

@@ -2,9 +2,9 @@
   // The reference dropdown: pick an admin-registered bundle that fills the
   // form's reference params, or — when the author allows it — use your own files, which shows those
   // params' own fields in this card instead.
-  import type { ReferenceBundle } from '$lib/api';
-  import type { FormReferences } from '$lib/workflows/schema';
-  import { view } from '$lib/state/userPrefs.svelte';
+  import type { ReferenceBundle } from '#lib/api/index.js';
+  import type { FormReferences } from '#lib/workflows/schema.js';
+  import { view } from '#lib/state/userPrefs.svelte.js';
   import { chosenBundle, fillsOf, REFERENCE_FIELD, type RefChoice } from './referenceChoice';
   import HelpPanel from './HelpPanel.svelte';
 

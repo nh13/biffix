@@ -2,11 +2,11 @@
   // One parameter of the launch form: its label (with unit, required mark and an ⓘ for the author's
   // help), a short description, the control its widget calls for, and its validation message.
   // A value left blank is not sent, so the workflow's own default applies.
-  import { uploads } from '$lib/upload/store';
-  import { pendingNote } from '$lib/upload/uploads.svelte';
-  import type { FormField } from '$lib/workflows/schema';
+  import { uploads } from '#lib/upload/store.js';
+  import { pendingNote } from '#lib/upload/uploads.svelte.js';
+  import type { FormField } from '#lib/workflows/schema.js';
   import { helpOf, isBlank, labelOf, presetMeaning } from './form';
-  import { focusRadio, radioKeyTarget } from '$lib/util/radioGroup';
+  import { focusRadio, radioKeyTarget } from '#lib/util/radioGroup.js';
   import { isBooleanChoice, valueKey } from './validate';
   import FilePicker from './FilePicker.svelte';
   import HelpPanel from './HelpPanel.svelte';

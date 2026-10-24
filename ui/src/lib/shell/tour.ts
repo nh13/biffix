@@ -2,7 +2,7 @@
 // to what it points at. Pure logic only (the stops, when the tour shows, where a popover goes), so
 // it is unit-tested apart from the component that draws it.
 
-import type { ViewMode } from '$lib/view/viewRoutes';
+import type { ViewMode } from '#lib/view/viewRoutes.js';
 
 /**
  * The `data-tour` values the stops point at. The elements carry them through these constants

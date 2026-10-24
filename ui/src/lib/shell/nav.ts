@@ -2,9 +2,9 @@
 // on `/` itself).
 
 import type { ComponentProps } from 'svelte';
-import type Icon from '$lib/components/Icon.svelte';
-import { t } from '$lib/view/vocab';
-import type { ViewMode } from '$lib/view/viewRoutes';
+import type Icon from '#lib/components/Icon.svelte';
+import { t } from '#lib/view/vocab.js';
+import type { ViewMode } from '#lib/view/viewRoutes.js';
 
 /**
  * A nav entry. `icon` is an <Icon> name; `health` flags the one whose icon is tinted by overall

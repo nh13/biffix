@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { RunOutput, RunReport } from '$lib/api';
+import type { RunOutput, RunReport } from '#lib/api/index.js';
 import {
   fileOpenKind,
   fileTitle,

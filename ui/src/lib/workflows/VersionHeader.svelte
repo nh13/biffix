@@ -2,11 +2,11 @@
   // A workflow version's header: its name (the Lab view's friendly title, description and what you
   // get), its tags (project, engine, state, the frozen id to copy), its release, whether the Lab
   // catalog hides it (Expert view), who registered it, and the version picker.
-  import { putWorkflowListing, type WorkflowDetail } from '$lib/api';
-  import { errorMessage, fmtRelativeMicros } from '$lib/util/format';
-  import { CopiedFlag } from '$lib/util/clipboard.svelte';
-  import VerifiedBadge from '$lib/catalog/VerifiedBadge.svelte';
-  import WhatYouGet from '$lib/catalog/WhatYouGet.svelte';
+  import { putWorkflowListing, type WorkflowDetail } from '#lib/api/index.js';
+  import { errorMessage, fmtRelativeMicros } from '#lib/util/format.js';
+  import { CopiedFlag } from '#lib/util/clipboard.svelte.js';
+  import VerifiedBadge from '#lib/catalog/VerifiedBadge.svelte';
+  import WhatYouGet from '#lib/catalog/WhatYouGet.svelte';
   import { readinessOf, stateChip } from './readiness';
   import { engineLabel, versionLabel, registrantLabel as who, workflowKey } from './version';
   import type { WorkflowState } from './workflowContext.svelte';

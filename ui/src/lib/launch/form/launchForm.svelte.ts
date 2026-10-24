@@ -12,16 +12,16 @@
 import { getContext, setContext, tick, untrack } from 'svelte';
 import { afterNavigate, goto } from '$app/navigation';
 import { page } from '$app/state';
-import { getRun, submitRun, type Experiment } from '$lib/api';
-import { withExperiment } from '$lib/experiments/experiments';
-import { uploads } from '$lib/upload/store';
-import { pendingProblem } from '$lib/upload/uploads.svelte';
-import { saveBlob } from '$lib/util/download';
-import { errorMessage } from '$lib/util/format';
-import { readPref, writePref } from '$lib/util/storage';
-import { replaceUrl } from '$lib/util/replaceUrl';
-import { runTabHref } from '$lib/runs/runNav';
-import { parseSchema } from '$lib/workflows/schema';
+import { getRun, submitRun, type Experiment } from '#lib/api/index.js';
+import { withExperiment } from '#lib/experiments/experiments.js';
+import { uploads } from '#lib/upload/store.js';
+import { pendingProblem } from '#lib/upload/uploads.svelte.js';
+import { saveBlob } from '#lib/util/download.js';
+import { errorMessage } from '#lib/util/format.js';
+import { readPref, writePref } from '#lib/util/storage.js';
+import { replaceUrl } from '#lib/util/replaceUrl.js';
+import { runTabHref } from '#lib/runs/runNav.js';
+import { parseSchema } from '#lib/workflows/schema.js';
 import {
   clearDraft,
   draftValues,
@@ -537,7 +537,7 @@ export class LaunchForm {
     });
 
     $effect(() => {
-      if (this.wizard && this.step === 1) goto(this.newRunHref, { replaceState: true });
+      if (this.wizard && this.step === 1) goto(this.newRunHref, { replace: true });
     });
     $effect(() => {
       if (
@@ -903,7 +903,7 @@ export class LaunchForm {
   // -- Wizard navigation --------------------------------------------------------------------------
   stepHref = (n: WizardStep): string => {
     if (n === 1) return this.newRunHref;
-    const u = new URL(page.url);
+    const u = new URL(page.url.href);
     u.searchParams.set('step', String(n));
     return `${u.pathname}${u.search}`;
   };
@@ -919,7 +919,7 @@ export class LaunchForm {
       return;
     }
     this.#pendingFocus = focus ?? null;
-    goto(this.stepHref(n), { keepFocus: true, noScroll: true });
+    goto(this.stepHref(n), { reset: false });
   };
   /** A step link's click: a plain one moves in place, a new-tab one opens the link. */
   navTo = (e: MouseEvent, n: WizardStep) => {

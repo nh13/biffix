@@ -3,8 +3,8 @@
 // Lab's result cards and the Expert Reports tab use the same rules, so the Lab modules import these
 // from here (never the other way round).
 
-import type { RunOutput, RunReport } from '$lib/api';
-import type { ViewerFile } from '$lib/components/viewerFile';
+import type { RunOutput, RunReport } from '#lib/api/index.js';
+import type { ViewerFile } from '#lib/components/viewerFile.js';
 
 /**
  * How Open shows a result: the FastQC viewer (`fastqc`: the pipeline's FastQC result as data), the

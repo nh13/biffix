@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { progressView, type ProgressFacts } from '$lib/components/progress';
+  import { progressView, type ProgressFacts } from '#lib/components/progress.js';
   // Unified cross-engine progress: one *component* for both engines, without pretending their
   // semantics are the same.
   // Progress = observed outcomes over a plan (when one exists). Snakemake reports a plan total, so

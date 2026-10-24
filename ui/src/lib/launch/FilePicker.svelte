@@ -6,17 +6,17 @@
   // project: the enclosing launch form's (its version's, set by `setDataProject`), else the
   // default.
   import { tick, untrack } from 'svelte';
-  import { listDataSources, type DataFile, type DataSource } from '$lib/api';
-  import { FolderListing } from '$lib/data/folderListing.svelte';
-  import { hasDataFolders } from '$lib/data/browse';
-  import { breadcrumbs, folderOf } from '$lib/data/paths';
-  import { errorMessage, fmtBytes, fmtRelativeMicros, plural } from '$lib/util/format';
+  import { listDataSources, type DataFile, type DataSource } from '#lib/api/index.js';
+  import { FolderListing } from '#lib/data/folderListing.svelte.js';
+  import { hasDataFolders } from '#lib/data/browse.js';
+  import { breadcrumbs, folderOf } from '#lib/data/paths.js';
+  import { errorMessage, fmtBytes, fmtRelativeMicros, plural } from '#lib/util/format.js';
   import { isS3Uri, locate, matchesSuffix } from './picker';
-  import { getDataProject } from '$lib/data/projectContext';
-  import { defaultUploadFolder } from '$lib/upload/keys';
-  import type { Upload } from '$lib/upload/uploads.svelte';
-  import UploadPanel from '$lib/upload/UploadPanel.svelte';
-  import Dialog from '$lib/components/Dialog.svelte';
+  import { getDataProject } from '#lib/data/projectContext.js';
+  import { defaultUploadFolder } from '#lib/upload/keys.js';
+  import type { Upload } from '#lib/upload/uploads.svelte.js';
+  import UploadPanel from '#lib/upload/UploadPanel.svelte';
+  import Dialog from '#lib/components/Dialog.svelte';
 
   interface Props {
     /** `file`: one object; `files`: several; `folder`: a folder. */

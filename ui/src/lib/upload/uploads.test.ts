@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { AuthRequiredError } from '$lib/api';
-import { storageWith } from '$lib/api/testing';
+import { AuthRequiredError } from '#lib/api/index.js';
+import { storageWith } from '#lib/api/testing.js';
 import {
   CONCURRENCY,
   KeyTaken,

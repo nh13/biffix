@@ -1,7 +1,7 @@
 <script lang="ts">
   // The narrow screen's top bar: the menu button that opens the sidebar drawer, the site's name, and
   // the page tools (hidden on a wide screen, where the sidebar and the view bar carry them).
-  import Icon from '$lib/components/Icon.svelte';
+  import Icon from '#lib/components/Icon.svelte';
   import { TOUR_ANCHOR } from './tour';
   import Brand from './Brand.svelte';
   import PageTools from './PageTools.svelte';

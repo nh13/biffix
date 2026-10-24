@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({ dismissAttention: vi.fn() }));
-vi.mock('$lib/api', () => api);
+vi.mock('#lib/api/index.js', () => api);
 
 import { Dismissals, dismissAllLabel, withoutDismissed } from './dismiss.svelte';
 

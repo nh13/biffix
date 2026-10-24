@@ -14,9 +14,9 @@
     listReferences,
     type AlignmentLinks,
     type ReferenceBundle,
-  } from '$lib/api';
-  import Dialog from '$lib/components/Dialog.svelte';
-  import { errorMessage } from '$lib/util/format';
+  } from '#lib/api/index.js';
+  import Dialog from '#lib/components/Dialog.svelte';
+  import { errorMessage } from '#lib/util/format.js';
   import {
     igvOptions,
     lastLocusKey,

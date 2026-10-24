@@ -4,8 +4,8 @@
 // per analysis under each result; and one sample's results across them all. Built on the analysis
 // page's cards (`resultCards`), so a result opens and downloads the same way. Pure, so unit-tested.
 
-import type { ResultCard } from '$lib/runs/results';
-import { formatLabel } from '$lib/runs/results';
+import type { ResultCard } from '#lib/runs/results.js';
+import { formatLabel } from '#lib/runs/results.js';
 
 /** How the experiment page shows results across analyses. */
 export type ResultsView = 'table' | 'result' | 'analysis';

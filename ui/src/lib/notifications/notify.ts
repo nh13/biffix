@@ -2,11 +2,11 @@
 // unit-tested: how one notification reads in each view, what the bell and its badge say, what a
 // read does to the list the bell shows before the server answers, and what newly arrived.
 
-import type { Notification, NotificationList, NotificationsReadRequest } from '$lib/api';
-import { fmtRelative, plural } from '$lib/util/format';
-import { derivedName, pipelineTitle } from '$lib/runs/runName';
-import type { ViewMode } from '$lib/view/viewRoutes';
-import { t } from '$lib/view/vocab';
+import type { Notification, NotificationList, NotificationsReadRequest } from '#lib/api/index.js';
+import { fmtRelative, plural } from '#lib/util/format.js';
+import { derivedName, pipelineTitle } from '#lib/runs/runName.js';
+import type { ViewMode } from '#lib/view/viewRoutes.js';
+import { t } from '#lib/view/vocab.js';
 
 /** How many notifications the bell shows (and asks for). */
 export const NOTIFICATION_LIMIT = 20;

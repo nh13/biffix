@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { RunDetail } from '$lib/api';
-  import { paramEntries } from '$lib/runs/runFacts';
+  import type { RunDetail } from '#lib/api/index.js';
+  import { paramEntries } from '#lib/runs/runFacts.js';
 
   // The run's resolved params, secret-redacted server-side.
   interface Props {

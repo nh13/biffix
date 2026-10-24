@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { TaskAttempt } from '$lib/api';
+import type { TaskAttempt } from '#lib/api/index.js';
 import {
   attemptLabel,
   capacityLabel,

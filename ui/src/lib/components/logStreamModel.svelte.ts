@@ -18,8 +18,8 @@
 //   "load earlier" is withdrawn: its cursor no longer adjoins what is kept); read from the start,
 //   the view stops growing instead, so the lines being read never shift away.
 
-import type { LogPage } from '$lib/api';
-import { errorMessage } from '$lib/util/format';
+import type { LogPage } from '#lib/api/index.js';
+import { errorMessage } from '#lib/util/format.js';
 
 export type FetchLogPage = (opts: {
   cursor?: string;

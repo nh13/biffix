@@ -5,10 +5,10 @@
 // finds work, so its bar never reaches the end while it runs), and no time left is shown without
 // the pipeline's past runs to go by. Pure, so it is unit-tested.
 
-import type { RunDetail, WorkflowEstimate } from '$lib/api';
-import { layout } from '$lib/runs/dag/layout';
-import { plural } from '$lib/util/format';
-import { fmtHours } from '$lib/launch/estimate';
+import type { RunDetail, WorkflowEstimate } from '#lib/api/index.js';
+import { layout } from '#lib/runs/dag/layout.js';
+import { plural } from '#lib/util/format.js';
+import { fmtHours } from '#lib/launch/estimate.js';
 
 type ProgressRun = Pick<
   RunDetail,

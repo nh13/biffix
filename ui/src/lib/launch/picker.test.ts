@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { isS3Uri, locate, matchesSuffix, parentFolder } from './picker';
-import type { DataSource } from '$lib/api';
+import type { DataSource } from '#lib/api/index.js';
 
 const src = (id: string, uri: string): DataSource => ({
   id,

@@ -6,12 +6,12 @@
   // engine and its tray, so they keep going while the person works; `onstarted` hears each batch
   // once all of it has started (less any file the person chose not to upload when its name was
   // taken, or went on without when it could not start; never an empty batch). The file picker and the Lab Data page both upload through this.
-  import type { DataSource } from '$lib/api';
-  import { folderOf } from '$lib/data/paths';
+  import type { DataSource } from '#lib/api/index.js';
+  import { folderOf } from '#lib/data/paths.js';
   import { renamedKey, uploadKey } from './keys';
   import { uploads } from './store';
   import { KeyTaken, type Upload } from './uploads.svelte';
-  import { errorMessage } from '$lib/util/format';
+  import { errorMessage } from '#lib/util/format.js';
 
   interface Props {
     /** The source uploaded into (its root is shown before the folder). */

@@ -2,9 +2,9 @@
 // what order for the run's state, the progress bar's fraction, who started it, and its one cost.
 // Pure, so it is unit-tested.
 
-import type { RunDetail } from '$lib/api';
-import { costLine, pricedUsd } from '$lib/runs/cost';
-import { fmtDate, fmtRelative } from '$lib/util/format';
+import type { RunDetail } from '#lib/api/index.js';
+import { costLine, pricedUsd } from '#lib/runs/cost.js';
+import { fmtDate, fmtRelative } from '#lib/util/format.js';
 
 export type SectionId = 'wrong' | 'results' | 'qc' | 'samples' | 'inputs' | 'cost';
 
@@ -69,7 +69,7 @@ export function shareSentence(project: string | null | undefined): string {
 }
 
 /**
- * The run's one cost, as the lists show it (`$lib/runs/cost`): the estimate so far while it runs,
+ * The run's one cost, as the lists show it (`#lib/runs/cost.js`): the estimate so far while it runs,
  * the total once it ended (marked while jobs are still to be priced); null when none of its jobs is
  * priced yet.
  */

@@ -1,7 +1,7 @@
 // The Settings → References editor's form model, and the request it describes (or what is missing
 // from it). Pure, so each client-side check is unit-tested.
 
-import type { ReferenceBundle, ReferenceBundleRequest } from '$lib/api';
+import type { ReferenceBundle, ReferenceBundleRequest } from '#lib/api/index.js';
 
 /** The kinds of bundle the form offers (a newer server's other kind stays selectable as itself). */
 export const KINDS = [

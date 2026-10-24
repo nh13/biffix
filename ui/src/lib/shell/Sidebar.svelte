@@ -3,12 +3,12 @@
   // wide screen it sits beside the page (collapsible); on a narrow one the app shell shows it as a
   // drawer over the page.
   import { page } from '$app/state';
-  import { logout } from '$lib/api/auth';
-  import Icon from '$lib/components/Icon.svelte';
-  import { healthOf, liveStatus } from '$lib/status/live.svelte';
+  import { logout } from '#lib/api/auth.js';
+  import Icon from '#lib/components/Icon.svelte';
+  import { healthOf, liveStatus } from '#lib/status/live.svelte.js';
   import { healthColor as colorOf, healthWords } from './health';
-  import type { Theme } from '$lib/state/localPrefs.svelte';
-  import { view } from '$lib/state/userPrefs.svelte';
+  import type { Theme } from '#lib/state/localPrefs.svelte.js';
+  import { view } from '#lib/state/userPrefs.svelte.js';
   import { TOUR_ANCHOR } from './tour';
   import { isCurrent, navFor } from './nav';
   import Brand from './Brand.svelte';

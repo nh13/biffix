@@ -5,7 +5,7 @@
 // registered no output there" (a file the engine wrote but did not report, or one a later run added
 // to a shared folder) from "the lookup gave up" (more same-named outputs than it reads).
 
-import { listAllOutputs, listOutputs, type RunOutput } from '$lib/api';
+import { listAllOutputs, listOutputs, type RunOutput } from '#lib/api/index.js';
 
 /** Outputs read per page, and at most, looking for one. */
 const PAGE = 200;

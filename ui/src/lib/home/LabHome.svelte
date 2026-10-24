@@ -1,18 +1,22 @@
 <script lang="ts">
   // The Lab view's home, "My work": one way to start, then what needs a look, what is running and
   // what just finished — the caller's own analyses only — and the experiments they are in.
-  import { listExperiments, listRuns, type Experiment, type RunSummary } from '$lib/api';
-  import { WorkflowCatalog } from '$lib/workflows/catalog.svelte';
-  import { loadPins } from '$lib/state/userPrefs.svelte';
+  import { listExperiments, listRuns, type Experiment, type RunSummary } from '#lib/api/index.js';
+  import { WorkflowCatalog } from '#lib/workflows/catalog.svelte.js';
+  import { loadPins } from '#lib/state/userPrefs.svelte.js';
   import PinnedSection from './PinnedSection.svelte';
   import Welcome from './Welcome.svelte';
-  import { PollNudge, startPoll } from '$lib/util/poll';
+  import { PollNudge, startPoll } from '#lib/util/poll.js';
   import RunRow from './RunRow.svelte';
-  import { runName } from '$lib/runs/runName';
-  import ExperimentRow from '$lib/experiments/ExperimentRow.svelte';
+  import { runName } from '#lib/runs/runName.js';
+  import ExperimentRow from '#lib/experiments/ExperimentRow.svelte';
   import type { Snippet } from 'svelte';
-  import { TOUR_ANCHOR } from '$lib/shell/tour';
-  import { Dismissals, dismissAllLabel, withoutDismissed } from '$lib/runs/analysis/dismiss.svelte';
+  import { TOUR_ANCHOR } from '#lib/shell/tour.js';
+  import {
+    Dismissals,
+    dismissAllLabel,
+    withoutDismissed,
+  } from '#lib/runs/analysis/dismiss.svelte.js';
   import {
     choiceAfter,
     EXPERIMENTS_ARCHIVED,

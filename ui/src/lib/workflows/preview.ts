@@ -1,7 +1,7 @@
 // A form preview (`biffix workflows form --open`): an unregistered workflow's launch form, carried
 // in the page URL's fragment as base64url(zlib(JSON)) so it never reaches the server.
 
-import { base64UrlDecode } from '$lib/util/base64url';
+import { base64UrlDecode } from '#lib/util/base64url.js';
 
 /** What a preview URL carries. */
 export interface FormPreview {

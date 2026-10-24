@@ -1,8 +1,8 @@
 <script lang="ts">
   // The Expert view's home: run counts by state, each a link to the runs list, and quick links.
   // The Lab view's home is `LabHome`.
-  import { listRuns } from '$lib/api';
-  import { errorMessage } from '$lib/util/format';
+  import { listRuns } from '#lib/api/index.js';
+  import { errorMessage } from '#lib/util/format.js';
 
   // Counts come from each filter's server-side `total`, not a client count of a capped page.
   let active = $state<number | null>(null);
