@@ -41,7 +41,7 @@
   <div class="banner" role="status">
     Filled from the example <strong>{form.notice.slice('example:'.length)}</strong>. Swap in your
     own inputs, then launch.
-    {#if form.beforeExample}<button class="link" onclick={() => form.undoExample()}
+    {#if form.exampleChoice.before}<button class="link" onclick={() => form.exampleChoice.undo()}
         >Undo, and put back what you had entered</button
       >{/if}
   </div>

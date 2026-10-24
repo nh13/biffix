@@ -6,20 +6,23 @@
 // estimate, the wizard's step navigation, and the launch itself. Switching view re-renders the
 // layout over this one instance, so nothing entered is lost.
 //
+// It composes the form's parts, each given only the narrow view of the form it needs: the examples
+// and their undo (`ExampleChoice`), the wizard's steps (`WizardNav`), the reference offers, the
+// experiments and the cost estimate. What is entered, as plain data (an undo's snapshot, a draft's
+// restore, a params import), is `formEntry`; moving focus to a field or a problem is `fieldFocus`.
+//
 // Construct it while a component initialises (`RunForm`): its effects and its `afterNavigate` hook
 // live as long as that component. The form's parts read it from context (`launchForm()`).
 
-import { getContext, setContext, tick, untrack } from 'svelte';
-import { afterNavigate, goto } from '$app/navigation';
+import { getContext, setContext, untrack } from 'svelte';
+import { goto } from '$app/navigation';
 import { page } from '$app/state';
 import { getRun, submitRun, type Experiment } from '#lib/api/index.js';
-import { withExperiment } from '#lib/experiments/experiments.js';
 import { uploads } from '#lib/upload/store.js';
 import { pendingProblem } from '#lib/upload/uploads.svelte.js';
 import { saveBlob } from '#lib/util/download.js';
 import { errorMessage } from '#lib/util/format.js';
 import { readPref, writePref } from '#lib/util/storage.js';
-import { replaceUrl } from '#lib/util/replaceUrl.js';
 import { runTabHref } from '#lib/runs/runNav.js';
 import { parseSchema } from '#lib/workflows/schema.js';
 import {
@@ -35,7 +38,6 @@ import {
   loadDraft,
   paramsFrom,
   paramsYaml,
-  parseParamsYaml,
   pathSheetModes,
   prefillFromRun,
   prefillValues,
@@ -61,26 +63,30 @@ import {
   type RefChoice,
 } from '../referenceChoice';
 import { retentionOptions, type Retention } from '../retention';
-import { problemColumn, sampleCount, sheetCellId, type SheetRow } from '../samplesheet/sheet';
+import { sampleCount, type SheetRow } from '../samplesheet/sheet';
 import {
-  canReach,
-  firstBlockedStep,
-  parseStep,
   placeFields,
-  plainClick,
   reviewDetailsSummary,
   reviewOptions,
   reviewReference,
   reviewSampleLines,
   stepCards,
-  stepOfField,
-  stepProblems,
-  type FormStep,
   type WizardStep,
 } from '../wizard';
 import { CostEstimate } from './costEstimate.svelte';
+import { ExampleChoice } from './exampleChoice.svelte';
 import { ExperimentChoice } from './experimentChoice.svelte';
+import { focusCell, focusFieldControl, stepToFix, type FocusTarget } from './fieldFocus';
+import {
+  draftEntry,
+  importEntry,
+  undoNotice,
+  type FormSnapshot,
+  type FromRun,
+  type SheetModes,
+} from './formEntry';
 import { ReferenceOffers } from './referenceOffers.svelte';
+import { WizardNav } from './wizardNav.svelte';
 
 /** What the form is given: read through getters, so they stay the current props. */
 export interface LaunchFormProps {
@@ -92,37 +98,12 @@ export interface LaunchFormProps {
   readonly wizard: boolean;
 }
 
-export type SheetModes = Record<string, 'rows' | 'path'>;
-
-/** Pre-filled from an earlier run: its id, whether this launch resumes it, and what it carried. */
-export interface FromRun {
-  runId: string;
-  resume: boolean;
-  secrets: string[];
-  images: string[];
-}
-
-/** The form as it was before an example replaced it, for *Undo*. */
-interface BeforeExample {
-  values: FormValues;
-  tables: Record<string, SheetRow[]>;
-  sheetModes: SheetModes;
-  refChoice: RefChoice;
-  retention: Retention;
-  experiment: string | null;
-  runName: string;
-  from: FromRun | null;
-  notice: string | null;
-  touched: Record<string, boolean>;
-}
-
 /** The experiment dropdown's *New experiment…* choice. */
 export const NEW_EXPERIMENT = '__new__';
 
 // -- Show all parameters (remembered per viewer) ---------------------------------------------
 const SHOW_ALL_KEY = 'biffix:launch-show-all';
 const readShowAll = (): boolean => readPref(SHOW_ALL_KEY) === '1';
-const BANNER_KEY = (name: string) => `biffix:launch-banner-dismissed:${name}`;
 
 export class LaunchForm {
   readonly #p: LaunchFormProps;
@@ -276,9 +257,8 @@ export class LaunchForm {
   readonly problemOf = $derived(firstProblems(this.problems));
 
   // -- Examples ----------------------------------------------------------------------------------
-  examplesOpen = $state(false);
-  pendingExample = $state<number | null>(null);
-  bannerDismissed = $state(false);
+  /** The examples menu, the replace it asks about, an example's *Undo*, and the banner. */
+  readonly exampleChoice: ExampleChoice;
   /** Whether an example would overwrite something: what the user entered, or a Re-run's
    * pre-fill. */
   readonly hasInput = $derived(
@@ -297,10 +277,6 @@ export class LaunchForm {
         },
       }),
   );
-  /** The form as it was before an example replaced it, for *Undo*. */
-  beforeExample = $state<BeforeExample | null>(null);
-  /** The form just after the example went in: an edit since then is lost by *Undo*, so it asks. */
-  #exampleState: string | null = null;
 
   // -- YAML import -------------------------------------------------------------------------------
   importOpen = $state(false);
@@ -314,24 +290,9 @@ export class LaunchForm {
   );
 
   // -- The wizard (Lab view) ----------------------------------------------------------------------
-  // The same form, a step at a time: Add samples (2), Reference & options (3), Review & launch (4).
-  // Step 1, picking the pipeline, is New run. `?step=` names the step, so Back, a reload and a
-  // shared link all land on it.
+  // The same form, a step at a time; `?step=` names the step (`WizardNav`).
   readonly placed = $derived(placeFields(this.schema, this.engine));
-  readonly step = $derived(parseStep(page.url.searchParams.get('step')));
-  // Back to step 1 keeps the experiment being launched into.
-  readonly newRunHref = $derived(withExperiment('/runs/new', this.experiment));
-  readonly formStep = $derived<FormStep>(this.step === 1 ? 2 : this.step);
-  /** What blocks leaving the current step (on Review, anything that blocks the launch). */
-  readonly blocking = $derived(stepProblems(this.problems, this.placed, this.formStep));
-  // A step reached by its URL (a link, a reload) that an earlier step blocks goes back to that
-  // step, judged once the form has loaded (a Re-run's pre-fill, the reference choices). Only on
-  // arrival: a change made on this step never moves it.
-  #arrived = $state(true);
-  /** The field to focus once the step it is on has rendered (else the step's heading). */
-  #pendingFocus: string | Problem | null = null;
-  // A step change (Next, Back, the stepper, the browser's Back) moves focus to the new step.
-  #shownStep: WizardStep;
+  readonly nav: WizardNav;
   // Step 2 shows the samplesheet (or, without one, the input files); step 3 everything else.
   readonly steps = $derived(stepCards(this.lay, this.placed, this.refs?.section ?? null));
 
@@ -381,7 +342,6 @@ export class LaunchForm {
   constructor(props: LaunchFormProps) {
     this.#p = props;
     this.advancedOpen = untrack(() => !props.wizard) && readShowAll();
-    this.#shownStep = untrack(() => this.step);
 
     // -- Loading: a Re-run/Resume pre-fill, else a restored draft, else a fresh form --------------
     $effect(() => {
@@ -420,31 +380,20 @@ export class LaunchForm {
             });
           return;
         }
-        const draft = loadDraft(versionId);
-        // A draft holding anything the user entered (a value, a row, a reference, a name, a
-        // retention or an experiment), whether or not the author declared prefills.
-        if (
-          draft &&
-          formHasInput(this.schema, {
-            values: draft.values,
-            tables: draft.tables ?? {},
-            reference: draft.reference ?? NO_CHOICE,
-            extras: {
-              runName: draft.runName,
-              defaultRunName: this.#defaultRunName(),
-              retention: draft.retention ?? 'default',
-              experiment: draft.experiment ?? null,
-              defaultExperiment: this.experimentParam,
-            },
-          })
-        ) {
+        // A draft holding anything the user entered (`draftEntry`).
+        const draft = draftEntry(this.schema, loadDraft(versionId), {
+          runName: this.runName,
+          defaultRunName: this.#defaultRunName(),
+          experimentParam: this.experimentParam,
+        });
+        if (draft) {
           this.values = draft.values;
-          this.tables = draft.tables ?? {};
-          this.sheetModes = draft.sheetModes ?? {};
-          this.refChoice = draft.reference ?? NO_CHOICE;
-          this.retention = draft.retention ?? 'default';
-          this.runName = draft.runName || this.runName;
-          this.experiment = this.experimentParam ?? draft.experiment ?? null;
+          this.tables = draft.tables;
+          this.sheetModes = draft.sheetModes;
+          this.refChoice = draft.refChoice;
+          this.retention = draft.retention;
+          this.runName = draft.runName;
+          this.experiment = draft.experiment;
           this.dirty = true;
           this.notice = 'draft';
         }
@@ -508,6 +457,18 @@ export class LaunchForm {
       },
     });
 
+    this.exampleChoice = new ExampleChoice({
+      get name() {
+        return form.detail.name;
+      },
+      get hasInput() {
+        return form.hasInput;
+      },
+      snapshot: () => this.#snapshot(),
+      fill: (i) => this.#fillExample(i),
+      restore: (s) => this.#restore(s),
+    });
+
     // Once revealed, a hidden field stays shown until the form is reset, so it never vanishes while
     // it is being fixed.
     $effect(() => {
@@ -524,39 +485,28 @@ export class LaunchForm {
       });
     });
 
-    $effect(() => {
-      const name = this.detail.name;
-      untrack(() => {
-        this.bannerDismissed = readPref(BANNER_KEY(name)) === '1';
-      });
-    });
-
     // Switching to the wizard collapses what the Expert form left open.
     $effect(() => {
       if (this.wizard) untrack(() => (this.advancedOpen = false));
     });
 
-    $effect(() => {
-      if (this.wizard && this.step === 1) goto(this.newRunHref, { replace: true });
-    });
-    $effect(() => {
-      if (
-        !this.wizard ||
-        !this.#arrived ||
-        this.loadingRun ||
-        (this.refs && this.references.offered === null)
-      )
-        return;
-      this.#arrived = false;
-      if (this.step === 1 || canReach(this.step, this.problems, this.placed)) return;
-      const blocked = firstBlockedStep(this.problems, this.placed);
-      if (blocked) replaceUrl(this.stepHref(blocked));
-    });
-    afterNavigate(() => {
-      this.#arrived = true;
-      const s = this.step;
-      if (this.wizard && s !== this.#shownStep) void this.#focusStep();
-      this.#shownStep = s;
+    this.nav = new WizardNav({
+      get wizard() {
+        return form.wizard;
+      },
+      get problems() {
+        return form.problems;
+      },
+      get placed() {
+        return form.placed;
+      },
+      get experiment() {
+        return form.experiment;
+      },
+      get loaded() {
+        return !form.loadingRun && !(form.refs && form.references.offered === null);
+      },
+      focus: (target) => this.#focus(target),
     });
   }
 
@@ -589,8 +539,7 @@ export class LaunchForm {
     this.retention = 'default';
     this.experiment = this.experimentParam;
     this.runName = this.#defaultRunName();
-    this.pendingExample = null;
-    this.beforeExample = null;
+    this.exampleChoice.reset();
     this.revealed = new Set();
   }
 
@@ -668,38 +617,23 @@ export class LaunchForm {
     this.chooseExperiment(e.id);
   }
 
-  // -- Examples -----------------------------------------------------------------------------------
-  /** Open or close the examples menu, dropping any replace it was asking about. */
-  setExamplesOpen(open: boolean) {
-    this.examplesOpen = open;
-    this.pendingExample = null;
+  // -- Examples (what `exampleChoice` asks of the form) ------------------------------------------
+  /** What is entered, as plain data (what an example's *Undo* puts back). */
+  #snapshot(): FormSnapshot {
+    return {
+      values: $state.snapshot(this.values) as FormValues,
+      tables: $state.snapshot(this.tables) as Record<string, SheetRow[]>,
+      sheetModes: $state.snapshot(this.sheetModes) as SheetModes,
+      refChoice: $state.snapshot(this.refChoice) as RefChoice,
+      retention: this.retention,
+      experiment: this.experiment,
+      runName: this.runName,
+      from: $state.snapshot(this.from) as FromRun | null,
+      notice: this.notice,
+      touched: { ...this.touched },
+    };
   }
-  dismissBanner() {
-    this.bannerDismissed = true;
-    writePref(BANNER_KEY(this.detail.name), '1');
-  }
-  #formState(): string {
-    return JSON.stringify(
-      $state.snapshot({
-        values: this.values,
-        tables: this.tables,
-        refChoice: this.refChoice,
-        retention: this.retention,
-        experiment: this.experiment,
-        runName: this.runName,
-      }),
-    );
-  }
-  undoExample() {
-    const b = this.beforeExample;
-    if (!b) return;
-    if (
-      this.#exampleState !== null &&
-      this.#formState() !== this.#exampleState &&
-      !confirm('Undo the example? The changes you made since will be lost too.')
-    )
-      return;
-    this.#exampleState = null;
+  #restore(b: FormSnapshot) {
     this.values = b.values;
     this.tables = b.tables;
     this.sheetModes = b.sheetModes;
@@ -708,37 +642,15 @@ export class LaunchForm {
     this.experiment = b.experiment;
     this.runName = b.runName;
     this.from = b.from;
-    this.notice = b.notice === 'draft' ? null : b.notice;
+    this.notice = undoNotice(b.notice);
     // The fields the user had touched show their problems again, as before the example.
     this.touched = b.touched;
-    this.beforeExample = null;
     this.dirty = true;
   }
-  chooseExample(i: number) {
-    if (this.hasInput && this.pendingExample !== i) {
-      this.pendingExample = i;
-      return;
-    }
+  /** Replace the whole form with an example, including a Re-run's pre-fill and its resume. */
+  #fillExample(i: number) {
     const ex = this.examples[i];
-    // Kept so *Undo* can put back what the example replaced.
-    this.beforeExample = this.hasInput
-      ? {
-          values: $state.snapshot(this.values) as FormValues,
-          tables: $state.snapshot(this.tables) as Record<string, SheetRow[]>,
-          sheetModes: $state.snapshot(this.sheetModes) as SheetModes,
-          refChoice: $state.snapshot(this.refChoice) as RefChoice,
-          retention: this.retention,
-          experiment: this.experiment,
-          runName: this.runName,
-          from: $state.snapshot(this.from) as FromRun | null,
-          notice: this.notice,
-          touched: { ...this.touched },
-        }
-      : null;
-    const keep = this.beforeExample;
-    // An example replaces the whole form, including a Re-run's pre-fill and its resume.
     this.resetForm();
-    this.beforeExample = keep;
     this.values = valuesFromExample(this.schema, ex);
     this.refChoice = choiceFor(this.schema, ex.reference, this.values, NO_CHOICE);
     this.references.noneFitsAgain();
@@ -749,30 +661,24 @@ export class LaunchForm {
     );
     this.runName = ex.run_name?.trim() || this.#defaultRunName();
     this.dirty = true;
-    this.examplesOpen = false;
     this.notice = `example:${ex.name}`;
-    this.#exampleState = this.beforeExample ? this.#formState() : null;
   }
 
   // -- YAML import / download ---------------------------------------------------------------------
   applyImport() {
     try {
-      const imported = parseParamsYaml(this.importText, this.schema);
-      const kept = Object.fromEntries(
-        Object.entries(imported.values).filter(
-          ([k]) => this.showAll || !imported.unknown.includes(k),
-        ),
-      );
-      this.values = { ...this.values, ...kept };
-      this.refChoice = choiceFor(this.schema, null, kept, this.refChoice);
-      this.#pathModeFor(Object.keys(kept));
+      const imported = importEntry(this.schema, this.importText, {
+        showAll: this.showAll,
+        refChoice: this.refChoice,
+      });
+      this.values = { ...this.values, ...imported.values };
+      this.refChoice = imported.refChoice;
+      this.#pathModeFor(Object.keys(imported.values));
       this.dirty = true;
       this.importOpen = false;
       this.importText = '';
       this.importError = null;
-      this.notice = imported.unknown.length
-        ? `imported-unknown:${imported.unknown.join(', ')}`
-        : 'imported';
+      this.notice = imported.notice;
     } catch (e) {
       this.importError = errorMessage(e);
     }
@@ -795,63 +701,46 @@ export class LaunchForm {
     this.resetForm();
     this.references.noneFitsAgain();
     // A fresh form starts at Add samples.
-    if (this.wizard && this.step !== 2) this.goStep(2);
+    if (this.wizard && this.nav.step !== 2) this.nav.goStep(2);
   }
 
-  // -- Launch -------------------------------------------------------------------------------------
-  /** The cell a samplesheet row's problem is about (its column's, else the row's first). */
-  #cellOf(p: Problem): HTMLElement | null {
-    if (p.row === undefined) return null;
-    const spec = this.byName.get(p.field)?.samplesheet;
-    const column = spec ? problemColumn(spec, p.column) : null;
-    return column ? document.getElementById(sheetCellId(p.field, p.row, column)) : null;
-  }
+  // -- Going to a field or a problem --------------------------------------------------------------
   /** Go to a problem: a samplesheet row's cell, else its field. */
   focusProblem = (p: Problem) => {
     if (p.row === undefined) {
       this.focusField(p.field);
       return;
     }
-    const target = stepOfField(p.field, this.placed);
-    if (this.wizard && target !== this.step) {
-      this.goStep(target, p);
+    // In the wizard, a row on another step is fixed there.
+    const other = this.#stepToFix(p.field);
+    if (other !== null) {
+      this.nav.goStep(other, p);
       return;
     }
-    const el = this.#cellOf(p);
-    if (!el) {
-      this.focusField(p.field);
-      return;
-    }
-    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    el.focus({ preventScroll: true });
+    if (!focusCell(p, this.byName.get(p.field)?.samplesheet)) this.focusField(p.field);
   };
   focusField(name: string) {
     // In the wizard, a field on another step is fixed there.
-    if (this.wizard) {
-      const target = stepOfField(name, this.placed);
-      if (target !== this.step) {
-        this.goStep(target, name);
-        return;
-      }
-    } else if (!this.showAll && this.byName.get(name)?.hidden) {
+    const other = this.#stepToFix(name);
+    if (other !== null) {
+      this.nav.goStep(other, name);
+      return;
+    }
+    if (!this.wizard && !this.showAll && this.byName.get(name)?.hidden) {
       // A field the author hides is shown so it can be fixed (the wizard reveals it itself).
       this.showAll = true;
     }
-    const el = document.getElementById(`field-${name}`);
-    if (!el) {
-      // A field in a collapsed Advanced group: open it first.
-      const details = document.querySelector<HTMLDetailsElement>(`[data-holds~="${name}"]`);
-      if (details) details.open = true;
-      this.advancedOpen = true;
-      requestAnimationFrame(() => document.getElementById(`field-${name}`)?.focus());
-      return;
-    }
-    // A field inside a collapsed disclosure (the Review's *Where results go*) is shown first.
-    for (let d = el.closest('details'); d; d = d.parentElement?.closest('details') ?? null)
-      if (!d.open) d.open = true;
-    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    el.focus({ preventScroll: true });
+    focusFieldControl(name, () => (this.advancedOpen = true));
   }
+  #stepToFix(field: string) {
+    return stepToFix(field, { wizard: this.wizard, step: this.nav.step, placed: this.placed });
+  }
+  #focus(target: FocusTarget) {
+    if (typeof target === 'string') this.focusField(target);
+    else this.focusProblem(target);
+  }
+
+  // -- Launch -------------------------------------------------------------------------------------
   launch = async () => {
     // One launch at a time, and never before a Re-run's pre-fill has loaded.
     if (this.launching || this.loadingRun) return;
@@ -890,7 +779,7 @@ export class LaunchForm {
   keydown = (e: KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       // The wizard launches from its Review step only.
-      if (this.wizard && this.step !== 4) return;
+      if (this.wizard && this.nav.step !== 4) return;
       // Not behind an open dialog (the file picker), nor from a form nested in this one (the params
       // import box, the wizard's new-experiment form): there the keys are that form's.
       if (document.querySelector('dialog[open]')) return;
@@ -901,48 +790,14 @@ export class LaunchForm {
   };
 
   // -- Wizard navigation --------------------------------------------------------------------------
-  stepHref = (n: WizardStep): string => {
-    if (n === 1) return this.newRunHref;
-    const u = new URL(page.url.href);
-    u.searchParams.set('step', String(n));
-    return `${u.pathname}${u.search}`;
-  };
-  /** A step is a link when every step before it is complete. */
-  stepLink = (n: WizardStep): string | null =>
-    n === 1 || canReach(n, this.problems, this.placed) ? this.stepHref(n) : null;
-  stepDone = (n: WizardStep): boolean =>
-    n < this.formStep &&
-    (n === 1 || stepProblems(this.problems, this.placed, n as FormStep).length === 0);
-  goStep = (n: WizardStep, focus?: string | Problem) => {
-    if (n === 1) {
-      goto(this.newRunHref);
-      return;
-    }
-    this.#pendingFocus = focus ?? null;
-    goto(this.stepHref(n), { reset: false });
-  };
-  /** A step link's click: a plain one moves in place, a new-tab one opens the link. */
-  navTo = (e: MouseEvent, n: WizardStep) => {
-    if (!plainClick(e)) return;
-    e.preventDefault();
-    this.goStep(n);
-  };
   /** Next: on to the following step, or, while this one has problems, to the first of them. */
   nextStep() {
-    if (this.blocking.length > 0) {
+    if (this.nav.blocking.length > 0) {
       this.attempted = true;
-      this.focusProblem(this.blocking[0]);
+      this.focusProblem(this.nav.blocking[0]);
       return;
     }
-    this.goStep((this.formStep + 1) as WizardStep);
-  }
-  async #focusStep() {
-    await tick();
-    const target = this.#pendingFocus;
-    this.#pendingFocus = null;
-    if (typeof target === 'string') this.focusField(target);
-    else if (target) this.focusProblem(target);
-    else document.getElementById('wizard-heading')?.focus();
+    this.nav.goStep((this.nav.formStep + 1) as WizardStep);
   }
 }
 

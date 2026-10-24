@@ -38,26 +38,32 @@
   </section>
 {:else}
   <WizardStepper
-    current={form.step}
-    hrefFor={form.stepLink}
-    done={form.stepDone}
-    onnav={(n) => form.goStep(n)}
+    current={form.nav.step}
+    hrefFor={form.nav.stepLink}
+    done={form.nav.stepDone}
+    onnav={(n) => form.nav.goStep(n)}
   />
   {#if form.loadingRun}
     <p class="muted">Loading the earlier analysis…</p>
-  {:else if form.formStep === 2}
+  {:else if form.nav.formStep === 2}
     <div class="step-head">
       <h2 id="wizard-heading" class="step-title" tabindex="-1">Add samples</h2>
       {#if form.examples.length > 0}<ExamplesMenu align="right" />{/if}
     </div>
-    {#if form.examples.length > 0 && !form.hasInput && !form.bannerDismissed}
+    {#if form.examples.length > 0 && !form.hasInput && !form.exampleChoice.bannerDismissed}
       <div class="first-time spaced" role="note">
         <span
           >New here? Start from an example to see what a finished analysis looks like, then swap in
           your own samples.</span
         >
-        <button class="link" onclick={() => form.setExamplesOpen(true)}>Show the examples</button>
-        <button class="close" aria-label="Dismiss" onclick={() => form.dismissBanner()}>×</button>
+        <button class="link" onclick={() => form.exampleChoice.setOpen(true)}
+          >Show the examples</button
+        >
+        <button
+          class="close"
+          aria-label="Dismiss"
+          onclick={() => form.exampleChoice.dismissBanner()}>×</button
+        >
       </div>
     {/if}
     <FormCard label="Samples">
@@ -71,7 +77,7 @@
         {/each}
       {/if}
     </FormCard>
-  {:else if form.formStep === 3}
+  {:else if form.nav.formStep === 3}
     <h2 id="wizard-heading" class="step-title" tabindex="-1">Reference & options</h2>
     <SectionCards cards={form.steps.cards} level={3} />
     {#if form.steps.cards.length === 0 && form.steps.advanced.length === 0 && !form.refs}
@@ -94,8 +100,8 @@
       samples={form.reviewSamples}
       reference={form.reviewRef}
       options={form.reviewChanged}
-      stepHref={form.stepHref}
-      onnav={form.navTo}
+      stepHref={form.nav.stepHref}
+      onnav={form.nav.navTo}
     />
     <RunDetailsCard />
     <WizardLaunchCard />
@@ -104,30 +110,32 @@
   {#if form.launchError}<p class="launch-error" role="alert">{form.launchError}</p>{/if}
   {#if !form.loadingRun}
     <footer class="wizard-nav">
-      {#if form.formStep === 2}
-        <a class="btn btn-compact" href={form.newRunHref}>← Pick another pipeline</a>
+      {#if form.nav.formStep === 2}
+        <a class="btn btn-compact" href={form.nav.newRunHref}>← Pick another pipeline</a>
       {:else}
         <button
           class="btn btn-compact"
-          onclick={() => form.goStep((form.formStep - 1) as WizardStep)}>← Back</button
+          onclick={() => form.nav.goStep((form.nav.formStep - 1) as WizardStep)}>← Back</button
         >
       {/if}
       <div class="problems" id="wizard-problems" aria-live="polite">
-        {#if form.formStep !== 4}
-          {#if form.blocking.length === 0}
-            <span class="ready">✓ {form.formStep === 2 ? 'Samples ready' : 'Options ready'}</span>
+        {#if form.nav.formStep !== 4}
+          {#if form.nav.blocking.length === 0}
+            <span class="ready"
+              >✓ {form.nav.formStep === 2 ? 'Samples ready' : 'Options ready'}</span
+            >
           {:else}
-            <ProblemList list={form.blocking} />
+            <ProblemList list={form.nav.blocking} />
           {/if}
         {/if}
       </div>
-      {#if form.formStep !== 4}
+      {#if form.nav.formStep !== 4}
         <button
           class="btn btn-compact btn-primary"
-          aria-disabled={form.blocking.length > 0}
+          aria-disabled={form.nav.blocking.length > 0}
           aria-describedby="wizard-problems"
           onclick={() => form.nextStep()}
-          >Next: {form.formStep === 2 ? 'Reference & options' : 'Review & launch'} →</button
+          >Next: {form.nav.formStep === 2 ? 'Reference & options' : 'Review & launch'} →</button
         >
       {/if}
     </footer>
