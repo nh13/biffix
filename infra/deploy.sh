@@ -560,8 +560,9 @@ print(*(int(r[k]) for k in ("runtimes", "ready", "building", "failed", "errors")
       read -r runtimes ready building failed errors <<< "$counts"
       log "coordinator variants: $ready of $runtimes ready, $building building, $failed failed"
       if [ "$building" -eq 0 ]; then
-        [ "$failed" -eq 0 ] && [ "$errors" -eq 0 ] \
-          || warn "coordinator variants: $failed failed and $errors could not be swept; those versions launch on an older variant or are refused (see the sweep Lambda's log)"
+        if [ "$failed" -ne 0 ] || [ "$errors" -ne 0 ]; then
+          warn "coordinator variants: $failed failed and $errors could not be swept; those versions launch on an older variant or are refused (see the sweep Lambda's log)"
+        fi
         return 0
       fi
     else
