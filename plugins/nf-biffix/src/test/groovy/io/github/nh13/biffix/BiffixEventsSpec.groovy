@@ -1,13 +1,14 @@
 package io.github.nh13.biffix
 
-import com.fasterxml.jackson.databind.JsonNode
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.networknt.schema.JsonSchema
-import com.networknt.schema.JsonSchemaFactory
-import com.networknt.schema.SpecVersion
+import com.networknt.schema.InputFormat
+import com.networknt.schema.Schema
+import com.networknt.schema.SchemaRegistry
+import com.networknt.schema.SpecificationVersion
 import groovy.json.JsonOutput
 import spock.lang.Shared
 import spock.lang.Specification
+import tools.jackson.databind.JsonNode
+import tools.jackson.databind.ObjectMapper
 
 /**
  * The nf-biffix observer's emitted events must conform to the canonical engine wire contract
@@ -28,7 +29,7 @@ class BiffixEventsSpec extends Specification {
     ]
 
     @Shared
-    JsonSchema schema
+    Schema schema
 
     @Shared
     JsonNode schemaTree
@@ -43,12 +44,12 @@ class BiffixEventsSpec extends Specification {
         final file = candidates.collect { new File(it) }.find { it.exists() }
         assert file != null: "wire.engine.schema.json not found from ${System.getProperty('user.dir')}"
         final text = file.text
-        schema = JsonSchemaFactory.getInstance(SpecVersion.VersionFlag.V202012).getSchema(text)
+        schema = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12).getSchema(text)
         schemaTree = mapper.readTree(text)
     }
 
-    private Set validate(Map<String, Object> event) {
-        return schema.validate(mapper.readTree(JsonOutput.toJson(event)))
+    private List validate(Map<String, Object> event) {
+        return schema.validate(JsonOutput.toJson(event), InputFormat.JSON)
     }
 
     private static Map<String, Object> env(Map<String, Object> body) {
@@ -87,14 +88,14 @@ class BiffixEventsSpec extends Specification {
             final props = node.get('properties')
             if (props != null && props.isObject()) {
                 final kindProp = props.get('kind')
-                if (kindProp?.get('const')?.isTextual()) {
-                    found[kindProp.get('const').asText()] = node
+                if (kindProp?.get('const')?.isString()) {
+                    found[kindProp.get('const').asString()] = node
                 }
                 else if (kindProp != null && kindProp.get('enum')?.isArray()) {
-                    kindProp.get('enum').each { found[it.asText()] = node }
+                    kindProp.get('enum').each { found[it.asString()] = node }
                 }
             }
-            node.fields().each { found.putAll(variants(it.value)) }
+            node.properties().each { found.putAll(variants(it.value)) }
         }
         else if (node.isArray()) {
             node.each { found.putAll(variants(it)) }
@@ -105,8 +106,8 @@ class BiffixEventsSpec extends Specification {
     /** The property names the schema declares for {@code kind}: the envelope's plus its variant's. */
     private Set<String> declared(String kind) {
         final names = [] as Set<String>
-        schemaTree.get('properties')?.fieldNames()?.each { names << it }
-        variants(schemaTree)[kind]?.get('properties')?.fieldNames()?.each { names << it }
+        schemaTree.get('properties')?.propertyNames()?.each { names << it }
+        variants(schemaTree)[kind]?.get('properties')?.propertyNames()?.each { names << it }
         return names
     }
 
