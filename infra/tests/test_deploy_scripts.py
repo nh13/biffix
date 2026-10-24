@@ -936,6 +936,40 @@ def test_deploy_verifies_against_the_deployed_api(
         assert health == [f"biffix health --url {url}"]
 
 
+# A stand-in `biffix` that fails its first $BIFFIX_FAILS calls, then answers.
+_FLAKY_BIFFIX = """#!/bin/bash
+printf 'biffix %s\\n' "$*" >> "$CALL_LOG"
+n=$(( $(cat "$CALL_LOG.count" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$CALL_LOG.count"
+[ "$n" -gt "$BIFFIX_FAILS" ]
+"""
+
+
+@pytest.mark.parametrize(("fails", "ok"), [(2, True), (99, False)])
+def test_deploy_retries_the_health_check_before_failing(
+    tmp_path: Path, fails: int, ok: bool
+) -> None:
+    """A cold start can time out one request: the check retries a few times, then gives up."""
+    ui_url: Rule = {"match": _UI_URL, "out": "https://d1.cloudfront.net\n"}
+    h = Harness(tmp_path, [ui_url, *_identity(), *_data_stack_resources()])
+    h.ui_build(real=True)
+    executable(h.stubs / "biffix", _FLAKY_BIFFIX)
+    r = h.run(
+        "deploy.sh", "--skip-ui", "--skip-lambdas", "-c", "cfg.yaml", "--account", ACCT,
+        BIFFIX_FAILS=str(fails),
+    )  # fmt: skip
+    health = [c for c in h.calls() if c.startswith("biffix ")]
+    if ok:
+        assert r.returncode == 0, r.stderr
+        assert len(health) == 3
+        assert "health check attempt 2/6 failed; retrying" in r.stderr
+        assert "deploy complete and healthy" in r.stdout + r.stderr
+    else:
+        assert r.returncode != 0
+        assert len(health) == 6
+        assert "post-deploy health check failed after 6 attempts" in r.stderr
+
+
 def test_deploy_dry_run_changes_nothing_in_aws(tmp_path: Path) -> None:
     rules: list[Rule] = [
         *_identity(),

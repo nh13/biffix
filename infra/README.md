@@ -440,7 +440,8 @@ also invalidates CloudFront (`distribution_paths=["/*"]`, `prune=True`) and mark
 ### Verify
 
 `deploy.sh` ends with `biffix health --url <api>`, which exits 0 only when both `/healthz` and
-`/readyz` pass (`--output json` for a machine-readable answer); `biffix runs list --url <api>`
+`/readyz` pass (`--output json` for a machine-readable answer), retrying for about two minutes
+so a cold start's slow first request does not fail the deploy; `biffix runs list --url <api>`
 additionally exercises auth and reads. Check the **real** endpoints, not the in-app API docs
 (`/api-docs`) — their spec is bundled with the UI and can lag a fresh deploy, so it is not a
 reliable confirmation that new fields shipped.
