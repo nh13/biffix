@@ -979,6 +979,7 @@ def _replay(
     reject: Reject,
     answer: Answer = lambda _events: b"",
     refusal: bytes = b"",
+    token: str = "tok-secret",
 ) -> tuple[_Ingest, str]:
     (job.work / "src").mkdir(exist_ok=True)
     (job.work / "src/.biffix_events.jsonl").write_text(
@@ -986,11 +987,11 @@ def _replay(
     )
     ingest = _Ingest(reject, answer, refusal)
     try:
-        got = job.run(BIFFIX_INGEST_URL=ingest.url, BIFFIX_INGEST_TOKEN="tok-secret")
+        got = job.run(BIFFIX_INGEST_URL=ingest.url, BIFFIX_INGEST_TOKEN=token)
     finally:
         ingest.close()
     assert got.returncode == 0, got.stderr
-    assert "tok-secret" not in got.stderr
+    assert token not in got.stderr
     return ingest, got.stderr
 
 
@@ -1062,6 +1063,16 @@ def test_the_replay_of_a_cancelled_run_stops_quietly(sm_job: Job) -> None:
     assert ingest.refused == 1, "no retry, no split, no further chunk"
     assert "events replay: run cancelled; the server keeps what it already has" in stderr
     assert "failed" not in stderr and "replayed" not in stderr
+
+
+def test_a_cancel_is_recognized_when_the_token_occurs_in_the_refusal(sm_job: Job) -> None:
+    # The match is on the server's answer, not on its redacted copy.
+    events = [_task(i) for i in range(3)]
+    refusal = b"run is cancelled; capability token revoked"
+    ingest, stderr = _replay(sm_job, events, lambda _b, _s: 403, refusal=refusal, token="revoked")
+    assert ingest.refused == 1
+    assert "events replay: run cancelled; the server keeps what it already has" in stderr
+    assert "failed" not in stderr
 
 
 def test_any_other_403_is_still_a_failure(sm_job: Job) -> None:
