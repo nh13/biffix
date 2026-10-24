@@ -17,10 +17,14 @@
 <div class="start-row">
   <div class="start-left">
     {#if form.examples.length > 0}
-      {#if !form.bannerDismissed && !form.dirty && !form.from}
+      {#if !form.exampleChoice.bannerDismissed && !form.dirty && !form.from}
         <div class="first-time">
           <span>New to this workflow? Start from an example, then swap in your own inputs.</span>
-          <button class="close" aria-label="Dismiss" onclick={() => form.dismissBanner()}>×</button>
+          <button
+            class="close"
+            aria-label="Dismiss"
+            onclick={() => form.exampleChoice.dismissBanner()}>×</button
+          >
         </div>
       {/if}
       <ExamplesMenu />

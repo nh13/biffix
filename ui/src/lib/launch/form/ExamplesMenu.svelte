@@ -15,7 +15,7 @@
   function menuKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       e.stopPropagation();
-      form.setExamplesOpen(false);
+      form.exampleChoice.setOpen(false);
       wrap.querySelector<HTMLElement>('[aria-haspopup]')?.focus();
       return;
     }
@@ -39,7 +39,8 @@
 
 <svelte:window
   onpointerdown={(e) => {
-    if (form.examplesOpen && !wrap.contains(e.target as Node)) form.setExamplesOpen(false);
+    if (form.exampleChoice.open && !wrap.contains(e.target as Node))
+      form.exampleChoice.setOpen(false);
   }}
 />
 
@@ -48,24 +49,25 @@
   <button
     class="btn btn-compact"
     aria-haspopup="menu"
-    aria-expanded={form.examplesOpen}
-    onclick={() => form.setExamplesOpen(!form.examplesOpen)}>Start from example ▾</button
+    aria-expanded={form.exampleChoice.open}
+    onclick={() => form.exampleChoice.setOpen(!form.exampleChoice.open)}
+    >Start from example ▾</button
   >
-  {#if form.examplesOpen}
+  {#if form.exampleChoice.open}
     <ul class="menu" class:right={align === 'right'} role="menu">
       {#each form.examples as ex, i}
         <li role="none">
-          <button role="menuitem" onclick={() => form.chooseExample(i)}>
+          <button role="menuitem" onclick={() => form.exampleChoice.choose(i)}>
             <span class="ex-name">{ex.name}</span>
             {#if ex.description}<span class="ex-desc">{ex.description}</span>{/if}
           </button>
-          {#if form.pendingExample === i}
+          {#if form.exampleChoice.pending === i}
             <div class="confirm">
               Replace everything you've entered?
-              <button class="btn btn-small btn-danger" onclick={() => form.chooseExample(i)}
+              <button class="btn btn-small btn-danger" onclick={() => form.exampleChoice.choose(i)}
                 >Replace</button
               >
-              <button class="btn btn-small" onclick={() => (form.pendingExample = null)}
+              <button class="btn btn-small" onclick={() => (form.exampleChoice.pending = null)}
                 >Cancel</button
               >
             </div>
