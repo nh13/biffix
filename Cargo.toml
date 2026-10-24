@@ -72,7 +72,7 @@ biffix-api = { path = "crates/biffix-api" }
 biffix-db = { path = "crates/biffix-db" }
 uuid = { version = "1", features = ["v4"] }
 # S3 keeps its other defaults (SigV4a, http 1.x request types); only the legacy client goes.
-aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio", "sigv4a", "http-1x"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio", "http-1x"] }
 # CLI (`biffix`) — the scriptable OAuth public client.
 clap = { version = "4", features = ["derive", "env"] }
 open = "5"
