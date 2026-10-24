@@ -81,6 +81,18 @@ run_snakemake() {
   local RETRIES="${BIFFIX_RETRIES:-3}" MAX_JOBS="${BIFFIX_MAX_JOBS:-100}"
   require_count BIFFIX_RETRIES "$RETRIES"
   require_count BIFFIX_MAX_JOBS "$MAX_JOBS"
+  # --cores is what a workflow reads as workflow.cores (`threads: workflow.cores`, say), which
+  # Snakemake refuses to parse without it. With a remote executor it does not limit how many jobs
+  # run at once, local rules' included: once --jobs is set, the scheduler lifts its cores limit
+  # (Snakemake 9.27, job_scheduler.py). But it caps every job's threads, remote ones included, and
+  # the executor sizes a Batch job's vCPUs from its threads (rules.py expand_resources; the
+  # executor's batch_job_builder). So it is not the coordinator's own vCPUs, which would shrink
+  # every task job to the coordinator's size, but a ceiling for one job: a large instance's worth.
+  # Each remote job's inner Snakemake gets the same value, so workflow.cores reads the same on the
+  # coordinator and the workers.
+  local CORES="${BIFFIX_CORES:-64}"
+  require_count BIFFIX_CORES "$CORES"
+  [ "$CORES" -ge 1 ] || runtime_error "BIFFIX_CORES must be at least 1: $CORES"
   local -a KEEP_GOING_ARGS=(--keep-going)
   local keep_going="${BIFFIX_KEEP_GOING:-true}"
   case "${keep_going,,}" in
@@ -134,6 +146,7 @@ run_snakemake() {
     --default-storage-prefix "$STORE"
     --logger biffix
     --jobs "$MAX_JOBS"
+    --cores "$CORES"
     --retries "$RETRIES"
     "${KEEP_GOING_ARGS[@]}"
     --verbose

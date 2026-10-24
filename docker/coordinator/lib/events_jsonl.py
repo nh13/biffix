@@ -34,11 +34,15 @@ RETRY_BACKOFF, MAX_RETRY_AFTER = 0.5, 30.0
 # whole replay's deadline.
 REQUEST_TIMEOUT, DEADLINE_SECS = 30, 300
 HEAD, TAIL = b'{"events":[', b"]}"
+# The route's answer once the run is cancelled (biffix-backend's api/events.rs): a cancel revokes
+# the run's token, so every later chunk gets the same. Expected after a cancel, not a failure: the
+# replay stops on it with one line, while any other 403 is logged as a failure.
+CANCELLED = (403, "run is cancelled; capability token revoked")
 
 # One event and its compact JSON.
 Item = tuple[dict[str, object], bytes]
 # How one chunk's POST ended (see Replay.post).
-Outcome = Literal["sent", "split", "final", "down"]
+Outcome = Literal["sent", "split", "final", "down", "cancelled"]
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -159,10 +163,12 @@ class Replay:
         self.budget = SPLIT_BUDGET
         # Why ingest is unreachable, once it is.
         self.down: str | None = None
+        # Whether the route answered that the run is cancelled.
+        self.cancelled = False
 
     def post(self, chunk: list[Item]) -> tuple[Outcome, str]:
-        """One chunk, retrying transient failures: sent / split / final / down, and a detail (for
-        sent, the answer's body)."""
+        """One chunk, retrying transient failures: sent / split / final / down / cancelled, and a
+        detail (for sent, the answer's body)."""
         body = HEAD + b",".join(d for _, d in chunk) + TAIL
         detail = ""
         for attempt in range(ATTEMPTS):
@@ -192,6 +198,8 @@ class Replay:
                     excerpt = ""
                 excerpt = excerpt.replace(self.token, "<token>") or str(e.reason)
                 detail = f"HTTP {e.code}: {excerpt}"
+                if (e.code, excerpt) == CANCELLED:
+                    return "cancelled", detail
                 if e.code in (400, 413):
                     return "split", detail
                 if e.code not in (408, 429) and e.code < 500:
@@ -207,7 +215,7 @@ class Replay:
         return "down", detail
 
     def deliver(self, chunk: list[Item]) -> None:
-        if self.down is not None:
+        if self.down is not None or self.cancelled:
             return
         if self.budget <= 0:
             print(
@@ -245,6 +253,8 @@ class Replay:
                 f"{detail}",
                 file=sys.stderr,
             )
+        elif outcome == "cancelled":
+            self.cancelled = True
         else:  # ingest is unreachable: stop rather than pay the retries chunk after chunk
             self.down = detail
 
@@ -259,6 +269,13 @@ def replay(src: str, url: str, token: str) -> None:
     for chunk in chunks(items):
         run.budget = SPLIT_BUDGET
         run.deliver(chunk)
+        if run.cancelled:
+            print(
+                "biffix-coordinator: events replay: run cancelled; the server keeps what it "
+                "already has",
+                file=sys.stderr,
+            )
+            return
         if run.down is not None:
             print(
                 f"biffix-coordinator: events replay stopped, ingest unreachable (swallowed): "

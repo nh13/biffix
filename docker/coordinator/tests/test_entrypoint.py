@@ -348,6 +348,7 @@ def test_an_unknown_keep_going_fails_before_snakemake_runs(sm_job: Job) -> None:
         ("snakemake", "BIFFIX_SPOT_ATTEMPTS"),
         ("snakemake", "BIFFIX_RETRIES"),
         ("snakemake", "BIFFIX_MAX_JOBS"),
+        ("snakemake", "BIFFIX_CORES"),
         ("nextflow", "BIFFIX_SPOT_ATTEMPTS"),
         # Nextflow read a bad one as "no retries" and ran.
         ("nextflow", "BIFFIX_RETRIES"),
@@ -823,6 +824,30 @@ def test_a_nextflow_dry_run_keeps_its_cache_and_bin_dir_local(nf_job: Job) -> No
     assert "disableRemoteBinDir" not in config.read_text()
 
 
+def test_a_nextflow_dry_run_previews_with_a_local_work_dir_and_executor(nf_job: Job) -> None:
+    # -preview still opens the work dir (a PutObject on S3), and the AWS Batch executor needs an
+    # S3 one: a dry run previews locally.
+    config = nf_job.work / "nextflow.config"
+    assert nf_job.run(BIFFIX_DRY_RUN="1").returncode == 0
+    dry = config.read_text().splitlines()
+    assert "process.executor = 'local'" in dry
+    # The pipeline's own selectors and directives outrank process.executor; this one, last, wins.
+    assert "process { withName: '.*' { executor = 'local' } }" in dry
+    assert f"workDir = '{nf_job.work}/nf-work'" in dry
+    assert not any("awsbatch" in line or line.startswith("workDir = 's3://") for line in dry)
+    assert nf_job.run().returncode == 0
+    real = config.read_text().splitlines()
+    assert "process.executor = 'awsbatch'" in real
+    assert "workDir = 's3://bucket/runs/run-test/work'" in real
+    # Everything else is the same config.
+    differ = ("process.executor", "process { withName: '.*'", "workDir")
+    unchanged = [line for line in real if not line.startswith(differ)]
+    assert [line for line in dry if not line.startswith(differ)] == [
+        "executor.disableRemoteBinDir = true" if line.startswith("cloudcache") else line
+        for line in unchanged
+    ]
+
+
 def test_the_target_is_what_snakemake_builds(sm_job: Job) -> None:
     assert sm_job.run(BIFFIX_TARGET="results/a.txt").returncode == 0
     assert sm_job.argv[-1] == "results/a.txt"
@@ -842,6 +867,25 @@ def test_the_job_and_retry_counts_override_the_defaults(sm_job: Job) -> None:
     assert _after(sm_job.argv, "--retries") == "0"
     assert sm_job.run().returncode == 0
     assert _after(sm_job.argv, "--jobs") == "100"
+
+
+def test_snakemake_gets_cores_so_a_workflow_can_read_workflow_cores(sm_job: Job) -> None:
+    # Without --cores, `threads: workflow.cores` fails the parse. It also caps every job's threads
+    # (a Batch job's vCPUs), so it is a one-job ceiling, not the coordinator's own vCPUs.
+    assert sm_job.run().returncode == 0
+    assert _after(sm_job.argv, "--cores") == "64"
+    assert _after(sm_job.argv, "--jobs") == "100"
+    assert sm_job.run(BIFFIX_CORES="16").returncode == 0
+    assert _after(sm_job.argv, "--cores") == "16"
+    assert sm_job.run(BIFFIX_DRY_RUN="1").returncode == 0
+    assert _after(sm_job.argv, "--cores") == "64"
+
+
+def test_zero_cores_fail_before_snakemake_runs(sm_job: Job) -> None:
+    got = sm_job.run(BIFFIX_CORES="0")
+    assert got.returncode == 78
+    assert "BIFFIX_CORES must be at least 1: 0" in got.stderr
+    assert not (sm_job.out / "argv").exists()
 
 
 def test_events_jsonl_is_archived_under_the_run_s_own_prefix(sm_job: Job) -> None:
@@ -888,10 +932,13 @@ Answer = Callable[[list[Event]], bytes]
 
 class _Ingest:
     """A stand-in ingest route: records each accepted batch; `reject(events, size)` returns the
-    status code to refuse a request with (or None to accept it), and `answer(events)` the body of
-    an accepted one."""
+    status code to refuse a request with (or None to accept it), `answer(events)` the body of an
+    accepted one, and `refusal` the body of a refused one."""
 
-    def __init__(self, reject: Reject, answer: Answer = lambda _events: b"") -> None:
+    def __init__(
+        self, reject: Reject, answer: Answer = lambda _events: b"", refusal: bytes = b""
+    ) -> None:
+        self.refused = 0
         self.batches: list[list[Event]] = []
         self.sizes: list[int] = []
         ingest = self
@@ -901,8 +948,10 @@ class _Ingest:
                 raw = self.rfile.read(int(self.headers["Content-Length"]))
                 events = json.loads(raw)["events"]
                 code = reject(events, len(raw))
-                body = b""
-                if code is None:
+                body = refusal
+                if code is not None:
+                    ingest.refused += 1
+                else:
                     ingest.batches.append(events)
                     ingest.sizes.append(len(raw))
                     code = 202
@@ -925,13 +974,17 @@ class _Ingest:
 
 
 def _replay(
-    job: Job, events: list[Event], reject: Reject, answer: Answer = lambda _events: b""
+    job: Job,
+    events: list[Event],
+    reject: Reject,
+    answer: Answer = lambda _events: b"",
+    refusal: bytes = b"",
 ) -> tuple[_Ingest, str]:
     (job.work / "src").mkdir(exist_ok=True)
     (job.work / "src/.biffix_events.jsonl").write_text(
         "".join(json.dumps(e) + "\n" for e in events)
     )
-    ingest = _Ingest(reject, answer)
+    ingest = _Ingest(reject, answer, refusal)
     try:
         got = job.run(BIFFIX_INGEST_URL=ingest.url, BIFFIX_INGEST_TOKEN="tok-secret")
     finally:
@@ -999,3 +1052,22 @@ def test_the_replay_stops_once_ingest_is_unreachable(sm_job: Job) -> None:
     assert len(calls) == 3, "the first chunk's retries, then no more chunks"
     assert "events replay stopped, ingest unreachable" in stderr
     assert "replayed 0/6 events" in stderr
+
+
+def test_the_replay_of_a_cancelled_run_stops_quietly(sm_job: Job) -> None:
+    # A cancel revokes the run's token: the route refuses every chunk the same way, by design.
+    events = [_task(i, deps=["x" * 1024] * 1500) for i in range(6)]  # three chunks
+    refusal = b"run is cancelled; capability token revoked"
+    ingest, stderr = _replay(sm_job, events, lambda _b, _s: 403, refusal=refusal)
+    assert ingest.refused == 1, "no retry, no split, no further chunk"
+    assert "events replay: run cancelled; the server keeps what it already has" in stderr
+    assert "failed" not in stderr and "replayed" not in stderr
+
+
+def test_any_other_403_is_still_a_failure(sm_job: Job) -> None:
+    events = [_task(i) for i in range(3)]
+    refusal = b"capability token does not authorize the run these events claim"
+    _, stderr = _replay(sm_job, events, lambda _b, _s: 403, refusal=refusal)
+    assert "events replay chunk of 3 failed (swallowed): HTTP 403: capability token" in stderr
+    assert "run cancelled" not in stderr
+    assert "replayed 0/3 events" in stderr

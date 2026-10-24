@@ -70,8 +70,9 @@
 #   other layer (see "Spot reclaims" below).
 # Optional, for validation: BIFFIX_DRY_RUN=1 runs the engine in --dry-run mode, which exercises
 #   source staging, config materialization, and queue resolution WITHOUT submitting child jobs,
-#   and writes nothing to S3 (no metadata sync, no events.jsonl upload, no Nextflow cloud cache or
-#   remote bin dir); it still reads the source, the image map and any metadata to restore.
+#   and writes nothing to S3 (no metadata sync, no events.jsonl upload; Nextflow previews with the
+#   local executor and a local work dir, no cloud cache or remote bin dir); it still reads the
+#   source, the image map and any metadata to restore.
 #   This is the fast local check: `docker run` this image with the real env and BIFFIX_DRY_RUN=1.
 #
 # The process exit code is the run's outcome: AWS Batch reports it via EventBridge, which the
@@ -86,6 +87,8 @@ set -euo pipefail
 #   BIFFIX_SPOT_ATTEMPTS      Batch attempts per task job on host terminations (default 5)
 #   BIFFIX_METADATA_SYNC_SECS Snakemake: how often the .snakemake metadata is synced (default 300)
 #   BIFFIX_MAX_JOBS           the engine's --jobs (Snakemake; default 100)
+#   BIFFIX_CORES              Snakemake's --cores: workflow.cores, and the most threads (so Batch
+#                             vCPUs) any one job gets (default 64; lib/snakemake.sh)
 #   BIFFIX_STOP_GRACE_SECS    how long a cancelled engine has to stop before it is killed, leaving
 #                             the rest of Batch's 30 s to the post-engine steps (default 20;
 #                             lib/signals.sh)
