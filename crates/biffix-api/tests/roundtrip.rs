@@ -75,15 +75,33 @@ fn status_history_round_trips() {
         bucket_secs: 300,
         window_secs: 3_600,
         expected_per_bucket: 1,
-        components: vec![],
+        grace_secs: 300,
+        components: vec![ComponentHistory {
+            name: "alarms".into(),
+            buckets: vec![],
+            carried_in: None,
+        }],
     });
     rt(StatusHistory {
         bucket_secs: 86_400,
         window_secs: 7_776_000,
         expected_per_bucket: 288,
+        grace_secs: 300,
         components: vec![ComponentHistory {
             name: "reconciler".into(),
-            buckets: vec![UptimeBucket { t: 1_790_000_000, ok: 280, degraded: 6, down: 2 }],
+            buckets: vec![UptimeBucket {
+                t: 1_790_000_000,
+                ok: 280,
+                degraded: 6,
+                down: 2,
+                covered_until: 1_790_086_500,
+                lapsed: true,
+                last: HealthStatus::Ok,
+            }],
+            carried_in: Some(CarriedCoverage {
+                covered_until: 1_790_000_300,
+                last: HealthStatus::Down,
+            }),
         }],
     });
 }

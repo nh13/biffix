@@ -89,7 +89,14 @@ pub struct StatusReport {
     pub components: Vec<ComponentHealth>,
 }
 
-/// One bar of a component's uptime history: how many probe samples in the bucket saw each tier.
+/// One bar of a component's uptime history: how many probe samples in the bucket saw each tier,
+/// and how far past them their promise of the next sample runs.
+///
+/// The probe samples every 5 minutes while a coordinator is active but only hourly on an idle
+/// tenant, and each sample promises the next within its `next_within_secs`. A bucket is covered
+/// when none of its samples came later than the sample before it promised (plus
+/// [`StatusHistory::grace_secs`]) and its newest sample's promise runs to the bucket's end; an
+/// empty bucket after it is covered while that promise runs, at that sample's tier.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UptimeBucket {
@@ -98,6 +105,14 @@ pub struct UptimeBucket {
     pub ok: i64,
     pub degraded: i64,
     pub down: i64,
+    /// Epoch seconds by which the bucket's newest sample promised the next one, before the grace (a
+    /// sample written before samples carried a promise is held to the hour).
+    pub covered_until: i64,
+    /// A sample in the bucket came later than the sample before it promised, plus the grace, or had
+    /// no sample before it within the hour: the probe missed part of the bucket.
+    pub lapsed: bool,
+    /// The tier of the bucket's newest sample.
+    pub last: HealthStatus,
 }
 
 /// One component's uptime history within a [`StatusHistory`], buckets in time order.
@@ -106,6 +121,20 @@ pub struct UptimeBucket {
 pub struct ComponentHistory {
     pub name: String,
     pub buckets: Vec<UptimeBucket>,
+    /// The newest sample before the window, when its promise (plus the grace) may reach into it:
+    /// what covers the window's start until its first sample (an idle tenant samples hourly).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_in: Option<CarriedCoverage>,
+}
+
+/// A sample from before a [`StatusHistory`] window, as far as it covers the window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct CarriedCoverage {
+    /// As [`UptimeBucket::covered_until`].
+    pub covered_until: i64,
+    /// The sample's tier.
+    pub last: HealthStatus,
 }
 
 /// `GET /status/history` — bucketed uptime history for the status page's bars.
@@ -116,9 +145,12 @@ pub struct StatusHistory {
     pub bucket_secs: i64,
     /// The full window span in seconds.
     pub window_secs: i64,
-    /// Samples expected per full bucket at the probe cadence (a bucket with fewer is a partial/data
-    /// gap, drawn grey rather than a false green).
+    /// Samples expected per full bucket at the 5-minute probe cadence. Only a tenant running a
+    /// workflow samples that often, so whether a bucket is covered is read from its samples'
+    /// promises ([`UptimeBucket::covered_until`], [`UptimeBucket::lapsed`]), not from this count.
     pub expected_per_bucket: i64,
+    /// How long past its promise a sample still counts, in seconds (the grace `GET /status` allows).
+    pub grace_secs: i64,
     pub components: Vec<ComponentHistory>,
 }
 

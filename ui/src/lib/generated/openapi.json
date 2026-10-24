@@ -3656,6 +3656,25 @@
           }
         }
       },
+      "CarriedCoverage": {
+        "type": "object",
+        "description": "A sample from before a [`StatusHistory`] window, as far as it covers the window.",
+        "required": [
+          "covered_until",
+          "last"
+        ],
+        "properties": {
+          "covered_until": {
+            "type": "integer",
+            "format": "int64",
+            "description": "As [`UptimeBucket::covered_until`]."
+          },
+          "last": {
+            "$ref": "#/components/schemas/HealthStatus",
+            "description": "The sample's tier."
+          }
+        }
+      },
       "CatalogEntry": {
         "type": "object",
         "description": "A version's entry in the Lab's pipeline catalog (`catalog:` in `biffix.yaml`, frozen with the\nform).",
@@ -3740,6 +3759,17 @@
             "items": {
               "$ref": "#/components/schemas/UptimeBucket"
             }
+          },
+          "carried_in": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CarriedCoverage",
+                "description": "The newest sample before the window, when its promise (plus the grace) may reach into it:\nwhat covers the window's start until its first sample (an idle tenant samples hourly)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "type": "string"
@@ -7318,6 +7348,7 @@
           "bucket_secs",
           "window_secs",
           "expected_per_bucket",
+          "grace_secs",
           "components"
         ],
         "properties": {
@@ -7335,7 +7366,12 @@
           "expected_per_bucket": {
             "type": "integer",
             "format": "int64",
-            "description": "Samples expected per full bucket at the probe cadence (a bucket with fewer is a partial/data\ngap, drawn grey rather than a false green)."
+            "description": "Samples expected per full bucket at the 5-minute probe cadence. Only a tenant running a\nworkflow samples that often, so whether a bucket is covered is read from its samples'\npromises ([`UptimeBucket::covered_until`], [`UptimeBucket::lapsed`]), not from this count."
+          },
+          "grace_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long past its promise a sample still counts, in seconds (the grace `GET /status` allows)."
           },
           "window_secs": {
             "type": "integer",
@@ -8192,14 +8228,22 @@
       },
       "UptimeBucket": {
         "type": "object",
-        "description": "One bar of a component's uptime history: how many probe samples in the bucket saw each tier.",
+        "description": "One bar of a component's uptime history: how many probe samples in the bucket saw each tier,\nand how far past them their promise of the next sample runs.\n\nThe probe samples every 5 minutes while a coordinator is active but only hourly on an idle\ntenant, and each sample promises the next within its `next_within_secs`. A bucket is covered\nwhen none of its samples came later than the sample before it promised (plus\n[`StatusHistory::grace_secs`]) and its newest sample's promise runs to the bucket's end; an\nempty bucket after it is covered while that promise runs, at that sample's tier.",
         "required": [
           "t",
           "ok",
           "degraded",
-          "down"
+          "down",
+          "covered_until",
+          "lapsed",
+          "last"
         ],
         "properties": {
+          "covered_until": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epoch seconds by which the bucket's newest sample promised the next one, before the grace (a\nsample written before samples carried a promise is held to the hour)."
+          },
           "degraded": {
             "type": "integer",
             "format": "int64"
@@ -8207,6 +8251,14 @@
           "down": {
             "type": "integer",
             "format": "int64"
+          },
+          "lapsed": {
+            "type": "boolean",
+            "description": "A sample in the bucket came later than the sample before it promised, plus the grace, or had\nno sample before it within the hour: the probe missed part of the bucket."
+          },
+          "last": {
+            "$ref": "#/components/schemas/HealthStatus",
+            "description": "The tier of the bucket's newest sample."
           },
           "ok": {
             "type": "integer",

@@ -13,7 +13,7 @@ use serde_json::json;
 
 use biffix_backend::auth::oauth_client::OAuthClient;
 use biffix_backend::store::cost::CostRow;
-use biffix_backend::store::status::StatusBucketView;
+use biffix_backend::store::status::{StatusBucketView, StatusCarriedView};
 use biffix_backend::testing::{self, call, get_json, post_json, MemStore, TestState};
 use biffix_backend::{api, AppState, DeployConfig};
 
