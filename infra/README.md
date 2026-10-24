@@ -119,8 +119,9 @@ trusts third-party *workflow* repos, not the biffix image build.
 - The image is the **base** coordinator: it has no Snakemake or Nextflow. A workflow version pins
   its engine release, and the backend builds that release into a runtime layer appended to this
   base (the `runtime-build` CodeBuild project, `codebuild/runtime/build.sh`), one coordinator
-  variant + job definition per (runtime, base). A new base is picked up by the backend sweep, which
-  rebuilds the variants registered versions use; runs keep the previous variant until then.
+  variant + job definition per (runtime, base). A new base's variants are built by `deploy.sh`
+  right after `cdk deploy` (through the backend sweep, which rebuilds the variants registered
+  versions use); runs keep the previous variant until they are ready.
 
 **To ship a new image:**
 
@@ -169,8 +170,13 @@ the **coordinator variant**. What to know when operating it:
   with `nf-amazon-`, `nf-cloudcache-` or `nf-biffix-`.
 - **When they build.** The first registration of an engine release starts its build (a few
   minutes); later versions pinning the same release reuse it. A new base image (deploy with a new
-  `coordinator_image_tag`) is picked up by the backend sweep (every 5 min, or within the hour while no run is active), which builds a variant
-  for each runtime in use. Runs keep launching on the previous variant until then.
+  `coordinator_image_tag`) needs a variant for each runtime in use. A full `deploy.sh` (not
+  `--stack`) builds them right after `cdk deploy`: it invokes the backend sweep Lambda with
+  `{"sweep": "variants"}` (the variants sweep alone, returning its counts), every 30 s until none
+  is building, and gives up waiting after `BIFFIX_PREBUILD_TIMEOUT_SECS` (default 1800). A
+  failure or a timeout only warns. Otherwise the backend sweep picks the new base up (every 5 min,
+  or within the hour while no run is active), as does the first submit of a version. Runs keep
+  launching on the previous variant until then.
 - **Failures.** A version whose variant is building or failed is refused at submit (409 with the
   build log). A build is started at most three times without a person asking (the first build and
   two retries); after that, `POST /workflows/{id}/runtime/rebuild` (Developer) builds it again.
@@ -372,7 +378,7 @@ it); without either a release deploy skips it with a warning.
 ### The fast path: `infra/deploy.sh`
 
 `infra/deploy.sh` wires the whole manual flow together — account guard → UI build → all four
-Lambda builds → host AWS CLI staging → `cdk deploy` → image retention → `biffix health` verify — and
+Lambda builds → host AWS CLI staging → `cdk deploy` → image retention → coordinator variant builds → `biffix health` verify — and
 is idempotent. The deploy config is required (`--config`, see **Config file**), and so is the
 target account: pass `--account`, or set `account: "<12-digit id>"` in the deploy config (both
 must agree when both are given). It always refuses the AWS Organizations management account.
@@ -406,7 +412,9 @@ instead (see **Releases**). Run it rather than its steps by hand: besides buildi
 verifying, it stages the host AWS CLI into the reference bucket (see **Host AWS CLI**; without it
 every Batch host's install fails and Nextflow tasks fail), provisions the Google client secret and
 the ACM certificate when the config needs them (see **Google Workspace federation** and **Custom
-app domain**), and runs the image-retention step (`python -m biffix_infra.image_retention`).
+app domain**), runs the image-retention step (`python -m biffix_infra.image_retention`), and
+builds the coordinator variants of the deployed base image (see **Engine runtimes and coordinator
+variants**).
 `deploy.sh --help` lists every flag; `--exclusively` (`--stack`) deploys only the named stack
 (skips its dependencies), for a targeted api/compute redeploy once the rest of the graph is up.
 

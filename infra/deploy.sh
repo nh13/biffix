@@ -2,7 +2,8 @@
 # Deploy the biffix control plane end-to-end: guard the target account, build the frontend and the
 # four Rust Lambdas (backend, sweep, ingest, reconcile), stage the pinned host AWS CLI in the
 # reference bucket, run `cdk deploy`, protect the deployed coordinator image and prune old build
-# tags (image retention), and verify the result with `biffix health`.
+# tags (image retention), build the coordinator variants the deployed base image needs, and verify
+# the result with `biffix health`.
 #
 # This automates the manual steps in infra/README.md ("Deploying the control plane"). Built from
 # source, it does NOT build/push the coordinator image or bump the image tag in the deploy config
@@ -51,6 +52,13 @@
 #                           the ACM cert are only looked up, never created, so a custom-domain dry
 #                           run without an issued cert synthesizes the alias-less template.
 #   -h, --help              Show this help.
+#
+# Coordinator variants: a full deploy then invokes the backend sweep Lambda for its coordinator
+# variants alone, which starts the variant builds a new base image needs (one per engine runtime the
+# registered versions pin), and invokes it again every 30s until none is building, so the first runs
+# after a deploy launch on the new coordinator rather than the previous one. It gives up waiting
+# after $BIFFIX_PREBUILD_TIMEOUT_SECS (default 1800); a failure or a timeout only warns, since runs
+# keep launching on the previous base's variants until the new ones are ready.
 #
 # Google federation: if the config has a `google_oidc:` block and the client secret is not yet in
 # Secrets Manager (name `biffix/<tenant>/google-oidc`) in the target account, this prompts for it
@@ -164,7 +172,8 @@ fi
 # deploy gates can never drift from the app (quoting, defaults, absolute paths).
 CONFIG="$(resolve_config "$CONFIG")"
 load_config "$CONFIG" tenant region account google_secret_name app_domain app_certificate_arn \
-  coordinator_image_tag stack_names data_stack edge_stack host_aws_cli_version host_aws_cli_zips
+  coordinator_image_tag stack_names data_stack edge_stack api_stack host_aws_cli_version \
+  host_aws_cli_zips
 TENANT="$(cfg tenant)"
 REGION="$(cfg region)"
 CONFIG_ACCOUNT="$(cfg account)"
@@ -175,6 +184,7 @@ COORD_TAG="$(cfg coordinator_image_tag)"
 ALL_STACKS="$(cfg stack_names)"
 DATA_STACK="$(cfg data_stack)"
 EDGE_STACK="$(cfg edge_stack)"
+API_STACK="$(cfg api_stack)"
 HOST_AWS_CLI_VERSION="$(cfg host_aws_cli_version)"
 HOST_AWS_CLI_ZIPS="$(cfg host_aws_cli_zips)"
 { [ -n "$TENANT" ] && [ -n "$REGION" ]; } || die "$CONFIG: tenant and region must be set"
@@ -500,6 +510,76 @@ if [ -z "$STACK" ]; then
   retain_images
 else
   log "image retention: skipped (--stack deploys one stack; a full deploy runs it)"
+fi
+
+# ── Coordinator variants ─────────────────────────────────────────────────────────
+# Build the coordinator variants of the deployed base image now, rather than when the first run
+# asks for one (until then runs launch on the previous base's variant, so on the old coordinator).
+# The backend sweep Lambda does it (`{"sweep": "variants"}` runs its variants sweep alone and
+# returns the report): each invocation starts what is unbuilt, registers what finished and retries
+# what failed, for every runtime a registered version pins. Best-effort, like retention: a failure
+# or a timeout warns, and the sweep's schedule finishes the builds.
+PREBUILD_TIMEOUT_SECS="${BIFFIX_PREBUILD_TIMEOUT_SECS:-1800}"
+# Whole seconds, at most a day: anything else would break the arithmetic below after cdk deploy.
+if ! [[ "$PREBUILD_TIMEOUT_SECS" =~ ^[0-9]{1,5}$ ]] || [ "$PREBUILD_TIMEOUT_SECS" -gt 86400 ]; then
+  warn "BIFFIX_PREBUILD_TIMEOUT_SECS must be whole seconds from 0 to 86400 (got '$PREBUILD_TIMEOUT_SECS'); using 1800"
+  PREBUILD_TIMEOUT_SECS=1800
+fi
+PREBUILD_POLL_SECS=30
+prebuild_variants() {
+  local fn out meta="" counts runtimes ready building failed errors deadline wait
+  if ! fn="$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$API_STACK" \
+      --query "Stacks[0].Outputs[?OutputKey=='SweepFunctionName'].OutputValue | [0]" --output text)"; then
+    warn "coordinator variants: could not read the $API_STACK outputs; skipped (the sweep builds them)"
+    return 0
+  fi
+  if [ -z "$fn" ] || [ "$fn" = "None" ]; then
+    warn "coordinator variants: no sweep function in the $API_STACK outputs; skipped"
+    return 0
+  fi
+  new_temp out -t biffix-variants.XXXXXX
+  deadline=$(( $(date +%s) + PREBUILD_TIMEOUT_SECS ))
+  while :; do
+    # The invocation's report, as "runtimes ready building failed errors"; a function error (the
+    # sweep failed) leaves FunctionError set and its error message in $out. Each invocation waits
+    # at most the time left (at least 10 s, at most the sweep's own 5-minute timeout and a
+    # margin), and only once: a retry would invoke the sweep again.
+    wait=$(( deadline - $(date +%s) ))
+    [ "$wait" -ge 10 ] || wait=10
+    [ "$wait" -le 360 ] || wait=360
+    if meta="$(AWS_MAX_ATTEMPTS=1 aws lambda invoke --region "$REGION" --function-name "$fn" \
+        --cli-binary-format raw-in-base64-out --cli-read-timeout "$wait" \
+        --payload '{"sweep":"variants"}' --query FunctionError --output text "$out")" \
+        && [ "$meta" = "None" ] \
+        && counts="$(cd "$INFRA_DIR" && uv run --quiet python -c '
+import json, sys
+r = json.load(open(sys.argv[1]))
+r = r.get("variants", r)  # a sweep older than the variants-only payload runs every sweep
+print(*(int(r[k]) for k in ("runtimes", "ready", "building", "failed", "errors")))
+' "$out")"; then
+      read -r runtimes ready building failed errors <<< "$counts"
+      log "coordinator variants: $ready of $runtimes ready, $building building, $failed failed"
+      if [ "$building" -eq 0 ]; then
+        [ "$failed" -eq 0 ] && [ "$errors" -eq 0 ] \
+          || warn "coordinator variants: $failed failed and $errors could not be swept; those versions launch on an older variant or are refused (see the sweep Lambda's log)"
+        return 0
+      fi
+    else
+      [ "$meta" != "None" ] || meta=""
+      warn "coordinator variants: the sweep invocation failed${meta:+ ($meta)}: $(head -c 500 "$out" 2>/dev/null)"
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      warn "coordinator variants: not all built after ${PREBUILD_TIMEOUT_SECS}s; the sweep finishes them, and runs launch on the previous variant until then"
+      return 0
+    fi
+    sleep "$PREBUILD_POLL_SECS"
+  done
+}
+if [ -z "$STACK" ]; then
+  log "coordinator variants: building the deployed base image's variants (waiting up to ${PREBUILD_TIMEOUT_SECS}s)"
+  prebuild_variants
+else
+  log "coordinator variants: skipped (--stack deploys one stack; a full deploy builds them)"
 fi
 
 # ── Verify ───────────────────────────────────────────────────────────────────────

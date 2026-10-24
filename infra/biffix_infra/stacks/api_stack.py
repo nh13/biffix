@@ -196,6 +196,9 @@ class ApiStack(Stack):
         self._wire_alerts(alerts_topic, config.alarm_prefix)
 
         CfnOutput(self, "ApiEndpoint", value=self.http_api.api_endpoint)
+        # deploy.sh invokes the sweep after a deploy to build the coordinator variants of a new
+        # base image before the first run asks for one.
+        CfnOutput(self, "SweepFunctionName", value=self.sweep_lambda.function_name)
 
     def _configure_backend(self, config: DeployConfig) -> None:
         """The deploy's settings the backend serves: retention, queue-classes, roles."""

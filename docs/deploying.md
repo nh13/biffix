@@ -113,8 +113,11 @@ example's three entries are a reasonable start), one project, and `cognito_domai
 
 `infra/deploy.sh` runs the whole flow: it checks the target account, builds or fetches the
 artifacts, deploys every stack with CDK, protects the deployed coordinator image from ECR
-cleanup, and ends with `biffix health` against the new API. It is idempotent, so rerunning it
-after a failure is safe. `infra/deploy.sh --help` lists every flag.
+cleanup, builds the coordinator variants a new coordinator image needs (waiting up to 30 minutes
+for them, so that once they are built the first runs after the deploy use it; if a build fails or
+the wait times out, the deploy only warns, and runs launch on the previous image's variant
+meanwhile), and ends with `biffix health` against the new API. It is idempotent, so rerunning it after a failure is safe. `infra/deploy.sh --help` lists
+every flag.
 
 ### From a release (recommended)
 

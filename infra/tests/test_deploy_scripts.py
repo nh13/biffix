@@ -119,6 +119,7 @@ def test_script_config_lists_exact_stacks_and_imported_buckets(tmp_path: Path) -
     )
     assert stacks.split() == STACKS
     assert imported == "shared-bkt"
+    assert script_config.values(DeployConfig.load(cfg), ["api_stack"]) == [f"biffix-{TENANT}-api"]
 
 
 def test_script_config_cli_fails_on_unknown_key(tmp_path: Path) -> None:
@@ -152,6 +153,9 @@ for i, rule in enumerate(json.load(open(os.environ["AWS_RULES"]))):
         continue
     state[str(i)] = used + 1
     json.dump(state, open(state_path, "w"))
+    if "file" in rule:
+        # The call's output file, its last argument (`aws lambda invoke ... <outfile>`).
+        open(args[-1], "w").write(rule["file"])
     sys.stdout.write(rule.get("out", ""))
     sys.stderr.write(rule.get("err", ""))
     sys.exit(rule.get("rc", 0))
@@ -202,11 +206,13 @@ esac
 
 class Rule(TypedDict, total=False):
     """One answer of the stand-in aws (`_AWS`): to the first call holding every `match` token whose
-    environment has `env`, while used fewer than `times` times: `out`, `err` and exit code `rc`."""
+    environment has `env`, while used fewer than `times` times: `out`, `err` and exit code `rc`,
+    with `file` written to the call's last argument (an output file)."""
 
     match: Required[list[str]]
     env: dict[str, str]
     times: int
+    file: str
     out: str
     err: str
     rc: int
@@ -890,10 +896,131 @@ def test_a_failed_image_retention_only_warns(deploy: Harness) -> None:
     assert "image retention for acme-coord-repo failed" in r.stderr
 
 
-def test_deploying_one_stack_skips_image_retention(deploy: Harness) -> None:
+def test_deploying_one_stack_skips_image_retention_and_the_variant_builds(
+    deploy: Harness,
+) -> None:
+    deploy.add_rules(*_sweep_output(), first=True)
     r = deploy.run("deploy.sh", *DEPLOY_FLAGS, "--account", ACCT, "--stack", STACKS[0])
     assert r.returncode == 0, r.stderr
     assert not [c for c in deploy.aws_calls() if c.startswith("ecr ")]
+    assert not [c for c in deploy.aws_calls() if c.startswith("lambda ")]
+    assert "coordinator variants: skipped (--stack" in r.stdout
+
+
+# ── deploy.sh: coordinator variants ────────────────────────────────────────────────
+
+_SWEEP_FN = "acme-api-BackendSweep-abc"
+
+
+def _sweep_output() -> list[Rule]:
+    return [
+        {
+            "match": ["describe-stacks", f"biffix-{TENANT}-api", "SweepFunctionName"],
+            "out": f"{_SWEEP_FN}\n",
+        }
+    ]
+
+
+def _sweep(*, building: int, ready: int = 0, failed: int = 0, errors: int = 0) -> Rule:
+    report = {
+        "runtimes": ready + building + failed,
+        "ready": ready,
+        "building": building,
+        "failed": failed,
+        "errors": errors,
+    }
+    return {
+        "match": ["lambda invoke", f"--function-name {_SWEEP_FN}", '{"sweep":"variants"}'],
+        "times": 1,
+        "file": json.dumps(report),
+        "out": "None\n",
+    }
+
+
+def _invokes(h: Harness) -> list[str]:
+    return [c for c in h.aws_calls() if c.startswith("lambda invoke")]
+
+
+def test_deploy_builds_the_coordinator_variants_and_waits_for_them(deploy: Harness) -> None:
+    """The sweep is invoked for its variants until none is building; then the deploy goes on."""
+    deploy.add_rules(
+        *_sweep_output(),
+        _sweep(building=2),
+        # A sweep that fails (the database waking, say) is retried, not fatal.
+        {"match": ["lambda invoke"], "times": 1, "file": "boom", "out": "Unhandled\n"},
+        _sweep(building=1, ready=1),
+        _sweep(building=0, ready=2),
+        first=True,
+    )
+    r = deploy.run("deploy.sh", *DEPLOY_FLAGS, "--account", ACCT)
+    assert r.returncode == 0, r.stderr
+    assert len(_invokes(deploy)) == 4
+    assert all("--region us-east-1" in c for c in _invokes(deploy))
+    assert "coordinator variants: 0 of 2 ready, 2 building, 0 failed" in r.stdout
+    assert "the sweep invocation failed (Unhandled): boom" in r.stderr
+    assert "coordinator variants: 2 of 2 ready, 0 building, 0 failed" in r.stdout
+    # After cdk deploy, before the deploy ends.
+    calls = deploy.calls()
+    deployed = next(i for i, c in enumerate(calls) if c.startswith("cdk deploy"))
+    first_invoke = next(i for i, c in enumerate(calls) if c.startswith("aws lambda invoke"))
+    assert deployed < first_invoke
+
+
+def test_deploy_reads_the_variants_of_an_older_sweep_s_full_report(deploy: Harness) -> None:
+    """A sweep built before the variants-only payload (--skip-lambdas) runs every sweep and nests
+    the variants report; the deploy reads it from there."""
+    full = _sweep(building=0, ready=1)
+    full["file"] = json.dumps({"provenance_written": 0, "variants": json.loads(full["file"])})
+    deploy.add_rules(*_sweep_output(), full, first=True)
+    r = deploy.run("deploy.sh", *DEPLOY_FLAGS, "--account", ACCT)
+    assert r.returncode == 0, r.stderr
+    assert "coordinator variants: 1 of 1 ready, 0 building, 0 failed" in r.stdout
+
+
+def test_failed_variant_builds_only_warn(deploy: Harness) -> None:
+    deploy.add_rules(*_sweep_output(), _sweep(building=0, ready=1, failed=1), first=True)
+    r = deploy.run("deploy.sh", *DEPLOY_FLAGS, "--account", ACCT)
+    assert r.returncode == 0, r.stderr
+    assert len(_invokes(deploy)) == 1
+    assert "coordinator variants: 1 failed and 0 could not be swept" in r.stderr
+
+
+def test_waiting_for_the_variant_builds_times_out_with_a_warning(deploy: Harness) -> None:
+    deploy.add_rules(*_sweep_output(), _sweep(building=1), first=True)
+    r = deploy.run("deploy.sh", *DEPLOY_FLAGS, "--account", ACCT, BIFFIX_PREBUILD_TIMEOUT_SECS="0")
+    assert r.returncode == 0, r.stderr
+    assert len(_invokes(deploy)) == 1
+    # The invocation waits no longer than the time left (but at least 10 s).
+    assert "--cli-read-timeout 10 " in _invokes(deploy)[0]
+    assert "coordinator variants: not all built after 0s" in r.stderr
+
+
+@pytest.mark.parametrize("timeout", ["1.5", "soon", "999999"])
+def test_a_malformed_prebuild_timeout_falls_back_to_the_default(
+    deploy: Harness, timeout: str
+) -> None:
+    deploy.add_rules(*_sweep_output(), _sweep(building=0, ready=1), first=True)
+    r = deploy.run(
+        "deploy.sh", *DEPLOY_FLAGS, "--account", ACCT, BIFFIX_PREBUILD_TIMEOUT_SECS=timeout
+    )
+    assert r.returncode == 0, r.stderr
+    assert (
+        f"BIFFIX_PREBUILD_TIMEOUT_SECS must be whole seconds from 0 to 86400 (got '{timeout}')"
+        in r.stderr
+    )
+    assert "--cli-read-timeout 360 " in _invokes(deploy)[0]
+    assert "coordinator variants: 1 of 1 ready" in r.stdout
+
+
+def test_the_variant_builds_are_skipped_without_a_sweep_function(deploy: Harness) -> None:
+    deploy.add_rules(
+        {"match": ["describe-stacks", "SweepFunctionName"], "rc": 254, "err": "ExpiredToken\n"},
+        first=True,
+    )
+    r = deploy.run("deploy.sh", *DEPLOY_FLAGS, "--account", ACCT)
+    assert r.returncode == 0, r.stderr
+    assert not _invokes(deploy)
+    assert f"could not read the biffix-{TENANT}-api outputs" in r.stderr
 
 
 _BIFFIX = """#!/bin/bash
