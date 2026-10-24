@@ -12,13 +12,15 @@ use serde_json::{json, Value};
 use biffix_cli::api::ApiClient;
 use biffix_cli::secret::Secret;
 
-/// Held (shared) while a stub binds its port. A test that needs a port nothing listens on holds it
-/// exclusively, so no stub of the same test binary is handed that port meanwhile.
-pub(crate) static BIND_LOCK: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+/// A loopback address nothing listens on, for tests of an unreachable endpoint: a connection to it
+/// is refused at once. Port 1 lies below every OS's ephemeral range, so no `bind(":0")` in this or
+/// another process is ever handed it, unlike a port bound and released a moment ago, which a
+/// concurrent stub can take (and, closing with the connection queued, turn the refusal into a
+/// reset). The unit tests' `error::CLOSED_LOOPBACK` is the same address: keep the two alike.
+pub(crate) const CLOSED_LOOPBACK: &str = "127.0.0.1:1";
 
-/// Bind a free loopback port, holding `BIND_LOCK` (shared) only while binding.
+/// Bind a free loopback port.
 pub(crate) async fn bind() -> tokio::net::TcpListener {
-    let _binding = BIND_LOCK.read().await;
     tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap()
 }
 

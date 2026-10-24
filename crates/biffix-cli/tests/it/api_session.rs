@@ -121,14 +121,8 @@ async fn a_create_is_not_repeated_after_a_503_but_a_read_is() {
 #[tokio::test]
 async fn a_create_that_never_connected_is_reported_plainly() {
     // A closed port: no attempt reaches a server (so retrying was safe), and the final error is a
-    // plain "cannot reach", not "may have been applied". The port was free a moment ago; holding
-    // the bind lock keeps any stub this binary starts from taking it while the client retries.
-    let _no_binds = common::BIND_LOCK.write().await;
-    let port = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap().port()
-    };
-    let err = static_client(&format!("http://127.0.0.1:{port}"))
+    // plain "cannot reach", not "may have been applied".
+    let err = static_client(&format!("http://{}", common::CLOSED_LOOPBACK))
         .register_workflow(&register_request())
         .await
         .unwrap_err();
@@ -167,13 +161,8 @@ async fn a_create_whose_reply_breaks_off_may_have_been_applied() {
 #[tokio::test]
 async fn an_unreachable_upload_names_its_host_not_the_api() {
     // A presigned upload goes to the object store, not the API: a refused one says so.
-    let _no_binds = common::BIND_LOCK.write().await;
-    let port = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap().port()
-    };
     let upload = biffix_api::SourceUploadTarget {
-        url: format!("http://127.0.0.1:{port}/obj?X-Amz-Signature=s"),
+        url: format!("http://{}/obj?X-Amz-Signature=s", common::CLOSED_LOOPBACK),
         headers: Default::default(),
         uri: "s3://bucket/obj".into(),
     };
