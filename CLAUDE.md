@@ -80,7 +80,8 @@ deployer's own ECR, both through the two-architecture build in `coordinator-imag
 (`docker/coordinator/wheels.env` holds the repo and commit; the branch, `biffix-pin/<date>`, never
 force-pushed, is named in `crates/biffix-workflow/src/runtime/mod.rs`): upstream plus three open
 upstream PRs, #55 (remote job-state events), #60 (strict container image map) and #61 (task log
-group). Per-rule queues (#40) and spot reclaim retries (#62) are already upstream. Re-pin to
+group), plus small log-noise fixes to upstream's own code. Per-rule queues (#40) and spot
+reclaim retries (#62) are already upstream. Re-pin to
 upstream once they merge. `lib/snakemake.sh` always passes the spot-attempts, log-group and
 image-map settings, so a re-pin must keep an executor that has all three. `plugins/nf-biffix` also provides
 the `awsbatch` executor (a subclass of nf-amazon's) that tags every `nf-*` job definition with
