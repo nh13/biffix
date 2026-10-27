@@ -53,9 +53,46 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: clippy (warnings are errors)
-        run: cargo clippy -p biffix-cli --all-targets -- -D warnings
+        run: cargo clippy -p biffix --all-targets -- -D warnings
       - name: test
-        run: cargo test -p biffix-cli
+        run: cargo test -p biffix
+
+  # The crates published to crates.io declare an older `rust-version` than the workspace's (the
+  # deploy-only crates' AWS SDK and sqlx need a newer rustc). Build them with it against the locked
+  # dependencies, so a Dependabot bump that raises the floor fails here: then either raise their
+  # `rust-version` or hold the bump. Libraries and binaries only: the CLI's tests link the backend.
+  rust-msrv:
+    name: rust (msrv)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PUBLISHED: biffix-core biffix-workflow biffix-api biffix
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: install the published crates' rust-version toolchain
+        id: msrv
+        run: |
+          set -euo pipefail
+          # One rust-version across the published crates, so they promise the same rustc.
+          versions=$(cargo metadata --no-deps --format-version 1 | jq -r --arg names "$PUBLISHED" \
+            '.packages[] | select(.name as $n | $names | split(" ") | index($n)) | .rust_version' | sort -u)
+          if [ "$(printf '%s\n' "$versions" | grep -c .)" -ne 1 ]; then
+            echo "::error::the published crates declare different rust-versions: ${versions//$'\n'/ }"
+            exit 1
+          fi
+          rustup toolchain install "$versions" --profile minimal
+          echo "toolchain=$versions" >> "$GITHUB_OUTPUT"
+      - name: check (all features)
+        run: |
+          set -euo pipefail
+          args=()
+          for p in $PUBLISHED; do args+=(-p "$p"); done
+          cargo "+${{ steps.msrv.outputs.toolchain }}" check --locked --all-features "${args[@]}"
+      # What `cargo publish` would upload, built from the packaged sources alone (a file the package
+      # leaves out fails here, not at release).
+      - name: package the crates.io crates
+        run: cargo package --locked -p biffix-core -p biffix-workflow -p biffix-api -p biffix
 
   # Every test that applies the migrations (and exercises the Postgres stores, the projection
   # persistence and the ingest path end to end) is `#[ignore]`d so a plain `cargo test` needs no

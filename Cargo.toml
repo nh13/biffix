@@ -6,12 +6,12 @@ members = ["crates/*", "xtask"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+# The toolchain rust-toolchain.toml pins. The crates published to crates.io declare their own,
+# older rust-version (CI's rust-msrv job checks it).
 rust-version = "1.98"
 authors = ["Nils Homer"]
 repository = "https://github.com/nh13/biffix"
 homepage = "https://github.com/nh13/biffix"
-# Shipped as release binaries and Lambda artifacts, not to crates.io.
-publish = false
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -66,9 +66,9 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 # Time-zone rules (with the tz database built in, so a Lambda needs no system zoneinfo): the
 # samples CSV names an analysis by its start time in the downloader's zone, as the UI does.
 jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
-biffix-core = { path = "crates/biffix-core" }
-biffix-workflow = { path = "crates/biffix-workflow" }
-biffix-api = { path = "crates/biffix-api" }
+biffix-core = { version = "0.1.0", path = "crates/biffix-core" }
+biffix-workflow = { version = "0.1.0", path = "crates/biffix-workflow" }
+biffix-api = { version = "0.1.0", path = "crates/biffix-api" }
 biffix-db = { path = "crates/biffix-db" }
 uuid = { version = "1", features = ["v4"] }
 # S3 keeps its other defaults (SigV4a, http 1.x request types); only the legacy client goes.

@@ -7,7 +7,7 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-publish.workspace = true
+publish = false
 description = "biffix repository tooling: writes and drift-checks the schemas/ artifacts (cargo xtask)."
 
 [lints]
