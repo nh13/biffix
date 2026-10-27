@@ -1,17 +1,30 @@
 [package]
-name = "biffix-cli"
+name = "biffix"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-rust-version.workspace = true
+# Published: the oldest rustc that builds it against the lockfile, the same in all four published
+# crates (CI's rust-msrv job checks both).
+rust-version = "1.89"
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-publish.workspace = true
-description = "biffix — a scriptable OAuth public client for the control-plane API (register + run)."
+readme = "README.md"
+# The tests drive the real backend router, an unpublished dev-dependency, so they cannot build from
+# the published package.
+exclude = ["tests/"]
+keywords = ["bioinformatics", "workflow", "snakemake", "nextflow", "aws-batch"]
+categories = ["command-line-utilities", "science"]
+description = "Command-line client for biffix, a self-hostable control plane for Snakemake and Nextflow workflows on AWS Batch."
 
 [lints]
 workspace = true
+
+# The library keeps its pre-rename name: it exists for the binary and its tests, and one name for
+# both a library and a binary collides in `cargo doc`.
+[lib]
+name = "biffix_cli"
+path = "src/lib.rs"
 
 [[bin]]
 name = "biffix"

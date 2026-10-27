@@ -63,11 +63,16 @@ additive-only, unknown-field tolerant, open enums.
   `src/bin/server.rs`; needs `--features aws`; reads its projects from the JSON file
   `BIFFIX_PROJECTS_FILE` names, see `dev/README.md`), `biffix-openapi` (emits the OpenAPI doc the
   UI types are generated from). Code behind AWS/Postgres is feature-gated (`aws`).
-- `biffix-cli` — the `biffix` CLI (OAuth public client): `login`, `workflows` (register/form/…),
-  `runs`.
+- `biffix` (`crates/biffix-cli`) — the `biffix` CLI (OAuth public client): `login`, `workflows`
+  (register/form/…), `runs`.
 - `xtask` — repo tooling: `cargo xtask emit-schemas [--check]` writes (or drift-checks)
   `schemas/`; its tests, run by `cargo test`, also check the crate layering (core depends on no
   workspace crate; ingest and db never link workflow).
+
+`biffix`, `biffix-core`, `biffix-workflow` and `biffix-api` are published to crates.io, all at the
+workspace version; the rest are `publish = false`. The four declare their own, older
+`rust-version` (CI's `rust-msrv` job builds them with it); the workspace's matches the toolchain
+`rust-toolchain.toml` pins, since the AWS SDK and sqlx need a newer rustc.
 
 **Coordinator image** (`docker/coordinator`): one image serves as both coordinator and generic
 worker (no ENTRYPOINT; the Batch job definition picks the role). `entrypoint.sh` documents the

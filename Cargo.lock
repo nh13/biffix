@@ -1064,6 +1064,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "biffix"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "biffix-api",
+ "biffix-backend",
+ "biffix-core",
+ "biffix-workflow",
+ "bytes",
+ "clap",
+ "flate2",
+ "hex",
+ "libc",
+ "open",
+ "proptest",
+ "rand 0.10.3",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "sha2 0.11.1",
+ "tar",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "url",
+ "urlencoding",
+]
+
+[[package]]
 name = "biffix-api"
 version = "0.1.0"
 dependencies = [
@@ -1122,38 +1154,6 @@ dependencies = [
  "utoipa",
  "uuid",
  "zip",
-]
-
-[[package]]
-name = "biffix-cli"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64 0.23.1",
- "biffix-api",
- "biffix-backend",
- "biffix-core",
- "biffix-workflow",
- "bytes",
- "clap",
- "flate2",
- "hex",
- "libc",
- "open",
- "proptest",
- "rand 0.10.3",
- "reqwest",
- "serde",
- "serde_json",
- "serde_norway",
- "sha2 0.11.1",
- "tar",
- "tempfile",
- "thiserror",
- "tokio",
- "toml",
- "url",
- "urlencoding",
 ]
 
 [[package]]

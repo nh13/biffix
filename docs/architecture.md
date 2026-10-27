@@ -103,7 +103,7 @@ change for every producer and consumer, so it will be revisited only if a real w
 | `biffix-api` | The HTTP API's request and response types, shared by the backend and the CLI. |
 | `biffix-backend` | The axum HTTP API (a Lambda in a deployment), registration, the submit pipeline, RBAC, the AWS provider, and the scheduled sweep. AWS and Postgres code sit behind the `aws` feature. |
 | `biffix-ingest` | The SQS drain Lambda and the scheduled reconcile Lambda. |
-| `biffix-cli` | The `biffix` command-line client. |
+| `biffix` (`crates/biffix-cli`) | The `biffix` command-line client. |
 
 `xtask/` holds repository tooling (`cargo xtask emit-schemas` writes `schemas/*.json` from the
 Rust types).

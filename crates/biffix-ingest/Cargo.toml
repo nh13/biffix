@@ -7,7 +7,8 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-publish.workspace = true
+# A deploy artifact (release.yml ships it as a Lambda), not published to crates.io.
+publish = false
 description = "biffix ingest path: SQS→batched writer, projection store, reconcile tick."
 
 [lints]
