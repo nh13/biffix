@@ -1,0 +1,23 @@
+# release-plz (https://release-plz.dev) opens the release PR: it bumps the workspace version (every
+# crate shares it) and adds the release's section to CHANGELOG.md. It neither publishes nor tags:
+# .github/workflows/publish.yml publishes the crates once the PR merges and pushes `v<version>`,
+# which runs release.yml.
+
+[workspace]
+changelog_config = "cliff.toml"
+# Dependabot owns dependency bumps, and each goes through CI's rust-msrv job.
+dependencies_update = false
+pr_labels = ["release"]
+# One changelog for the repository, written by the `biffix` package below.
+changelog_update = false
+# publish.yml tags the release and release.yml creates the GitHub release with its assets.
+git_tag_enable = false
+git_release_enable = false
+# The published libraries are internal and may change in any release.
+semver_check = false
+
+[[package]]
+name = "biffix"
+changelog_update = true
+changelog_path = "./CHANGELOG.md"
+changelog_include = ["biffix-core", "biffix-workflow", "biffix-api"]

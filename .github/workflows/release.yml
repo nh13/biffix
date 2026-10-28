@@ -28,8 +28,8 @@
 #
 # THE TAG IS THE VERSION. A tag must be `v` + the Cargo workspace version ([workspace.package] in
 # Cargo.toml): the infra deploying a release reads the same version (biffix_infra/version.py), so a
-# mismatched tag fails here, before anything is built. To cut a release: bump the workspace version,
-# merge, then push the tag `v<version>` on that commit.
+# mismatched tag fails here, before anything is built. publish.yml pushes the tag once a version bump
+# (release-plz's release PR) merges and the crates are on crates.io.
 name: release
 
 on:
