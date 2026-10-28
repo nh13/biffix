@@ -75,6 +75,11 @@ crates.io and the commit is tagged `v<version>`, and the release workflow builds
 Lambda bundles, the UI and the coordinator image. The "Releases" section of [infra/README.md](infra/README.md#releases)
 describes what a release contains and how it is cut and deployed.
 
+The engine plugins are versioned on their own (`plugins/*/pyproject.toml`, `build.gradle`): a
+version bump merged to `main` publishes the Snakemake logger to PyPI and nf-biffix to the Nextflow
+plugin registry. Publishing nf-biffix needs the `NPR_API_KEY` repository secret; without it that job
+fails and the version stays unpublished until a later push to `main` with the secret set.
+
 ## Reporting security issues
 
 Do not open a public issue for a vulnerability. Follow [SECURITY.md](SECURITY.md).

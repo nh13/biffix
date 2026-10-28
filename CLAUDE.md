@@ -72,7 +72,8 @@ additive-only, unknown-field tolerant, open enums.
 `biffix`, `biffix-core`, `biffix-workflow` and `biffix-api` are published to crates.io, all at the
 workspace version; the rest are `publish = false`. Releases: release-plz (`release-plz.toml`) keeps a
 release PR open; merging it lets `.github/workflows/publish.yml` publish the crates and push
-`v<version>`, which runs `release.yml`. The four declare their own, older
+`v<version>`, which runs `release.yml`. The same workflow publishes a plugin version not yet on
+its registry (the Snakemake logger to PyPI, nf-biffix to the Nextflow registry). The four declare their own, older
 `rust-version` (CI's `rust-msrv` job builds them with it); the workspace's matches the toolchain
 `rust-toolchain.toml` pins, since the AWS SDK and sqlx need a newer rustc.
 
