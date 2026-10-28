@@ -78,9 +78,10 @@ Each test runs in its own schema, so the suites can run in parallel against one 
 ### Migrations
 
 Schema changes are numbered SQL files in `crates/biffix-db/migrations/`, applied by every biffix
-process when it starts (the API, sweep, ingest and reconcile Lambdas, and the local server). Never
-edit a migration that has been applied anywhere; add a new one, and append its version and
-checksum to `APPLIED` in `crates/biffix-db/src/migrate.rs`. The unit test
+process: the ingest Lambda and the local server when they start, the API, sweep and reconcile
+Lambdas when they first use the database. Never edit a migration that has been applied anywhere;
+add a new one, and append its version and checksum to `APPLIED` in
+`crates/biffix-db/src/migrate.rs`. The unit test
 `every_migration_keeps_its_version_and_checksum` (run by `cargo test --workspace`) fails on an
 edited migration and on an unpinned new one, and prints the checksum to pin. A new projection
 column needs a migration and an entry in the fold's upsert (`crates/biffix-db/src/projection/`),

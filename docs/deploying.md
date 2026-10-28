@@ -237,10 +237,11 @@ git checkout v0.2.0
 infra/deploy.sh --config biffix-deploy.yaml --release v0.2.0
 ```
 
-Database migrations apply themselves: every biffix process (the API, sweep, ingest and reconcile
-Lambdas, and the local server) runs any pending ones when it starts. A new coordinator base image is picked up by
-the backend sweep within a few minutes, which rebuilds the engine runtimes registered versions
-use; runs keep launching on the previous image until then.
+Database migrations apply themselves: every biffix process runs any pending ones, the ingest
+Lambda and the local server when they start, and the API, sweep and reconcile Lambdas when they
+first use the database (so a paused database does not hold up sign-in). A new coordinator base
+image is picked up by the backend sweep within a few minutes, which rebuilds the engine runtimes
+registered versions use; runs keep launching on the previous image until then.
 
 Upgrading can change the engine pins (the Snakemake or Nextflow releases and plugin versions
 biffix builds runtimes from). Existing versions keep the runtime they recorded. To move them to

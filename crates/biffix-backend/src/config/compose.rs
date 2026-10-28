@@ -21,7 +21,8 @@ use biffix_core::ids::RunId;
 
 type BoxError = Box<dyn std::error::Error>;
 
-/// Build the `AppState` an HTTP entry point (the API Lambda, the `server` bin) serves.
+/// Build the `AppState` the local `server` bin serves, migrating the database first. (The API
+/// Lambda builds its router with [`build_lambda_router`], which migrates on first use instead.)
 /// **Fail-closed:** it authenticates with Cognito unless its config explicitly turns auth off
 /// (see [`AuthConfig`]).
 pub async fn build_state(config: ApiConfig) -> Result<AppState, BoxError> {
@@ -30,6 +31,56 @@ pub async fn build_state(config: ApiConfig) -> Result<AppState, BoxError> {
     // The one shared, lock-taking migration — the first query drives the lazy connect.
     biffix_db::migrate::run(&pool).await?;
     Ok(state)
+}
+
+/// The API Lambda's router: [`build_state`]'s, but without touching the database at cold start.
+/// A paused Aurora takes 15 s or more to resume, past the Lambda's 10 s init limit, and the
+/// browser's first request is `/auth/config`, which needs no database: waiting on the resume to
+/// answer it leaves the app blank. The migration runs on the first request that needs the
+/// database instead ([`migrate_first`]).
+pub async fn build_lambda_router(config: ApiConfig) -> Result<axum::Router, BoxError> {
+    let auth = build_auth_context(config.auth).await?;
+    let (state, pool) = compose(config.backend, auth).await?;
+    Ok(migrate_first(crate::api::router(state), move || {
+        let pool = pool.clone();
+        async move { biffix_db::migrate::run(&pool).await }
+    }))
+}
+
+/// `router` with `migrate` run once, before the first request that may need the database
+/// ([`crate::api::needs_database`]); the others are served at once. A migration that fails is
+/// answered 503 and tried again on the next request. It is not cut short: one still waiting when
+/// the Lambda times out (a resume past 29 s) ends that invocation, and the next request starts
+/// it afresh.
+fn migrate_first<F, Fut, E>(router: axum::Router, migrate: F) -> axum::Router
+where
+    F: Fn() -> Fut + Clone + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<(), E>> + Send,
+    E: std::fmt::Display,
+{
+    use axum::response::IntoResponse;
+
+    let migrated = Arc::new(tokio::sync::OnceCell::new());
+    router.layer(axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let migrate = migrate.clone();
+            let migrated = migrated.clone();
+            async move {
+                if crate::api::needs_database(request.uri().path()) {
+                    if let Err(e) = migrated.get_or_try_init(migrate).await {
+                        tracing::error!(error = %e, "migrate failed");
+                        return crate::api::ApiError::Unavailable(
+                            "the database is unavailable or could not be migrated; try again \
+                             shortly, and if this persists see the API's logs"
+                                .into(),
+                        )
+                        .into_response();
+                    }
+                }
+                next.run(request).await
+            }
+        },
+    ))
 }
 
 /// What scheduled background work (the sweep Lambda) runs on: its `AppState`, which has no auth
@@ -198,4 +249,53 @@ async fn build_projects(
         "projects: loaded"
     );
     Ok(handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use tower::ServiceExt;
+
+    /// A migration that fails on its first attempt only: the database-free routes are served
+    /// without it, the first other request is a 503, the next migrates, and none migrates again.
+    #[tokio::test]
+    async fn the_database_free_routes_do_not_wait_and_a_failed_migration_is_retried_once() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let migrate = {
+            let attempts = attempts.clone();
+            move || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if attempt == 0 {
+                        Err("down")
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+        };
+        let router = super::migrate_first(
+            axum::Router::new()
+                .route("/auth/config", get(|| async { "config" }))
+                .route("/healthz", get(|| async { "alive" }))
+                .route("/runs", get(|| async { "runs" })),
+            migrate,
+        );
+        let status = |path: &str| {
+            let request = Request::get(path).body(axum::body::Body::empty()).unwrap();
+            let router = router.clone();
+            async move { router.oneshot(request).await.unwrap().status() }
+        };
+        assert_eq!(status("/auth/config").await, StatusCode::OK);
+        assert_eq!(status("/healthz").await, StatusCode::OK);
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(status("/runs").await, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(status("/runs").await, StatusCode::OK);
+        assert_eq!(status("/runs").await, StatusCode::OK);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
 }
