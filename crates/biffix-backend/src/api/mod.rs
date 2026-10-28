@@ -172,6 +172,13 @@ impl utoipa::Modify for ResponseDescriptions {
     }
 }
 
+/// Whether a request to `path` may need the database. Only the OAuth bootstrap and liveness read
+/// none, so the API Lambda serves them while a paused database resumes and before it has migrated
+/// (`config::compose::build_lambda_router`); every other path waits for the migration.
+pub(crate) fn needs_database(path: &str) -> bool {
+    !matches!(path, auth_config::PATH | health::HEALTHZ_PATH)
+}
+
 /// The HTTP API: every family's routes ([`runs::routes`], …), behind the Cognito middleware unless
 /// open ([`health::open_routes`], …).
 pub fn router(state: AppState) -> Router {
@@ -216,6 +223,20 @@ pub fn router(state: AppState) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The paths [`needs_database`] exempts are the routes' own (whose tables spell paths as
+    /// literals, for `capability_gates`' route-table check), so neither can move without the other.
+    #[test]
+    fn the_database_free_paths_are_the_routes() {
+        for (path, table) in [
+            (auth_config::PATH, include_str!("auth_config.rs")),
+            (health::HEALTHZ_PATH, include_str!("health.rs")),
+        ] {
+            assert!(table.contains(&format!(".route(\"{path}\"")), "no route for {path}");
+            assert!(!needs_database(path), "{path}");
+        }
+        assert!(needs_database("/readyz"));
+    }
 
     #[test]
     fn every_documented_response_has_a_description() {

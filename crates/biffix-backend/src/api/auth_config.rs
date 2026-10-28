@@ -11,6 +11,9 @@ use crate::api::ApiError;
 use crate::auth::oauth_client::OAuthClient;
 use crate::AppState;
 
+/// The route's path, which [`super::needs_database`] exempts: it reads no database.
+pub(super) const PATH: &str = "/auth/config";
+
 #[utoipa::path(
     get,
     path = "/auth/config",

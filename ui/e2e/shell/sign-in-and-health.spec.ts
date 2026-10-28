@@ -1,4 +1,4 @@
-import { test as signedOut, expect, type Page } from '@playwright/test';
+import { test as signedOut, expect, type Page, type Route } from '@playwright/test';
 import { API, test } from '../fixtures';
 
 // The app shell's sign-in gate and its service-health icon. The gate tests start signed out (the
@@ -89,6 +89,46 @@ signedOut('a sign-in that cannot start says so, with a Retry', async ({ page }) 
   await expect(alert).toContainText('OAuth configuration unavailable (503)');
   await expect(alert).not.toContainText('Error:');
   await expect(alert.getByRole('button', { name: 'Retry' })).toBeVisible();
+});
+
+/**
+ * Load `/runs` signed out with the clock paused and the OAuth bootstrap held unanswered, once the
+ * shell has asked for it; resolves to the held request, to answer when the test wants.
+ */
+async function holdSignInStart(page: Page): Promise<Route> {
+  const t0 = new Date('2026-01-01T00:00:00Z');
+  await page.clock.install({ time: t0 });
+  // Paused well past t0: the installed clock runs until pauseAt, and pausing at a time it has
+  // already passed throws. Nothing has loaded yet, so the skipped seconds fire no timer.
+  await page.clock.pauseAt(new Date(t0.getTime() + 10_000));
+  let held: (route: Route) => void = () => {};
+  const asked = new Promise<Route>((resolve) => (held = resolve));
+  await page.route(/\/auth\/config$/, (route) => held(route));
+  await page.goto('/runs');
+  return asked;
+}
+
+signedOut('a slow sign-in start says it is connecting, then that it is slow', async ({ page }) => {
+  await holdSignInStart(page);
+  // The live region is there, empty, before its first message, so screen readers announce it.
+  const status = page.getByRole('status');
+  await expect(status).toHaveCount(1);
+  await expect(status).toBeEmpty();
+  await page.clock.runFor(1_000);
+  await expect(status.getByRole('heading', { name: 'Connecting to biffix…' })).toBeVisible();
+  await expect(status).not.toContainText('longer than usual');
+  await page.clock.runFor(7_000);
+  await expect(status).toContainText('This is taking longer than usual.');
+});
+
+signedOut('a slow sign-in start that then fails says so, with a Retry', async ({ page }) => {
+  const held = await holdSignInStart(page);
+  await page.clock.runFor(8_000);
+  await expect(page.getByRole('status')).toContainText('longer than usual');
+  await held.fulfill({ status: 503, body: 'down' });
+  const alert = page.getByRole('alert');
+  await expect(alert.getByRole('heading', { name: "Can't reach biffix" })).toBeVisible();
+  await expect(page.getByRole('status')).toHaveCount(0);
 });
 
 for (const [status, color] of [

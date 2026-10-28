@@ -16,6 +16,10 @@
   let theme = $state<Theme>('light');
   let authReady = $state(false);
   let authError = $state<string | null>(null);
+  // How long sign-in has been starting: past a moment the page says so, rather than staying blank,
+  // and past several seconds that it is slow. Until the deploy's sign-in configuration answers,
+  // nothing else can show; once it does, the IdP redirect or the app takes over.
+  let startup = $state<'quiet' | 'connecting' | 'slow'>('quiet');
   let identity = $state<string | null>(null);
   // The site chrome, shared with the Settings page so a save shows here at once.
   const siteTitle = $derived(site.title ?? DEFAULT_SITE_TITLE);
@@ -76,9 +80,15 @@
     // IdP), which start this check afresh.
     if (authReady || authError) return;
     let active = true;
+    const timers = [
+      setTimeout(() => (startup = 'connecting'), 1_000),
+      setTimeout(() => (startup = 'slow'), 8_000),
+    ];
     void (async () => {
       try {
         const ok = await ensureAuthenticated();
+        // Answered: a redirect to the IdP is under way, or the app is about to show.
+        timers.forEach(clearTimeout);
         if (active && ok) authReady = true;
       } catch (e) {
         if (active) authError = errorMessage(e);
@@ -86,6 +96,7 @@
     })();
     return () => {
       active = false;
+      timers.forEach(clearTimeout);
     };
   });
 
@@ -133,27 +144,40 @@
 {:else if authReady}
   <AppShell {identity} {theme} ontoggletheme={toggleTheme}>{@render children()}</AppShell>
 {:else if authError}
-  <div class="startup-error" role="alert">
+  <div class="startup" role="alert">
     <h1>Can't reach biffix</h1>
     <p>Sign-in couldn't start: {authError}</p>
     <button onclick={() => location.reload()}>Retry</button>
   </div>
+{:else}
+  <!-- Present, empty, while startup is quiet, so a screen reader announces the message added to it. -->
+  <div class="startup" role="status">
+    {#if startup !== 'quiet'}
+      <h1>Connecting to biffix…</h1>
+      {#if startup === 'slow'}
+        <p>
+          This is taking longer than usual. If it does not load soon, check your connection and
+          reload.
+        </p>
+      {/if}
+    {/if}
+  </div>
 {/if}
 
 <style>
-  .startup-error {
+  .startup {
     max-width: 32rem;
     margin: 18vh auto;
     text-align: center;
   }
-  .startup-error h1 {
+  .startup h1 {
     font-size: 1.15rem;
   }
-  .startup-error p {
+  .startup p {
     color: var(--text-muted);
     font-size: 0.85rem;
   }
-  .startup-error button {
+  .startup button {
     margin-top: 0.5rem;
     padding: 0.4rem 1rem;
     border: 1px solid var(--border);

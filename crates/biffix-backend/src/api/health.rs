@@ -20,6 +20,9 @@ pub(crate) use biffix_api::{
     UptimeBucket,
 };
 
+/// [`healthz`]'s path, which [`super::needs_database`] exempts: it reads no database.
+pub(super) const HEALTHZ_PATH: &str = "/healthz";
+
 /// Liveness — the process is up. Always 200 if we can serve.
 #[utoipa::path(get, path = "/healthz", responses((status = 200, description = "alive")))]
 pub(crate) async fn healthz() -> StatusCode {
