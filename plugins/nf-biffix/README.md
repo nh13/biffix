@@ -33,7 +33,9 @@ is inert, the resolver defers to Nextflow's, and the executor behaves exactly as
 
 ## How biffix loads it
 
-The plugin is not published to the Nextflow plugin registry. biffix builds it
+Each version is published to the [Nextflow plugin registry](https://registry.nextflow.io/plugins/nf-biffix)
+(`.github/workflows/publish.yml` publishes a version the registry does not have yet, so a release
+is a version bump merged to `main`), but biffix does not load it from there. biffix builds it
 (`./gradlew assemble`, giving `build/distributions/nf-biffix-<version>.zip`) and ships the zip in
 the coordinator base image (`docker/coordinator/build-wheels.sh`). The runtime layer build
 (`codebuild/runtime/build.sh`) unpacks it into the layer's Nextflow plugins directory next to
