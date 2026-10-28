@@ -32,11 +32,14 @@ where it describes a Lab page.
 
 ## Installing the CLI and signing in
 
-The `biffix` CLI is built from the repository with Rust:
+The `biffix` CLI is on crates.io; install it with Rust:
 
 ```sh
-cargo install --locked --path crates/biffix-cli
+cargo install --locked biffix
 ```
+
+Install the release your deployment runs (`--version <x.y.z>`), or build it from that release's
+checkout with `cargo install --locked --path crates/biffix-cli`.
 
 Sign in once per deployment. The URL is your deployment's address followed by `/api`:
 

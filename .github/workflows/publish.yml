@@ -1,0 +1,366 @@
+# Release biffix on every push to main: the crates.io crates (biffix, biffix-core, biffix-workflow,
+# biffix-api) and the two engine plugins.
+#
+#   release-pr  release-plz opens or updates the release PR (release-plz.toml): the next workspace
+#               version, which every crate shares, and its CHANGELOG.md section. It also stamps that
+#               version into the committed OpenAPI document, which embeds it, so CI's generated-types
+#               drift gate passes on the PR.
+#   release     when the workspace version has no `v<version>` tag yet (the release PR merged, or a
+#               hand-written bump), lists the crates in dependency order and verifies their packages.
+#   publish     publishes each of them not yet on crates.io at that version, then pushes the tag,
+#               which runs release.yml (the GitHub release, the Lambdas, the UI and the coordinator
+#               image).
+#   plugins     the engine plugins keep their own versions (plugins/*: pyproject.toml, build.gradle;
+#               the runtime pins them, crates/biffix-workflow/src/runtime/pins.rs). A version not
+#               yet on its registry is published: the Snakemake logger to PyPI, nf-biffix to the
+#               Nextflow plugin registry. So a plugin release is a version bump merged to main.
+#
+# Crates are published by crates.io trusted publishing (OIDC; each crate trusts this workflow file in
+# nh13/biffix), so there is no registry token. RELEASE_PLZ_TOKEN (a fine-grained token with contents
+# and pull-requests write on this repository) opens the PR and pushes the tag: what GITHUB_TOKEN does
+# starts no workflow, so neither CI on the release PR nor release.yml on the tag would run. PyPI
+# trusts this workflow file in the `pypi` environment (trusted publishing); the Nextflow registry has
+# no equivalent, so nf-biffix is published with the NPR_API_KEY secret.
+name: publish
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-pr:
+    name: release PR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      # rustup honors rust-toolchain.toml on the first cargo invocation.
+      - name: open or update the release PR
+        id: release-plz
+        uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9 # v0.5.131
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      # The backend's OpenAPI document carries the crate version (`info.version`), and CI fails when
+      # the committed copy differs from what the backend generates. Only that field changes with a
+      # version bump, so set it here rather than build the backend.
+      - name: stamp the version into the OpenAPI document
+        env:
+          PR: ${{ steps.release-plz.outputs.pr }}
+        run: |
+          set -euo pipefail
+          # `pr` is the release PR release-plz opened or updated, or `{}` when there is none.
+          branch=$(jq -r '.head_branch // empty' <<< "${PR:-"{}"}")
+          if [ -z "$branch" ]; then
+            echo "no release PR"
+            exit 0
+          fi
+          git fetch origin "$branch"
+          git switch -C "$branch" "origin/$branch"
+          python3 - <<'EOF'
+          import json, pathlib, re, tomllib
+          version = tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"]
+          path = pathlib.Path("ui/src/lib/generated/openapi.json")
+          text = path.read_text()
+          # The first "version" after "info" is info.version; edit that one line so the file stays
+          # byte-identical to the generator's output.
+          start = text.index('"info": {')
+          match = re.compile(r'"version": "[^"]*"').search(text, start)
+          path.write_text(text[: match.start()] + f'"version": "{version}"' + text[match.end() :])
+          assert json.loads(path.read_text())["info"]["version"] == version
+          EOF
+          if git diff --quiet; then
+            echo "the OpenAPI document already has this version"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "chore(release): stamp the version into the OpenAPI document" -- ui/src/lib/generated/openapi.json
+          git push origin "$branch"
+
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      release: ${{ steps.release.outputs.release }}
+      version: ${{ steps.release.outputs.version }}
+      crates: ${{ steps.crates.outputs.crates }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: detect a release
+        id: release
+        run: |
+          set -euo pipefail
+          # A release is a workspace version with no `v<version>` tag yet, unless it is below the
+          # newest tagged release. Judged from the repository rather than from what this push
+          # changed, so a release whose run was cancelled (GitHub keeps one pending run per
+          # concurrency group) or failed partway is picked up by the next push; the publish and tag
+          # steps skip what is already done. The tag is pushed last, once every crate is published.
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$version" > /dev/null; then
+            echo "v$version is already released"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # SemVer precedence, as Cargo orders versions (`sort -V` puts 1.0.0-rc.1 after 1.0.0).
+          # shellcheck disable=SC2046 # one argument per tag
+          newest=$(python3 - "$version" $(git tag -l 'v[0-9]*') <<'EOF'
+          import sys
+
+          def precedence(version):
+              core, _, pre = version.split("+", 1)[0].partition("-")
+              nums = tuple(int(n) for n in core.split("."))
+              if len(nums) != 3:
+                  raise ValueError(f"not a SemVer version: {version!r}")
+              if not pre:
+                  return (nums, 1, ())
+              ids = tuple((0, int(i), "") if i.isdigit() else (1, 0, i) for i in pre.split("."))
+              return (nums, 0, ids)
+
+          tags = []
+          for tag in sys.argv[2:]:
+              try:
+                  tags.append((precedence(tag[1:]), tag[1:]))
+              except ValueError:
+                  pass  # not a release tag
+          newest = max(tags)[1] if tags else ""
+          if newest and precedence(sys.argv[1]) < precedence(newest):
+              print(newest)
+          EOF
+          )
+          if [ -n "$newest" ]; then
+            echo "::warning::$version is below the newest release, $newest; not publishing"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "$version is not released yet"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+      - name: list the crates to publish
+        if: steps.release.outputs.release == 'true'
+        id: crates
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Every publishable workspace crate (no `publish = false`), dependencies first, each at the
+          # workspace version.
+          cargo metadata --no-deps --format-version 1 > "$RUNNER_TEMP/metadata.json"
+          crates=$(python3 - "$RUNNER_TEMP/metadata.json" <<'EOF'
+          import json, os, sys
+
+          packages = {p["name"]: p for p in json.load(open(sys.argv[1]))["packages"] if p["publish"] is None}
+          version = os.environ["VERSION"]
+          drift = [f"{n} {p['version']}" for n, p in packages.items() if p["version"] != version]
+          if drift:
+              sys.exit(f"not at the workspace version {version}: {', '.join(drift)}")
+          order, seen = [], set()
+
+          def visit(name):
+              if name in seen:
+                  return
+              seen.add(name)
+              for dep in packages[name]["dependencies"]:
+                  if dep["name"] in packages and dep["name"] != name and dep["kind"] in (None, "build"):
+                      visit(dep["name"])
+              order.append(name)
+
+          for name in sorted(packages):
+              visit(name)
+          print(" ".join(order))
+          EOF
+          )
+          test -n "$crates"
+          echo "crates: $crates"
+          echo "crates=$crates" >> "$GITHUB_OUTPUT"
+      # Verifying a package builds it, running its dependencies' build scripts and proc macros, so
+      # it runs here, in a job with no credentials, and `publish` uploads with --no-verify.
+      - name: verify the packages
+        if: steps.release.outputs.release == 'true'
+        env:
+          CRATES: ${{ steps.crates.outputs.crates }}
+        run: |
+          set -euo pipefail
+          args=()
+          for crate in $CRATES; do args+=(-p "$crate"); done
+          cargo package --locked "${args[@]}"
+
+  publish:
+    needs: release
+    if: needs.release.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # crates.io trusted publishing
+    steps:
+      # No stored credentials: only the tag step needs the token (passed to it alone).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: authenticate to crates.io
+        id: crates-io
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+      - name: publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io.outputs.token }}
+          VERSION: ${{ needs.release.outputs.version }}
+          CRATES: ${{ needs.release.outputs.crates }}
+        run: |
+          set -euo pipefail
+          for crate in $CRATES; do
+            # Ask whether this exact version exists (200) or not (404); anything else is ambiguous,
+            # and guessing could double-publish or skip a crate. curl retries 429/5xx itself, and
+            # --retry-all-errors adds transport errors.
+            status=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 \
+              --retry 5 --retry-delay 2 --retry-all-errors \
+              -H "User-Agent: biffix-ci (https://github.com/nh13/biffix)" \
+              "https://crates.io/api/v1/crates/${crate}/${VERSION}")
+            case "$status" in
+              200) echo "$crate $VERSION is already on crates.io"; continue ;;
+              404) ;;
+              *) echo "::error::crates.io answered HTTP $status for $crate $VERSION"; exit 1 ;;
+            esac
+            # Verified by the `release` job, from this same commit.
+            cargo publish --locked --no-verify -p "$crate"
+          done
+      - name: tag the release
+        env:
+          TAG: v${{ needs.release.outputs.version }}
+          TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The checkout stored no credentials. Authenticate git through its environment, as
+          # actions/checkout does, so the token is in no command line or file.
+          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+          # Idempotent, so a re-run after a failure here only pushes what is missing.
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+            echo "$TAG is already pushed"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "biffix $TAG"
+          git push origin "refs/tags/$TAG"
+
+  plugin-versions:
+    name: plugin versions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      logger: ${{ steps.check.outputs.logger }}
+      nf-biffix: ${{ steps.check.outputs.nf-biffix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: find the versions not yet published
+        id: check
+        run: |
+          set -euo pipefail
+          # Whether $2 is on its registry, at URL $3: 200 is published, 404 is not, and anything
+          # else (after curl's own retries) fails rather than guess.
+          check() {
+            local status
+            status=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 \
+              --retry 5 --retry-delay 2 --retry-all-errors \
+              -H "User-Agent: biffix-ci (https://github.com/nh13/biffix)" "$3")
+            case "$status" in
+              200) echo "$1 $2 is already published"; echo "$1=false" >> "$GITHUB_OUTPUT" ;;
+              404) echo "$1 $2 is not published yet"; echo "$1=true" >> "$GITHUB_OUTPUT" ;;
+              *) echo "::error::HTTP $status from $3"; exit 1 ;;
+            esac
+          }
+          logger=$(python3 -c 'import tomllib; print(tomllib.load(open("plugins/snakemake-logger-plugin-biffix/pyproject.toml", "rb"))["project"]["version"])')
+          nf=$(sed -n "s/^version = '\(.*\)'$/\1/p" plugins/nf-biffix/build.gradle)
+          test -n "$logger" && test -n "$nf"
+          check logger "$logger" "https://pypi.org/pypi/snakemake-logger-plugin-biffix/${logger}/json"
+          check nf-biffix "$nf" "https://registry.nextflow.io/api/v1/plugins/nf-biffix/${nf}"
+
+  build-snakemake-plugin:
+    name: Snakemake logger plugin (build)
+    needs: plugin-versions
+    if: needs.plugin-versions.outputs.logger == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Building runs the build backend, third-party code, so it runs here, with no credentials, and
+    # publish-snakemake-plugin only uploads what it built.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: build the sdist and wheel
+        working-directory: plugins/snakemake-logger-plugin-biffix
+        run: uv build --out-dir dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snakemake-logger-plugin-dist
+          path: plugins/snakemake-logger-plugin-biffix/dist/
+          if-no-files-found: error
+
+  publish-snakemake-plugin:
+    name: Snakemake logger plugin (PyPI)
+    needs: build-snakemake-plugin
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write # PyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: snakemake-logger-plugin-dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
+
+  publish-nextflow-plugin:
+    name: nf-biffix (Nextflow plugin registry)
+    needs: plugin-versions
+    if: needs.plugin-versions.outputs.nf-biffix == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      # Builds the plugin zip and uploads it, skipping a version the registry already has (e.g. one
+      # still in review there). Without the secret the job fails, so an unpublished version shows.
+      - name: build and release
+        working-directory: plugins/nf-biffix
+        env:
+          NPR_API_KEY: ${{ secrets.NPR_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$NPR_API_KEY" ]; then
+            echo "::error::no NPR_API_KEY secret, so nf-biffix cannot be published"
+            exit 1
+          fi
+          ./gradlew --no-daemon releasePluginToRegistryIfNotExists

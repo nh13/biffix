@@ -69,10 +69,16 @@ there; biffix carries a workaround only while the upstream change is in review.
 
 ## Releases
 
-Releases are cut by the maintainer: the Cargo workspace version is bumped, the merged commit is
-tagged `v<version>`, and the release workflow builds and publishes the Lambda bundles, the UI and
-the coordinator image. The "Releases" section of [infra/README.md](infra/README.md#releases)
+Releases are cut by the maintainer by merging the release PR that release-plz keeps open: it bumps
+the Cargo workspace version and updates `CHANGELOG.md`. On merge, the crates are published to
+crates.io and the commit is tagged `v<version>`, and the release workflow builds and publishes the
+Lambda bundles, the UI and the coordinator image. The "Releases" section of [infra/README.md](infra/README.md#releases)
 describes what a release contains and how it is cut and deployed.
+
+The engine plugins are versioned on their own (`plugins/*/pyproject.toml`, `build.gradle`): a
+version bump merged to `main` publishes the Snakemake logger to PyPI and nf-biffix to the Nextflow
+plugin registry. Publishing nf-biffix needs the `NPR_API_KEY` repository secret; without it that job
+fails and the version stays unpublished until a later push to `main` with the secret set.
 
 ## Reporting security issues
 

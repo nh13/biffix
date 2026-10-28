@@ -314,20 +314,26 @@ and the base coordinator image, linux/amd64 + linux/arm64 (each built on a nativ
 provenance attestation: `gh attestation verify <file> --repo <owner>/biffix`, or
 `gh attestation verify oci://ghcr.io/<owner>/biffix-coordinator@<digest> --repo <owner>/biffix`.
 
-**Cutting one.** The tag must be `v` + the Cargo workspace version (`[workspace.package] version`
-in `Cargo.toml`); the workflow refuses any other, before building anything. So: bump that version,
-merge, then tag the merged commit and push the tag:
-
-```sh
-git tag -s v0.2.0 <commit> && git push origin v0.2.0
-```
+**Cutting one.** Merge the release PR. `.github/workflows/publish.yml` keeps one open (release-plz,
+configured in `release-plz.toml`) whenever a crate published to crates.io has changed since the last
+release: it bumps the Cargo workspace version (`[workspace.package] version` in `Cargo.toml`) and
+adds the release to `CHANGELOG.md`. Once it merges, the same workflow publishes the crates to
+crates.io and pushes the tag `v<version>`, which runs `release.yml`. release-plz proposes a release
+only for changes to those crates; to release a change elsewhere (the UI, the Lambdas, the infra),
+open a PR that bumps the workspace version and merge it, and `publish.yml` does the rest. The tag
+must be `v` + the workspace version; `release.yml` refuses any other, before building anything.
 
 Run the workflow by hand (`workflow_dispatch`) for a dry run: it builds every artifact and the
 images (without pushing them) and attaches the assets to the run as the `release` artifact, with no
 coordinator image in `release.json`. Nothing is published.
 
-**Repository setup (once).** The workflow publishes with the job's `GITHUB_TOKEN` (no secrets, no
-cloud account), so a release needs only:
+**Repository setup (once).** `release.yml` publishes with the job's `GITHUB_TOKEN` (no secrets, no
+cloud account). `publish.yml` publishes the crates by crates.io trusted publishing (each crate
+trusts `publish.yml` in this repository) and needs one secret, `RELEASE_PLZ_TOKEN`: a fine-grained
+token with *Contents* and *Pull requests* write on the repository, since a PR opened or a tag pushed
+with `GITHUB_TOKEN` starts no workflow. For the engine plugins it also needs a PyPI trusted
+publisher for `snakemake-logger-plugin-biffix` (workflow `publish.yml`, environment `pypi`) and an
+`NPR_API_KEY` secret (a Nextflow plugin registry access token) for nf-biffix. A release also needs:
 
 - **The package made public.** The first release creates the `biffix-coordinator` package on GHCR
   as private (GitHub's default for a new package); set it to public once (the package's
