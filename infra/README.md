@@ -333,7 +333,9 @@ trusts `publish.yml` in this repository) and needs one secret, `RELEASE_PLZ_TOKE
 token with *Contents* and *Pull requests* write on the repository, since a PR opened or a tag pushed
 with `GITHUB_TOKEN` starts no workflow. For the engine plugins it also needs a PyPI trusted
 publisher for `snakemake-logger-plugin-biffix` (workflow `publish.yml`, environment `pypi`) and an
-`NPR_API_KEY` secret (a Nextflow plugin registry access token) for nf-biffix. A release also needs:
+`NPR_API_KEY` secret (a Nextflow plugin registry access token) for nf-biffix, whose account owns
+the `nf-biffix` name in the registry (claimed under *My plugins*, with the `provider` that
+`plugins/nf-biffix/build.gradle` sets). A release also needs:
 
 - **The package made public.** The first release creates the `biffix-coordinator` package on GHCR
   as private (GitHub's default for a new package); set it to public once (the package's
