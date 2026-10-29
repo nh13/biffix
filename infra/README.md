@@ -320,10 +320,12 @@ release: it bumps the Cargo workspace version (`[workspace.package] version` in 
 adds the release to `CHANGELOG.md`. Once it merges, the same workflow publishes the crates to
 crates.io and pushes the tag `v<version>`, which runs `release.yml`. release-plz proposes a release
 only for changes to those crates; to release a change elsewhere (the UI, the Lambdas, the infra),
-open a PR that bumps the workspace version and merge it, and `publish.yml` does the rest. The tag
+run `publish.yml` by hand (Actions → *publish* → *Run workflow*, choosing a patch or minor bump):
+it opens the release PR at the next version, with a `CHANGELOG.md` section from every commit since
+the last release, and merging it releases as above. The tag
 must be `v` + the workspace version; `release.yml` refuses any other, before building anything.
 
-Run the workflow by hand (`workflow_dispatch`) for a dry run: it builds every artifact and the
+Run `release.yml` by hand (`workflow_dispatch`) for a dry run: it builds every artifact and the
 images (without pushing them) and attaches the assets to the run as the `release` artifact, with no
 coordinator image in `release.json`. Nothing is published.
 
