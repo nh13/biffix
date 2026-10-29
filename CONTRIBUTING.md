@@ -70,7 +70,9 @@ there; biffix carries a workaround only while the upstream change is in review.
 ## Releases
 
 Releases are cut by the maintainer by merging the release PR that release-plz keeps open: it bumps
-the Cargo workspace version and updates `CHANGELOG.md`. On merge, the crates are published to
+the Cargo workspace version and updates `CHANGELOG.md`. release-plz proposes one only when a crate
+published to crates.io changes; for a release of anything else, the maintainer runs `publish.yml` by
+hand, which opens the same kind of PR. On merge, the crates are published to
 crates.io and the commit is tagged `v<version>`, and the release workflow builds and publishes the
 Lambda bundles, the UI and the coordinator image. The "Releases" section of [infra/README.md](infra/README.md#releases)
 describes what a release contains and how it is cut and deployed.

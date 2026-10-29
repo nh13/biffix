@@ -5,7 +5,12 @@
 #               version, which every crate shares, and its CHANGELOG.md section. It also stamps that
 #               version into the committed OpenAPI document, which embeds it, so CI's generated-types
 #               drift gate passes on the PR.
-#   release     when the workspace version has no `v<version>` tag yet (the release PR merged, or a
+#   release-pr-dispatch
+#               run by hand (Actions → publish → Run workflow, patch or minor): opens a release PR at
+#               the next version even when the crates have not changed, for a release of the UI,
+#               the Lambdas or the infra, which release-plz never proposes. Its CHANGELOG.md section
+#               lists every commit since the last release (git-cliff, cliff.toml).
+#   release     when the workspace version has no `v<version>` tag yet (a release PR merged, or a
 #               hand-written bump), lists the crates in dependency order and verifies their packages.
 #   publish     publishes each of them not yet on crates.io at that version, then pushes the tag,
 #               which runs release.yml (the GitHub release, the Lambdas, the UI and the coordinator
@@ -26,6 +31,16 @@ name: publish
 on:
   push:
     branches: [main]
+  # A release with no change to the published crates, which release-plz never proposes (only
+  # changes to them count): opens the release PR at the next version, with a changelog section
+  # from every commit since the last release.
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to increase
+        type: choice
+        options: [patch, minor]
+        default: patch
 
 permissions:
   contents: read
@@ -37,6 +52,7 @@ concurrency:
 jobs:
   release-pr:
     name: release PR
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -68,18 +84,7 @@ jobs:
           fi
           git fetch origin "$branch"
           git switch -C "$branch" "origin/$branch"
-          python3 - <<'EOF'
-          import json, pathlib, re, tomllib
-          version = tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"]
-          path = pathlib.Path("ui/src/lib/generated/openapi.json")
-          text = path.read_text()
-          # The first "version" after "info" is info.version; edit that one line so the file stays
-          # byte-identical to the generator's output.
-          start = text.index('"info": {')
-          match = re.compile(r'"version": "[^"]*"').search(text, start)
-          path.write_text(text[: match.start()] + f'"version": "{version}"' + text[match.end() :])
-          assert json.loads(path.read_text())["info"]["version"] == version
-          EOF
+          python3 .github/scripts/set_version.py
           if git diff --quiet; then
             echo "the OpenAPI document already has this version"
             exit 0
@@ -89,7 +94,66 @@ jobs:
           git commit -q -m "chore(release): stamp the version into the OpenAPI document" -- ui/src/lib/generated/openapi.json
           git push origin "$branch"
 
+  release-pr-dispatch:
+    name: release PR (by hand)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: open the release PR
+        env:
+          BUMP: ${{ inputs.bump }}
+          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::run this from main, not $GITHUB_REF: the release PR is opened against main"
+            exit 1
+          fi
+          # One release PR at a time: release-plz's, if open, releases these changes too.
+          open=$(gh pr list --state open --label release --json url --jq '.[].url')
+          if [ -n "$open" ]; then
+            echo "::error::a release PR is already open; merge or close it first: $open"
+            exit 1
+          fi
+          current=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          # Bump from a released version only: an unreleased one is still waiting on its own PR.
+          if ! git rev-parse -q --verify "refs/tags/v$current" > /dev/null; then
+            echo "::error::$current is not released yet (no v$current tag); merge or close its release first"
+            exit 1
+          fi
+          # Only from a plain x.y.z release: a pre-release's next version is a choice this does not
+          # make (1.0.0-rc.1 goes to 1.0.0, not 1.0.1).
+          next=$(python3 - "$current" "$BUMP" <<'EOF'
+          import re, sys
+          if not re.fullmatch(r"\d+\.\d+\.\d+", sys.argv[1]):
+              sys.exit(f"{sys.argv[1]} is not a plain x.y.z release; bump it by hand")
+          major, minor, patch = (int(n) for n in sys.argv[1].split("."))
+          print(f"{major}.{minor + 1}.0" if sys.argv[2] == "minor" else f"{major}.{minor}.{patch + 1}")
+          EOF
+          )
+          branch="release-v$next"
+          echo "$current -> $next on $branch"
+          git switch -c "$branch"
+          # The changelog covers every commit since the last release, not only the crates'.
+          uvx --from git-cliff==2.14.2 git-cliff --config cliff.toml --unreleased --tag "v$next" \
+            --strip header > "$RUNNER_TEMP/section.md"
+          python3 .github/scripts/set_version.py "$next" --changelog-section "$RUNNER_TEMP/section.md"
+          cargo update --workspace
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "chore(release): v$next" -- Cargo.toml Cargo.lock CHANGELOG.md ui/src/lib/generated/openapi.json
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" --label release --title "chore(release): v$next" \
+            --body "Releases v$next. Merging this publishes the crates and pushes \`v$next\`, which runs release.yml."
+
   release:
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     outputs:
@@ -264,6 +328,7 @@ jobs:
 
   plugin-versions:
     name: plugin versions
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
