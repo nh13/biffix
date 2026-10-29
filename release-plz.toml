@@ -15,6 +15,9 @@ git_tag_enable = false
 git_release_enable = false
 # The published libraries are internal and may change in any release.
 semver_check = false
+# Below 1.0, a `feat:` commit releases a new minor version (0.2.0, not 0.1.1), as a breaking
+# change does.
+features_always_increment_minor = true
 
 [[package]]
 name = "biffix"
