@@ -35,14 +35,14 @@
     "svelte": "^5.57.2",
     "svelte-check": "^4.7.7",
     "typescript": "^6.0.3",
-    "vite": "^8.3.4",
+    "vite": "^8.3.5",
     "vitest": "5.0.5"
   },
   "dependencies": {
     "dompurify": "3.4.17",
     "igv": "3.8.10",
     "marked": "18.1.1",
-    "swagger-ui-dist": "^5.33.3",
+    "swagger-ui-dist": "^5.34.0",
     "yaml": "2.9.1"
   },
   "overrides": {
