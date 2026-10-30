@@ -90,8 +90,8 @@ jobs:
         with:
           persist-credentials: false
       # rustup honors rust-toolchain.toml on the first cargo invocation.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       # cargo-lambda from PyPI brings the zig it links with (the `ziglang` package, which it runs as
       # `python3 -m ziglang`), so its venv goes first on PATH.
       - name: install cargo-lambda
@@ -128,7 +128,7 @@ jobs:
         with:
           persist-credentials: false
       # `generate:api` runs the Rust `biffix-openapi` bin, so this job needs cargo too.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
