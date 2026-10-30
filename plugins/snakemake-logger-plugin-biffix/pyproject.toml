@@ -40,7 +40,7 @@ dev = [
     "mypy==2.4.0",
     "pytest==9.1.1",
     "ruff==0.17.1",
-    "validate-pyproject[all]==0.26",
+    "validate-pyproject[all]==0.27",
     # Required by the producer-conformance guard (test_schema_conformance.py), which fails
     # rather than skips without it.
     "jsonschema>=4",
