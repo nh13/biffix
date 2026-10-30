@@ -15,7 +15,7 @@ dev = [
     # Dependabot bumps the three together (.github/dependabot.yml).
     "mypy==2.4.0",
     "pytest==9.1.1",
-    "ruff==0.17.1",
+    "ruff==0.17.2",
     "validate-pyproject[all]==0.26",
     # Types for the helpers' boto3 S3 calls (the image installs boto3 itself; see the Dockerfile).
     "boto3-stubs[s3]==1.43.114",
