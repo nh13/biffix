@@ -46,7 +46,9 @@
 #   1. join the architectures' images as <repo>:build-<key12> (one image is tagged as it is).
 # A tag already in the repository (a retried or repeated build) is reused only when what it names
 # is what the step would produce: for an import, the source's digest; for a derive, each base image
-# with the runtime layer on top; for an index, exactly the images it joins.
+# with the runtime layer on top; for an index, exactly the images it joins. A derived tag naming
+# anything else is moved to the image the derive makes (see "Tags"); an import or index tag is an
+# error.
 # Then, all:
 #   2. keep-tag: biffix-keep-<digest12> on the image, and -<n> on each image an index lists, so the
 #      repository's untagged-expiry lifecycle never removes what a version pins.
@@ -68,8 +70,14 @@
 # Tags. Both repositories keep the tags biffix writes immutable (the workflow repository its
 # biffix-keep-*, import-*, derived-* and restore-*; the builds repository every tag but scratch-*),
 # so each is written exactly once, by tag_once, which accepts a tag that already names the same
-# digest and fails on one that names another. An image made in steps (append, then mutate; an
-# index) is made under a mutable scratch-* tag and only its final digest gets the immutable tag.
+# digest and fails on one that names another. The exception is a derived-* tag naming an image the
+# derive's check refuses: someone with push wrote it first, or an earlier attempt tagged a stale
+# digest. Refusing it forever would leave the derive key unbuildable, so it is removed and written
+# again, naming the image this derive made and checked (retag_derived); a derived tag naming an
+# image that checks out is reused as before, so only checked images are ever used. An image made in
+# steps (append, then mutate; an index) is made under a mutable scratch-* tag, its digest taken from
+# the push's own output (pushed_digest, codebuild/lib/common.sh) rather than read back from that
+# tag, and only its final digest gets the immutable tag.
 #
 # Test hooks: BIFFIX_CRANE_INSECURE=1 (plain-http registry), BIFFIX_SKIP_ECR_LOGIN=1. Sourced
 # rather than run, the script only defines its functions (the tests drive them with a stub crane).
@@ -111,12 +119,17 @@ sys.exit(0 if got == want else 1)
 ' "$(crane config "$1")" "$(crane config "$2")" "$SHIM_EXEC"
 }
 
+# derived_image_matches <derived digest> <base digest> <layer digest>: whether the derived image is
+# the base image with the runtime layer <layer digest> on top and shim-exec ending its entrypoint.
+derived_image_matches() {
+  [ "$(layers "$REPO@$1")" = "$(layers "$REPO@$2") $3" ] && derived_config_matches "$REPO@$1" "$REPO@$2"
+}
+
 # derived_matches <digest> <single>: whether <digest> is exactly the derive the plan describes — one
 # image per planned architecture, each the base's image with the runtime layer on top and shim-exec
 # ending its entrypoint. A tag in the repository proves nothing by itself (whoever may push to the
 # repository could have put it there, under a derived or a scratch tag), so a derived image found
-# under the tag, or read back from the scratch tag after the mutate, is used only when it checks
-# out.
+# under a tag, or pushed by this derive, is used only when it checks out.
 derived_matches() {
   local digest=$1 single=$2 child arch layer dchild dplat d
   if [ "$single" = 1 ]; then
@@ -131,14 +144,28 @@ derived_matches() {
   while read -r child arch layer _; do
     dchild=$(awk -v a="$arch" '$2 == a { print $1 }' "$WORK/derived-archs.txt")
     [ -n "$dchild" ] || return 1
-    [ "$(layers "$REPO@$dchild")" = "$(layers "$REPO@$child") $layer" ] || return 1
-    derived_config_matches "$REPO@$dchild" "$REPO@$child" || return 1
+    derived_image_matches "$dchild" "$child" "$layer" || return 1
   done <"$WORK/derive-plan.txt"
+}
+
+# retag_derived <tag> <digest> <refused>: tag $REPO@<digest>, which the derive made and checked, as
+# the derived tag <tag>. <refused> is the image the tag names now, which the caller found does not
+# check out (empty when the tag is absent): the tag is removed first, since the derived tags are
+# immutable. Called only after the check, so a tag naming a checked image is never moved.
+retag_derived() {
+  local tag=$1 digest=$2 refused=$3
+  [[ "$tag" == derived-* ]] || die "not a derived tag: $tag"
+  if [ -n "$refused" ]; then
+    log "$REPO:$tag names $refused, which is not the base with the runtime layer on top; moving it to $digest"
+    untag "$REPO" "$tag"
+  fi
+  crane tag "$REPO@$digest" "$tag"
 }
 
 derive_image() {
   : "${BIFFIX_IMAGE_BASE:?}" "${BIFFIX_DERIVED_KEY:?}" "${BIFFIX_SNAKEMAKE_VERSION:?}"
-  local base=$BIFFIX_IMAGE_BASE target existing child plat arch layer_image layer entrypoint scratch digest
+  local base=$BIFFIX_IMAGE_BASE target existing child plat arch layer_image layer entrypoint scratch
+  local arch_tag arch_existing appended digest
   target="$REPO:derived-${BIFFIX_DERIVED_KEY:0:12}"
   log "subject=$BIFFIX_BUILD_SUBJECT base=$base target=$target snakemake=$BIFFIX_SNAKEMAKE_VERSION"
   ecr_login "$REPO" "${BIFFIX_RUNTIME_LAYER_AMD64:-}" "${BIFFIX_RUNTIME_LAYER_ARM64:-}"
@@ -166,15 +193,25 @@ derive_image() {
     echo "$child $arch $(last_layer "$layer_image") $layer_image" >>"$WORK/derive-plan.txt"
   done <"$WORK/base-platforms.txt"
   [ -s "$WORK/derive-plan.txt" ] || die "the image has no linux/amd64 or linux/arm64 platform"
-  if existing=$(crane digest "$target" 2>/dev/null); then
-    derived_matches "$existing" "$single" ||
-      die "$target names $existing, which is not the base with the runtime layer on top"
-    log "derived image already pushed ($existing); reusing it"
-    DIGEST=$existing
-    return 0
+  existing=$(crane digest "$target" 2>/dev/null) || existing=""
+  if [ -n "$existing" ]; then
+    if derived_matches "$existing" "$single"; then
+      log "derived image already pushed ($existing); reusing it"
+      DIGEST=$existing
+      return 0
+    fi
+    log "$target names $existing, which is not the base with the runtime layer on top; deriving it again"
   fi
   local manifests=()
   while read -r child arch layer layer_image; do
+    # An architecture's image already tagged (an earlier attempt) is reused when it checks out.
+    arch_tag="${target##*:}-$arch"
+    arch_existing=$(crane digest "$REPO:$arch_tag" 2>/dev/null) || arch_existing=""
+    if [ -n "$arch_existing" ] && derived_image_matches "$arch_existing" "$child" "$layer"; then
+      log "derived $arch already pushed ($arch_existing); reusing it"
+      manifests+=("$arch_existing")
+      continue
+    fi
     [ -f "$WORK/layer-$arch.tar.gz" ] || crane blob "${layer_image%@*}@$layer" >"$WORK/layer-$arch.tar.gz"
     # The image's own entrypoint, then shim-exec (a wrapper entrypoint execs its arguments; an image
     # whose entrypoint does not could not run the executor's command either). Setting an
@@ -197,13 +234,15 @@ print(record(cmd))
     entrypoint=${config[0]:?}
     local mutate=(--entrypoint "$entrypoint")
     [ -n "${config[1]:-}" ] && mutate+=(--cmd "${config[1]}")
-    # Appended and mutated under the scratch tag; the result is then tagged derived-…-<arch> once,
-    # and the scratch tag left on it (so the pre-mutate image is untagged, and expires).
+    # Appended and mutated under the scratch tag (the mutate reads the appended image by digest);
+    # the result is then tagged derived-…-<arch>, and the scratch tag left on it (so the pre-mutate
+    # image is untagged, and expires).
     scratch="$REPO:scratch-${target##*:}-$arch"
-    crane append -b "$REPO@$child" -f "$WORK/layer-$arch.tar.gz" -t "$scratch" >/dev/null
-    crane mutate "$scratch" "${mutate[@]}" -t "$scratch" >/dev/null
-    digest=$(crane digest "$scratch")
-    tag_once "$REPO" "$digest" "${target##*:}-$arch"
+    appended=$(crane append -b "$REPO@$child" -f "$WORK/layer-$arch.tar.gz" -t "$scratch" | pushed_digest)
+    digest=$(crane mutate "$REPO@$appended" "${mutate[@]}" -t "$scratch" | pushed_digest)
+    derived_image_matches "$digest" "$child" "$layer" ||
+      die "the derived $arch image $digest is not the base with the runtime layer on top"
+    retag_derived "$arch_tag" "$digest" "$arch_existing"
     log "derived $arch ${child:0:19} -> ${digest:0:19} (layer ${layer:0:19}, entrypoint $entrypoint)"
     manifests+=("$digest")
   done <"$WORK/derive-plan.txt"
@@ -213,11 +252,10 @@ print(record(cmd))
   else
     local args=() d
     for d in "${manifests[@]}"; do args+=(-m "$REPO@$d"); done
-    crane index append "${args[@]}" -t "$REPO:scratch-${target##*:}" >/dev/null
-    DIGEST=$(crane digest "$REPO:scratch-${target##*:}")
+    DIGEST=$(crane index append "${args[@]}" -t "$REPO:scratch-${target##*:}" | pushed_digest)
   fi
   derived_matches "$DIGEST" "$single" || die "the derived image $DIGEST is not the base with the runtime layer on top"
-  tag_once "$REPO" "$DIGEST" "${target##*:}"
+  retag_derived "${target##*:}" "$DIGEST" "$existing"
 }
 
 # ── 1. index: a built image's architectures, as one image ──
@@ -253,8 +291,7 @@ index_image() {
   if [ "${#manifests[@]}" = 1 ]; then
     DIGEST=${manifests[0]##*@}
   else
-    crane index append "${args[@]}" -t "$REPO:scratch-${target##*:}" >/dev/null
-    DIGEST=$(crane digest "$REPO:scratch-${target##*:}")
+    DIGEST=$(crane index append "${args[@]}" -t "$REPO:scratch-${target##*:}" | pushed_digest)
   fi
   index_matches "$DIGEST" "${manifests[@]}" || die "the index $DIGEST does not join exactly $BIFFIX_INDEX_MANIFESTS"
   tag_once "$REPO" "$DIGEST" "${target##*:}"

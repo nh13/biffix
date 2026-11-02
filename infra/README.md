@@ -211,7 +211,9 @@ once its images are imported (`GET /workflows/{id}` shows `state` and each image
   images and the retention step never touches `biffix-*` tags, so a pinned image is kept. The
   tags biffix writes in the workflow repository (`biffix-keep-*`, `import-*`, `derived-*`,
   `restore-*`) are immutable there, so a push by anyone else cannot move a keep-tag off a pinned
-  image; a tag someone else wrote first is reused only when it names what the step would produce.
+  image; a tag someone else wrote first is reused only when it names what the step would produce
+  (a `derived-*` tag that does not is removed and written again, naming the image the derive made
+  and checked).
   Every other tag stays mutable for workflow CI.
 - **Probe.** An import lists each fleet platform's files without running the image: a bash, the C
   library, and the Snakemake and plugin versions installed. A version fails (`not_ready` says why)

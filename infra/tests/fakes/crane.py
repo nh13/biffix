@@ -11,6 +11,11 @@ appended layer's digest from the file it is given (so a layer "downloaded" by bl
 itself). `crane export` writes a tar of the files the state's `layer_files` lists for each of the
 image's layers. `crane copy` tags the source's digest into the target, or, with
 $FAKE_CRANE_COPY_CHANGES_DIGEST=1, a changed copy of it (as a registry that rewrites a manifest).
+`crane append`, `mutate` and `index append` print `<repo>@<digest>` of what they pushed, as crane
+v0.22.1 does. `crane delete <repo>:<tag>` removes the tag (logged in `deletes`), immutable or not,
+as ECR's BatchDeleteImage does. With $FAKE_CRANE_STALE_READS=1, `crane digest` of a tag that has
+moved answers the digest it named before (logged in `previous`), as a registry whose tag reads lag
+its writes.
 
 State: $FAKE_REGISTRY (a JSON file, created on first use). The tests load this module to seed it
 (`load`, `put`, `save`), so it has no import-time side effects."""
@@ -90,8 +95,17 @@ def tag(state: State, repo: str, name: str, digest: str) -> None:
         immutable = name.startswith(IMMUTABLE)
     if immutable and key in state["tags"]:
         sys.exit(f"fake crane: tag {name} is immutable and exists (names {state['tags'][key]})")
+    if key in state["tags"] and state["tags"][key] != digest:
+        state.setdefault("previous", {})[key] = state["tags"][key]
     state["tags"][key] = digest
     state["writes"].append(key)
+
+
+def pushed(state: State, ref: str | None, digest: str) -> None:
+    """Tag `digest` as the `repo:tag` a push wrote, and print `<repo>@<digest>` as crane does."""
+    repo, name = target(ref)
+    tag(state, repo, name, digest)
+    print(f"{repo}@{digest}")
 
 
 def image(state: State, ref: str) -> tuple[str, Obj]:
@@ -126,6 +140,8 @@ def main(argv: list[str]) -> None:
     cmd, args = argv[0], argv[1:]
     if cmd == "digest":
         digest = resolve(state, args[0])
+        if os.environ.get("FAKE_CRANE_STALE_READS") == "1" and "@" not in args[0]:
+            digest = state.get("previous", {}).get(args[0], digest)
         if digest is None:
             sys.exit(1)
         if platform:
@@ -163,13 +179,19 @@ def main(argv: list[str]) -> None:
     elif cmd == "tag":
         digest, _ = image(state, args[0])
         tag(state, split(args[0])[0], args[1], digest)
+    elif cmd == "delete":
+        repo, name = target(args[0])
+        if state["tags"].pop(f"{repo}:{name}", None) is None:
+            sys.exit(f"fake crane: MANIFEST_UNKNOWN {args[0]}")
+        state.get("previous", {}).pop(f"{repo}:{name}", None)
+        state.setdefault("deletes", []).append(f"{repo}:{name}")
     elif cmd == "append":
         opts = dict(zip(args[::2], args[1::2], strict=True))
         _, base = image(state, opts["-b"])
         with open(opts["-f"]) as fh:
             layer = fh.read().strip()
         new = {**base, "layers": base["layers"] + [layer]}
-        tag(state, *target(opts["-t"]), put(state, new))
+        pushed(state, opts["-t"], put(state, new))
     elif cmd == "mutate":
         ref, rest = args[0], args[1:]
         opts = dict(zip(rest[::2], rest[1::2], strict=True))
@@ -180,7 +202,7 @@ def main(argv: list[str]) -> None:
             config["Cmd"] = []
         if "--cmd" in opts:
             config["Cmd"] = csv_record(opts["--cmd"])
-        tag(state, *target(opts["-t"]), put(state, {**obj, "config": config}))
+        pushed(state, opts["-t"], put(state, {**obj, "config": config}))
     elif cmd == "index" and args[0] == "append":
         rest = args[1:]
         manifests: list[Obj] = []
@@ -192,7 +214,7 @@ def main(argv: list[str]) -> None:
                 manifests.append({"digest": digest, "platform": platform_of})
             elif flag == "-t":
                 dest = value
-        tag(state, *target(dest), put(state, {"kind": "index", "manifests": manifests}))
+        pushed(state, dest, put(state, {"kind": "index", "manifests": manifests}))
     else:
         sys.exit(f"fake crane: unsupported {argv}")
     save(state)

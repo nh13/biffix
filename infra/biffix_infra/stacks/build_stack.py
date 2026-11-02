@@ -161,6 +161,16 @@ class BuildStack(Stack):
         workflow_repo.grant_pull_push(self.import_project)
         # An index joins a build's architectures, and a built image's derive is pushed beside it.
         builds_repo.grant_pull_push(self.import_project)
+        # A derived tag (immutable) naming an image the derive's check refuses is removed and
+        # written again (codebuild/image/import.sh retag_derived). ECR has no condition key for a
+        # tag, so the grant is the two repositories' whole BatchDeleteImage; the script removes
+        # derived-* tags only, by tag, never an image by digest.
+        self.import_project.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["ecr:BatchDeleteImage"],
+                resources=[workflow_repo.repository_arn, builds_repo.repository_arn],
+            )
+        )
         # A derive appends a runtime's stored layer (a layer image in the coordinator repository).
         coordinator_repo.grant_pull(self.import_project)
         # A declared image may be in any private ECR repository the tenant can read, including

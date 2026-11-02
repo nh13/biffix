@@ -97,6 +97,14 @@ def test_the_image_import_project_runs_the_repo_import_script(default_stacks: St
         assert any(
             _grants(st, "ecr:PutImage") and repo in json.dumps(st["Resource"]) for st in statements
         ), repo
+    # A derive removes a derived tag that names an image its check refuses (the tags are immutable,
+    # so it cannot be moved in place): in those two repositories only.
+    deleting = [st for st in statements if _grants(st, "ecr:BatchDeleteImage")]
+    assert deleting, "the import project cannot remove a refused derived tag"
+    for statement in deleting:
+        resources = _resources(statement)
+        assert len(resources) == 2, resources
+        assert {r for r in resources if "WorkflowRepo" in r or "BuildsRepo" in r} == set(resources)
 
 
 _ECR_PUSH = ("ecr:PutImage", "ecr:InitiateLayerUpload", "ecr:CompleteLayerUpload")
