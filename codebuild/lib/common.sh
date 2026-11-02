@@ -79,6 +79,37 @@ tag_once() {
   fi
 }
 
+# pushed_digest: the digest of the image a pushing crane command (append, mutate, index append)
+# just wrote, from the `<repo>@sha256:…` line it prints on stdout (read on stdin). Never read it
+# back from the tag the command wrote: a registry can serve a tag's previous digest for a moment
+# after it moves (ECR did, a second after a mutate), and that stale digest would then be tagged as
+# the result.
+pushed_digest() {
+  local out digest
+  out=$(cat)
+  digest=${out##*@}
+  [[ "$out" == *@* && "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    die "crane printed no pushed <repo>@sha256:… digest: ${out:-nothing}"
+  echo "$digest"
+}
+
+# untag <repo> <tag>: remove <tag> from the repository (the image stays while another tag names
+# it; ECR deletes an image with its last tag). ECR's tag immutability refuses moving a tag, not
+# removing it, so this is how an immutable tag is re-pointed. A registry other than ECR (the tests')
+# is asked to delete the tag itself.
+untag() {
+  local host=${1%%/*} failures
+  if [[ "$host" == *.dkr.ecr.*.amazonaws.com ]]; then
+    # batch-delete-image exits 0 when it removes nothing: its `failures` say why.
+    failures=$(aws ecr batch-delete-image --registry-id "${host%%.*}" \
+      --region "$(cut -d. -f4 <<<"$host")" --repository-name "${1#*/}" \
+      --image-ids "imageTag=$2" --query failures --output json)
+    [ "$failures" = "[]" ] || die "could not remove $1:$2: $failures"
+  else
+    crane delete "$1:$2"
+  fi
+}
+
 # platforms <image@digest>: one line per platform image, "<digest> <os>/<arch>[/<variant>]"; a
 # single image lists itself with an empty platform. Attestations (os `unknown`) are skipped.
 platforms() {

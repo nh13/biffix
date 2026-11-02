@@ -59,7 +59,9 @@ BASE12=${BASE12:0:12}
 REPO=$BIFFIX_COORDINATOR_REPO
 VARIANT_TAG="coordinator-${KEY12}-${BASE12}"
 ARCHS=(amd64 arm64)
-declare -A LAYER_IMAGE
+# LAYER_IMAGE: each architecture's layer image digest; PUSHED_LAYER: those this build pushed, as
+# the push printed them (a tag just written is not read back: it can still name its old digest).
+declare -A LAYER_IMAGE PUSHED_LAYER
 log "subject=$BIFFIX_BUILD_SUBJECT runtime=$BIFFIX_RT_ENGINE $BIFFIX_RT_ENGINE_VERSION variant=$REPO:$VARIANT_TAG"
 
 # ── tools ──
@@ -405,12 +407,12 @@ else
     # A reproducible tar: the same files give the same layer.
     tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 \
       -C "$WORK/layer-$arch" -cf "$WORK/layer-$arch.tar" opt
-    crane append -f "$WORK/layer-$arch.tar" -t "$tag" >/dev/null
+    PUSHED_LAYER[$arch]=$(crane append -f "$WORK/layer-$arch.tar" -t "$tag" | pushed_digest)
     log "pushed $tag"
   done
 fi
 for arch in "${ARCHS[@]}"; do
-  image=$(crane digest "$REPO:$(layer_tag "$arch")")
+  image=${PUSHED_LAYER[$arch]:-$(crane digest "$REPO:$(layer_tag "$arch")")}
   keep_tag "$REPO" "$image" /dev/null >/dev/null
   bytes=$(archive "$REPO@$image" "$BIFFIX_ARCHIVE_URI" "$WORK")
   log "layer image $arch $image (archived $bytes new bytes)"
@@ -465,16 +467,14 @@ for arch in "${ARCHS[@]}"; do
   if ! digest=$(crane digest "$tag" 2>/dev/null); then
     # The stored (compressed) layer blob, appended as-is: the variant's layer is the layer image's.
     crane blob "$REPO@$layer" >"$WORK/layer-$arch.tar.gz"
-    crane append -b "${BIFFIX_BASE_IMAGE%@*}@$base_arch" -f "$WORK/layer-$arch.tar.gz" -t "$tag" >/dev/null
-    digest=$(crane digest "$tag")
+    digest=$(crane append -b "${BIFFIX_BASE_IMAGE%@*}@$base_arch" -f "$WORK/layer-$arch.tar.gz" -t "$tag" | pushed_digest)
   fi
   variant_image_matches "$REPO@$digest" "$arch" ||
     die "variant $tag ($digest) is not the base's $arch image with layer $layer on top"
   emit "RUNTIME_LAYER_${arch^^}" "$layer"
   MANIFESTS+=(-m "$REPO@$digest")
 done
-crane index append "${MANIFESTS[@]}" -t "$REPO:$VARIANT_TAG" >/dev/null
-VARIANT_DIGEST=$(crane digest "$REPO:$VARIANT_TAG")
+VARIANT_DIGEST=$(crane index append "${MANIFESTS[@]}" -t "$REPO:$VARIANT_TAG" | pushed_digest)
 emit VARIANT_IMAGE "$REPO@$VARIANT_DIGEST"
 emit VARIANT_DIGEST "$VARIANT_DIGEST"
 emit ARCHS "$(

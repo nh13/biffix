@@ -463,7 +463,45 @@ def _index(*children: tuple[str, str]) -> Obj:
     }
 
 
-def test_derive_refuses_a_derived_tag_that_is_not_the_base_plus_the_runtime(
+def _assert_moved(
+    reg: Registry, got: subprocess.CompletedProcess[str], tag: str, refused: str
+) -> str:
+    """That the derive succeeded without using `refused`, which `tag` named, and moved `tag` to the
+    image it made (removing it first: it is immutable). Returns the derived digest."""
+    assert got.returncode == 0, got.stderr
+    assert "reusing it" not in got.stderr
+    assert f"names {refused}, which is not the base with the runtime layer on top" in got.stderr
+    state = reg.state
+    assert f"{REPO}:{tag}" in state.get("deletes", [])
+    assert state["tags"][f"{REPO}:{tag}"] not in (refused, None)
+    digest: str = state["tags"][f"{REPO}:derived-0123456789ab"]
+    assert digest != refused
+    if "DIGEST=" in got.stdout:
+        assert _digest_of(got) == digest
+    return digest
+
+
+def _assert_derived(reg: Registry, digest: str, archs: tuple[str, ...]) -> None:
+    """That `digest` and each of its architecture tags are the base with the runtime on top."""
+    for arch in archs:
+        tag = f"{REPO}:derived-0123456789ab-{arch}"
+        child = json.loads(reg.crane("manifest", tag))
+        assert [layer_["digest"] for layer_ in child["layers"]] == [
+            f"sha256:base-{arch[:3]}",
+            f"sha256:rt-{arch[:3]}",
+        ]
+        config = json.loads(reg.crane("config", tag))
+        assert config["config"]["Entrypoint"] == ["/entry", "/opt/biffix/shim-exec"]
+    if len(archs) == 1:
+        assert reg.state["tags"][f"{REPO}:derived-0123456789ab-{archs[0]}"] == digest
+    else:
+        index = json.loads(reg.crane("manifest", f"{REPO}@{digest}"))
+        assert sorted(m["digest"] for m in index["manifests"]) == sorted(
+            reg.state["tags"][f"{REPO}:derived-0123456789ab-{arch}"] for arch in archs
+        )
+
+
+def test_derive_moves_a_derived_tag_that_is_not_the_base_plus_the_runtime(
     tmp_path: Path, registry: Seeded
 ) -> None:
     reg, ids = registry
@@ -475,15 +513,15 @@ def test_derive_refuses_a_derived_tag_that_is_not_the_base_plus_the_runtime(
     ]
     bogus = reg.put(_index(*evil), tag="derived-0123456789ab")
     got = _derive(tmp_path, reg, ids)
-    assert got.returncode != 0
-    assert f"names {bogus}, which is not the base with the runtime layer on top" in got.stderr
+    digest = _assert_moved(reg, got, "derived-0123456789ab", bogus)
+    _assert_derived(reg, digest, ("amd64", "arm64"))
 
 
 @pytest.mark.parametrize(
     "entrypoint",
     [["/evil", "/opt/biffix/shim-exec"], ["/entry"], ["/entry", "/opt/biffix/shim-exec", "x"]],
 )
-def test_derive_refuses_a_derived_tag_whose_entrypoint_is_not_the_rewrite(
+def test_derive_moves_a_derived_tag_whose_entrypoint_is_not_the_rewrite(
     tmp_path: Path, registry: Seeded, entrypoint: list[str]
 ) -> None:
     # The right layers, but not the base's entrypoint ending with shim-exec: only the config
@@ -498,8 +536,128 @@ def test_derive_refuses_a_derived_tag_whose_entrypoint_is_not_the_rewrite(
     ]
     bogus = reg.put(_index(*planted), tag="derived-0123456789ab")
     got = _derive(tmp_path, reg, ids)
-    assert got.returncode != 0
-    assert f"names {bogus}, which is not the base with the runtime layer on top" in got.stderr
+    digest = _assert_moved(reg, got, "derived-0123456789ab", bogus)
+    _assert_derived(reg, digest, ("amd64", "arm64"))
+
+
+def _single_arm64(ids: RegistryIds) -> dict[str, str]:
+    """A derive of a single-platform arm64 image."""
+    return {"BIFFIX_IMAGE_BASE": f"{REPO}@{ids['arm']}"}
+
+
+@pytest.mark.parametrize("single", [False, True], ids=["index", "single-arm64"])
+def test_derive_takes_each_digest_from_the_push_not_a_stale_tag_read(
+    tmp_path: Path, registry: Seeded, single: bool
+) -> None:
+    # The registry answers a moved tag's digest with the one it named before: after the mutate,
+    # the scratch tag still reads as the appended (pre-mutate) image, as ECR answered once. A
+    # derive that read its result back from the scratch tag would tag that image derived-…-<arch>
+    # and then fail its own check.
+    reg, ids = registry
+    # An earlier attempt left the index's scratch tag on another image.
+    reg.put(_img("amd64", ["sha256:old"]), tag="scratch-derived-0123456789ab")
+    extra = {"FAKE_CRANE_STALE_READS": "1", **(_single_arm64(ids) if single else {})}
+    got = _derive(tmp_path, reg, ids, **extra)
+    digest = _digest_of(got)
+    previous = reg.state.get("previous", {})
+    # The stale reads were there to be had: each scratch tag moved after it was first written.
+    archs = ("arm64",) if single else ("amd64", "arm64")
+    assert {f"{REPO}:scratch-derived-0123456789ab-{a}" for a in archs} <= previous.keys()
+    if not single:
+        assert f"{REPO}:scratch-derived-0123456789ab" in previous
+    _assert_derived(reg, digest, archs)
+    assert not reg.state.get("deletes")
+
+
+def test_derive_moves_an_architecture_tag_left_on_the_pre_mutate_image(
+    tmp_path: Path, registry: Seeded
+) -> None:
+    # An attempt that tagged a stale read: derived-…-arm64 names the appended image, whose
+    # entrypoint was never rewritten (the derived tag itself was never written). Later attempts
+    # must not die on that tag forever: it is moved to the image they make and check.
+    reg, ids = registry
+    pre_mutate = reg.put(
+        _img("arm64", ["sha256:base-arm", "sha256:rt-arm"]), tag="derived-0123456789ab-arm64"
+    )
+    got = _derive(tmp_path, reg, ids, **_single_arm64(ids))
+    digest = _digest_of(got)
+    assert digest != pre_mutate
+    assert f"names {pre_mutate}, which is not the base with the runtime layer on top" in got.stderr
+    assert reg.state["deletes"] == [f"{REPO}:derived-0123456789ab-arm64"]
+    _assert_derived(reg, digest, ("arm64",))
+    # A retry reuses it, moving nothing.
+    again = _derive(tmp_path, reg, ids, **_single_arm64(ids))
+    assert _digest_of(again) == digest and "reusing it" in again.stderr
+    assert reg.state["deletes"] == [f"{REPO}:derived-0123456789ab-arm64"]
+
+
+def test_derive_reuses_an_architecture_tag_that_checks_out(
+    tmp_path: Path, registry: Seeded
+) -> None:
+    # An attempt that tagged both architectures but not the index: they are reused, not rebuilt
+    # or moved (the fake refuses a second write of an immutable tag).
+    reg, ids = registry
+    digest = _digest_of(_derive(tmp_path, reg, ids))
+    state = reg.state
+    del state["tags"][f"{REPO}:derived-0123456789ab"]
+    fake_crane.save(state, str(reg.path))
+    again = _derive(tmp_path, reg, ids)
+    assert _digest_of(again) == digest
+    assert "derived amd64 already pushed" in again.stderr
+    assert "derived arm64 already pushed" in again.stderr
+    assert not reg.state.get("deletes")
+
+
+def test_index_takes_its_digest_from_the_push_not_a_stale_tag_read(
+    tmp_path: Path, registry: Seeded
+) -> None:
+    reg, ids = registry
+    reg.put(_img("amd64", ["sha256:old"]), tag="scratch-build-fedcba987654", repo=BUILDS)
+    step = dict(
+        BIFFIX_INDEX_MANIFESTS=f"{BUILDS}@{ids['amd']},{BUILDS}@{ids['arm']}",
+        BIFFIX_CONTENT_KEY="fedcba9876543210",
+        FAKE_CRANE_STALE_READS="1",
+    )
+    digest = _digest_of(_import_step(tmp_path, reg, "index_image", repo=BUILDS, **step))
+    assert f"{BUILDS}:scratch-build-fedcba987654" in reg.state["previous"]
+    index = json.loads(reg.crane("manifest", f"{BUILDS}@{digest}"))
+    assert sorted(m["digest"] for m in index["manifests"]) == sorted([ids["amd"], ids["arm"]])
+
+
+def test_pushed_digest_needs_a_digest_in_crane_s_output() -> None:
+    digest = "sha256:" + "ab" * 32
+    ok = _common("pushed_digest", input=f"reg.example/wf@{digest}\n")
+    assert ok.returncode == 0 and ok.stdout.strip() == digest, ok.stderr
+    for out in ("", "reg.example/wf:scratch-x", f"reg.example/wf@{digest[:-1]}", "sha256:zz"):
+        bad = _common("pushed_digest", input=out)
+        assert bad.returncode != 0 and "crane printed no pushed" in bad.stderr, out
+
+
+@pytest.mark.parametrize(("failures", "ok"), [("[]", True), ('[{"failureCode": "x"}]', False)])
+def test_untag_removes_an_ecr_tag_by_name(tmp_path: Path, failures: str, ok: bool) -> None:
+    calls = tmp_path / "aws.args"
+    body = (
+        f'aws() {{ printf "%s\\n" "$@" >"{calls}"; echo \'{failures}\'; }}\n'
+        "untag 123456789012.dkr.ecr.us-east-1.amazonaws.com/biffix/wf derived-0123456789ab-arm64"
+    )
+    got = _common(body)
+    assert (got.returncode == 0) == ok, got.stderr
+    assert calls.read_text().splitlines() == [
+        "ecr",
+        "batch-delete-image",
+        "--registry-id",
+        "123456789012",
+        "--region",
+        "us-east-1",
+        "--repository-name",
+        "biffix/wf",
+        "--image-ids",
+        "imageTag=derived-0123456789ab-arm64",
+        "--query",
+        "failures",
+        "--output",
+        "json",
+    ]
 
 
 def test_index_joins_once_and_refuses_a_tag_naming_other_images(
@@ -784,7 +942,7 @@ def test_derive_main_refuses_an_image_without_the_python_shim(
     assert "ARCHIVED" not in dict(outputs)
 
 
-def test_derive_main_refuses_an_entrypoint_that_does_not_end_with_shim_exec(
+def test_derive_main_moves_a_tag_whose_entrypoint_does_not_end_with_shim_exec(
     tmp_path: Path, registry: Seeded
 ) -> None:
     reg, ids = registry
@@ -795,12 +953,10 @@ def test_derive_main_refuses_an_entrypoint_that_does_not_end_with_shim_exec(
     ]
     bogus = reg.put(_index(*children), tag="derived-0123456789ab")
     got, outputs = _main(tmp_path, reg, BIFFIX_IMAGE_STEP="derive", **_derive_env(ids))
-    # Refused before it is reused (derived_matches compares the config too); the probe's own
-    # entrypoint check is the second line of defence.
-    assert got.returncode != 0
-    assert "reusing it" not in got.stderr
-    assert f"names {bogus}, which is not the base with the runtime layer on top" in got.stderr
-    assert "ARCHIVED" not in dict(outputs)
+    # Refused before it is reused (derived_matches compares the config too), and moved to the
+    # image the derive makes, which is what main keep-tags, probes and reports.
+    digest = _assert_moved(reg, got, "derived-0123456789ab", bogus)
+    assert dict(outputs)["IMAGE_DIGEST"] == digest
 
 
 # ── runtime/build.sh check_elf_arch ──
