@@ -15,10 +15,10 @@ dev = [
     # Pinned exactly, to the same versions in infra/, docker/coordinator/ and
     # plugins/snakemake-logger-plugin-biffix/, so every project lints alike locally and in CI.
     # Dependabot bumps the three together (.github/dependabot.yml).
-    "mypy==2.4.0",
-    "pytest==9.1.1",
-    "ruff==0.17.1",
-    "validate-pyproject[all]==0.26",
+    "mypy==2.4.1",
+    "pytest==9.2.0",
+    "ruff==0.17.3",
+    "validate-pyproject[all]==0.27",
     # Types for pyyaml (a runtime dependency).
     "types-pyyaml>=6",
 ]
