@@ -22,8 +22,8 @@
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
     "@playwright/test": "1.64.1",
-    "@sveltejs/adapter-static": "^4.0.0",
-    "@sveltejs/kit": "^3.1.0",
+    "@sveltejs/adapter-static": "^4.0.1",
+    "@sveltejs/kit": "^3.1.1",
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@types/node": "24.13.6",
     "fast-check": "3.23.2",
@@ -32,17 +32,17 @@
     "openapi-typescript": "7.13.0",
     "prettier": "^3.9.10",
     "prettier-plugin-svelte": "^4.1.1",
-    "svelte": "^5.57.2",
+    "svelte": "^5.57.3",
     "svelte-check": "^4.7.7",
     "typescript": "^6.0.3",
-    "vite": "^8.3.4",
+    "vite": "^8.3.5",
     "vitest": "5.0.5"
   },
   "dependencies": {
     "dompurify": "3.4.17",
     "igv": "3.8.10",
-    "marked": "18.1.1",
-    "swagger-ui-dist": "^5.33.3",
+    "marked": "18.1.2",
+    "swagger-ui-dist": "^5.34.1",
     "yaml": "2.9.1"
   },
   "overrides": {
