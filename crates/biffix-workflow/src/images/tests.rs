@@ -282,6 +282,7 @@ fn a_dockerfile_builds_in_its_directory_unless_a_context_is_given() {
             context: "docker/align".into(),
             dockerfile: Some("Dockerfile".into()),
             archs: None,
+            options: BuildOptions::default(),
         })
     );
     assert_eq!(
@@ -295,6 +296,7 @@ fn a_dockerfile_builds_in_its_directory_unless_a_context_is_given() {
             context: "".into(),
             dockerfile: Some("docker/Dockerfile".into()),
             archs: Some(vec![Arch::Amd64]),
+            options: BuildOptions::default(),
         })
     );
     assert_eq!(build_of(decl(None, Some("Dockerfile"))).unwrap().context, "");
@@ -309,6 +311,7 @@ fn a_pixi_environment_builds_from_its_directory() {
             context: "envs/worker".into(),
             dockerfile: None,
             archs: None,
+            options: BuildOptions::default(),
         })
     );
 }
@@ -581,5 +584,175 @@ fn ecr_coords_of_a_repository_uri() {
     // A repository URI names no tag.
     assert!(
         ecr_coords_from_repo_uri("123456789012.dkr.ecr.us-east-1.amazonaws.com/wf:v1").is_none()
+    );
+}
+
+#[test]
+fn a_dockerfile_entry_names_a_target_stage_and_build_args() {
+    let yaml = "images:\n  worker:\n    dockerfile: docker/Dockerfile\n  builder:\n    \
+                dockerfile: docker/Dockerfile\n    target: builder\n    build_args:\n      \
+                TOOL_VERSION: \"1.2\"\n      _flag: \"a b=c\"\n";
+    let manifest: crate::manifest::BiffixManifest = serde_norway::from_str(yaml).unwrap();
+    let images = manifest.declared_images().unwrap();
+    let spec = |i: usize| match &images[i].source {
+        ImageSource::Build(spec) => spec.clone(),
+        ImageSource::Ref(r) => panic!("not a build: {r}"),
+    };
+    assert_eq!(images[0].name, "builder");
+    assert_eq!(
+        spec(0).options,
+        BuildOptions {
+            target: Some("builder".into()),
+            build_args: BTreeMap::from([
+                ("TOOL_VERSION".into(), "1.2".into()),
+                ("_flag".into(), "a b=c".into()),
+            ]),
+        }
+    );
+    // Without them, the build is as before; an empty `build_args` is no build args.
+    assert_eq!(spec(1).options, BuildOptions::default());
+    assert!(spec(1).options.is_empty());
+    let empty =
+        build_of(ImageDecl { build_args: Some(BTreeMap::new()), ..decl(None, Some("Dockerfile")) })
+            .unwrap();
+    assert!(empty.options.is_empty());
+}
+
+#[test]
+fn a_target_and_build_args_are_validated() {
+    let err = |entry: ImageDecl| build_of(entry).unwrap_err();
+    let args = |k: &str, v: &str| Some(BTreeMap::from([(k.to_string(), v.to_string())]));
+    let dockerfile = || decl(None, Some("Dockerfile"));
+    for target in ["", " builder", "1st", "a b", "a/b", "-x"] {
+        assert_eq!(
+            err(ImageDecl { target: Some(target.into()), ..dockerfile() }),
+            ImageDeclError::BadTarget { name: "img".into(), target: target.into() },
+            "{target:?}"
+        );
+    }
+    for ok in ["builder", "Build_2", "stage.one", "a-b"] {
+        assert!(build_of(ImageDecl { target: Some(ok.into()), ..dockerfile() }).is_ok(), "{ok}");
+    }
+    for key in ["", "1X", "A-B", "A B", "A=B", "é"] {
+        assert_eq!(
+            err(ImageDecl { build_args: args(key, "v"), ..dockerfile() }),
+            ImageDeclError::BadBuildArgName { name: "img".into(), key: key.into() },
+            "{key:?}"
+        );
+    }
+    for value in ["a\nb", "a\rb", "a\0b", "\n"] {
+        assert_eq!(
+            err(ImageDecl { build_args: args("K", value), ..dockerfile() }),
+            ImageDeclError::BadBuildArgValue { name: "img".into(), key: "K".into() },
+            "{value:?}"
+        );
+    }
+    // An empty value is a value (`--build-arg K=`).
+    assert!(build_of(ImageDecl { build_args: args("K", ""), ..dockerfile() }).is_ok());
+    // Both go with `dockerfile` only.
+    let pixi = || ImageDecl { pixi: Some("env".into()), ..ImageDecl::default() };
+    assert_eq!(
+        err(ImageDecl { target: Some("b".into()), ..pixi() }),
+        ImageDeclError::TargetWithoutDockerfile("img".into())
+    );
+    assert_eq!(
+        err(ImageDecl { build_args: args("K", "v"), ..pixi() }),
+        ImageDeclError::BuildArgsWithoutDockerfile("img".into())
+    );
+    let reference = |entry: ImageDecl| {
+        declared_images(&BTreeMap::from([("x".to_string(), entry)]), None).unwrap_err()
+    };
+    assert_eq!(
+        reference(ImageDecl { target: Some("b".into()), ..decl(Some("a:1"), None) }),
+        ImageDeclError::TargetWithoutDockerfile("x".into())
+    );
+    assert_eq!(
+        reference(ImageDecl { build_args: args("K", "v"), ..decl(Some("a:1"), None) }),
+        ImageDeclError::BuildArgsWithoutDockerfile("x".into())
+    );
+    assert_eq!(
+        ImageDeclError::BadBuildArgValue { name: "img".into(), key: "K".into() }.to_string(),
+        "image `img`: build arg `K` has a newline or NUL in its value"
+    );
+}
+
+#[test]
+fn a_build_key_changes_with_the_target_and_each_build_arg() {
+    let key = |options: &BuildOptions| {
+        build_content_key_with(BuildKind::Dockerfile, "t", Some("Dockerfile"), &Arch::ALL, options)
+    };
+    let base = build_content_key(BuildKind::Dockerfile, "t", Some("Dockerfile"), &Arch::ALL);
+    // No options: the key every image built before them already has (nothing rebuilds).
+    assert_eq!(key(&BuildOptions::default()), base);
+    let target = |t: &str| BuildOptions { target: Some(t.into()), ..BuildOptions::default() };
+    let args = |pairs: &[(&str, &str)]| BuildOptions {
+        target: None,
+        build_args: pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+    };
+    let keys = [
+        base.clone(),
+        key(&target("builder")),
+        key(&target("worker")),
+        key(&args(&[("V", "1")])),
+        key(&args(&[("V", "2")])),
+        key(&args(&[("W", "1")])),
+        key(&args(&[("V", "1"), ("W", "1")])),
+        // An empty value is still an argument, unlike no argument.
+        key(&args(&[("V", "")])),
+        // A value that spells another split of the same text is another build.
+        key(&args(&[("V", "1,W=1")])),
+        key(&BuildOptions { target: Some("builder".into()), ..args(&[("V", "1")]) }),
+    ];
+    let distinct: std::collections::BTreeSet<&String> = keys.iter().collect();
+    assert_eq!(distinct.len(), keys.len(), "{keys:#?}");
+    // The same options build once, however they were written.
+    assert_eq!(key(&args(&[("V", "1"), ("W", "1")])), key(&args(&[("W", "1"), ("V", "1")])));
+}
+
+#[test]
+fn a_target_is_lowercased_as_buildkit_reads_stage_names() {
+    let target = |t: &str| {
+        build_of(ImageDecl { target: Some(t.into()), ..decl(None, Some("Dockerfile")) })
+            .unwrap()
+            .options
+            .target
+    };
+    assert_eq!(target("Builder").as_deref(), Some("builder"));
+    // So `Builder` and `builder` are one build, under one key.
+    assert_eq!(target("BUILDER"), target("builder"));
+}
+
+#[test]
+fn build_args_reserved_by_buildkit_or_too_many_or_too_large_are_refused() {
+    let err = |args: BTreeMap<String, String>| {
+        build_of(ImageDecl { build_args: Some(args), ..decl(None, Some("Dockerfile")) })
+            .unwrap_err()
+    };
+    for key in ["BUILDKIT_INLINE_CACHE", "buildkit_sbom_scan_context", "BuildKit_X"] {
+        assert_eq!(
+            err(BTreeMap::from([(key.to_string(), "1".to_string())])),
+            ImageDeclError::ReservedBuildArg { name: "img".into(), key: key.into() },
+            "{key}"
+        );
+    }
+    let many: BTreeMap<String, String> =
+        (0..=MAX_BUILD_ARGS).map(|i| (format!("A{i}"), "v".to_string())).collect();
+    assert_eq!(
+        err(many.clone()),
+        ImageDeclError::TooManyBuildArgs { name: "img".into(), max: MAX_BUILD_ARGS }
+    );
+    let at_most: BTreeMap<String, String> = many.into_iter().take(MAX_BUILD_ARGS).collect();
+    assert!(
+        build_of(ImageDecl { build_args: Some(at_most), ..decl(None, Some("Dockerfile")) }).is_ok()
+    );
+    let big = BTreeMap::from([("A".to_string(), "x".repeat(MAX_BUILD_ARGS_BYTES))]);
+    assert_eq!(
+        err(big),
+        ImageDeclError::BuildArgsTooLarge { name: "img".into(), max: MAX_BUILD_ARGS_BYTES }
+    );
+    // Each arg counts as the `KEY=VALUE` line it travels as.
+    let fits = BTreeMap::from([("A".to_string(), "x".repeat(MAX_BUILD_ARGS_BYTES - 3))]);
+    assert!(
+        build_of(ImageDecl { build_args: Some(fits), ..decl(None, Some("Dockerfile")) }).is_ok()
     );
 }

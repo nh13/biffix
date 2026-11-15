@@ -741,6 +741,7 @@ async fn e2e_refresh_submit_and_follow() {
             allow_dirty,
             engine_version: Some("9.27.0".into()),
             entrypoint: None,
+            manifest: None,
             source_mode: biffix_cli::cli::SourceMode::Git,
             // Its runtime is ready at once here (the registry double builds every variant), so
             // this exercises the wait's poll of GET /workflows/{id}.
@@ -814,6 +815,40 @@ async fn e2e_refresh_submit_and_follow() {
         let id = versions[0]["id"].as_str().unwrap();
         let detail: Value = api_get(&base, &format!("/workflows/{id}")).await;
         assert_eq!(detail["entrypoint"], "workflow/Snakefile", "{detail}");
+
+        // `--manifest` reads another committed manifest instead of `biffix.yaml`, and the version
+        // records which; one that is not committed is refused before anything is registered.
+        std::fs::create_dir(layout.path().join("alt")).unwrap();
+        std::fs::write(layout.path().join("alt/biffix.yaml"), "form: {title: Alternate}\n")
+            .unwrap();
+        let alt_opts = |manifest: &str| workflows::RegisterOpts {
+            name: Some("wf-alt".into()),
+            manifest: Some(manifest.into()),
+            ..layout_opts(None)
+        };
+        let out = workflows::register(&mut session, alt_opts("./alt/biffix.yaml")).await;
+        assert!(
+            matches!(out, Err(CliError::InvalidInput(ref m))
+                if m.contains("--manifest alt/biffix.yaml is not part of the source")),
+            "a register naming an uncommitted manifest: {out:?}"
+        );
+        crate::common::git_ok(layout.path(), &["add", "alt/biffix.yaml"]);
+        crate::common::git_ok(layout.path(), &["commit", "-q", "-m", "alternate manifest"]);
+        let out = workflows::register(&mut session, alt_opts("./alt/biffix.yaml")).await;
+        assert!(out.is_ok(), "register with --manifest: {out:?}");
+        let alt: Vec<Value> = api_get::<Vec<Value>>(&base, "/workflows")
+            .await
+            .into_iter()
+            .filter(|v| v["name"] == "wf-alt")
+            .collect();
+        assert_eq!(alt.len(), 1, "{alt:?}");
+        let detail: Value =
+            api_get(&base, &format!("/workflows/{}", alt[0]["id"].as_str().unwrap())).await;
+        assert_eq!(
+            detail["registration_inputs"]["overrides"]["manifest"], "alt/biffix.yaml",
+            "{detail}"
+        );
+        assert_eq!(detail["form_schema"]["title"], "Alternate", "{detail}");
     }
 
     // workflows reregister: the newest `wf` on another engine release registers again as its next

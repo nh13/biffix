@@ -57,6 +57,10 @@ pub(crate) enum WorkflowsCommand {
         /// Snakemake picks it.
         #[arg(long)]
         entrypoint: Option<String>,
+        /// A manifest to read instead of `biffix.yaml`: a git-tracked file, relative to the
+        /// checkout's root (paths in it stay relative to the root). Recorded on the version.
+        #[arg(long)]
+        manifest: Option<String>,
         /// How the coordinator fetches the source at run time. `git` (default) records the origin
         /// for an anonymous clone — public repos only. `s3` stages an immutable source tarball to
         /// the project bucket and records that — REQUIRED for private repos, and better for
@@ -82,7 +86,9 @@ pub(crate) enum WorkflowsCommand {
     Form {
         /// Path to the workflow checkout.
         path: String,
-        /// A manifest to use instead of the checkout's `biffix.yaml`.
+        /// A manifest to use instead of the checkout's `biffix.yaml`: a path relative to the
+        /// checkout's root, resolved exactly as `register --manifest` resolves it, except that an
+        /// uncommitted file is read too (a preview reads the working tree).
         #[arg(long)]
         manifest: Option<String>,
         /// Open the form in the UI (the form travels in the URL; nothing is registered).
@@ -178,6 +184,7 @@ impl WorkflowsCommand {
                 allow_dirty,
                 engine_version,
                 entrypoint,
+                manifest,
                 source_mode,
                 no_wait,
                 wait_minutes,
@@ -193,6 +200,7 @@ impl WorkflowsCommand {
                         allow_dirty,
                         engine_version,
                         entrypoint,
+                        manifest,
                         source_mode,
                         wait: wait_for(no_wait, wait_minutes),
                     },
@@ -271,6 +279,22 @@ mod tests {
             Some(std::time::Duration::from_secs(MAX_WAIT_MINUTES * 60))
         );
         assert_eq!(wait_for(true, 30), None);
+    }
+
+    #[test]
+    fn register_takes_a_manifest() {
+        let parse = |argv: &[&str]| {
+            let mut full = vec!["biffix", "workflows", "register", "."];
+            full.extend_from_slice(argv);
+            match Cli::try_parse_from(full).unwrap().command {
+                Command::Workflows { command: WorkflowsCommand::Register { manifest, .. } } => {
+                    manifest
+                }
+                _ => unreachable!(),
+            }
+        };
+        assert_eq!(parse(&[]), None);
+        assert_eq!(parse(&["--manifest", "alt/biffix.yaml"]).as_deref(), Some("alt/biffix.yaml"));
     }
 
     #[test]

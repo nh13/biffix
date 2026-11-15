@@ -7,6 +7,8 @@ check."""
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import struct
@@ -1223,3 +1225,210 @@ def test_the_nextflow_layer_smoke_loads_the_workflow_s_plugins_as_the_coordinato
     env = (smoke / "seen.env").read_text().splitlines()
     assert "NXF_PLUGINS_DEFAULT=nf-amazon@3.4.4,nf-biffix@0.5.1" in env
     assert "NXF_OFFLINE=true" in env and f"NXF_PLUGINS_DIR={nf}/plugins" in env
+
+
+# ── image/build.sh: build options (target, build args) and their label ──
+
+IMAGE_BUILD = CODEBUILD_DIR / "image/build.sh"
+OPTIONS_LABEL = "org.biffix.build-options"
+# The backend's vector (crates/biffix-backend/src/images/build.rs): target `builder`, build arg
+# TOOL_VERSION=1.2.
+ARGS_B64 = "VE9PTF9WRVJTSU9OPTEuMgo="
+OPTIONS_SHA = "bb17904df97b224cbbbef6396cb5da69a1e09ec125b10b7a75513c66a5803d1e"
+
+
+def _build_flags(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    fn = _function(IMAGE_BUILD, "build_flags")
+    show = 'printf "%s\\n" ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "options=${BUILD_OPTIONS:-}"'
+    return _common(f"{fn}\nbuild_flags\n{show}", env)
+
+
+def _b64(text: str) -> str:
+    return base64.b64encode(text.encode()).decode()
+
+
+def test_build_flags_pass_the_target_and_each_build_arg_as_one_argument() -> None:
+    plain = _build_flags({})
+    assert plain.returncode == 0, plain.stderr
+    # Without options: no flags, no label, nothing to report.
+    assert plain.stdout == "options=\n"
+    got = _build_flags(
+        {
+            "BIFFIX_BUILD_TARGET": "builder",
+            # The backend's encoding: one KEY=VALUE line per arg, by key.
+            "BIFFIX_BUILD_ARGS_B64": _b64("A=\nB=x y=$(z) *\n"),
+        }
+    )
+    assert got.returncode == 0, got.stderr
+    sha = hashlib.sha256(("builder\n" + _b64("A=\nB=x y=$(z) *\n")).encode()).hexdigest()
+    assert got.stdout.splitlines() == [
+        "--target",
+        "builder",
+        "--build-arg",
+        "A=",
+        "--build-arg",
+        "B=x y=$(z) *",
+        "--label",
+        f"{OPTIONS_LABEL}={sha}",
+        f"options={sha}",
+    ]
+
+
+def test_the_options_digest_is_the_backend_s() -> None:
+    assert hashlib.sha256(f"builder\n{ARGS_B64}".encode()).hexdigest() == OPTIONS_SHA
+    got = _build_flags({"BIFFIX_BUILD_TARGET": "builder", "BIFFIX_BUILD_ARGS_B64": ARGS_B64})
+    assert got.returncode == 0, got.stderr
+    assert got.stdout.splitlines()[-1] == f"options={OPTIONS_SHA}"
+    # A target alone, or args alone, is hashed with the other part empty.
+    alone = _build_flags({"BIFFIX_BUILD_TARGET": "builder"})
+    want = "55beec1d4d191e45027c223c79692dc04ea0db1417798db12b93e8bc58a778cb"
+    assert alone.stdout.splitlines()[-1] == f"options={want}"
+
+
+@pytest.mark.parametrize("lines", ["1X=v\n", "=v\n", "NOEQUALS\n", "A-B=v\n"])
+def test_build_flags_refuse_a_malformed_build_arg(lines: str) -> None:
+    got = _build_flags({"BIFFIX_BUILD_ARGS_B64": _b64(lines)})
+    assert got.returncode != 0
+    assert "malformed build arg" in got.stderr
+
+
+# A stand-in `docker` for build.sh: `buildx build` records its arguments and "pushes" the tag with
+# its labels into $FAKE_DOCKER_STATE; `buildx imagetools inspect --format` reads it back.
+_FAKE_DOCKER = """#!/usr/bin/env python3
+import hashlib, json, os, sys
+path = os.environ["FAKE_DOCKER_STATE"]
+state = json.load(open(path)) if os.path.exists(path) else {}
+args = sys.argv[1:]
+if args[:2] == ["buildx", "build"]:
+    with open(os.environ["FAKE_DOCKER_LOG"], "a") as log:
+        log.write(json.dumps(args[2:]) + "\\n")
+    labels = dict(a.split("=", 1) for p, a in zip(args, args[1:]) if p == "--label")
+    tag = args[args.index("--tag") + 1]
+    digest = "sha256:" + hashlib.sha256(json.dumps(args).encode()).hexdigest()
+    state[tag] = {"digest": digest, "labels": labels}
+    json.dump(state, open(path, "w"))
+elif args[:3] == ["buildx", "imagetools", "inspect"]:
+    image, fmt = args[3], args[args.index("--format") + 1]
+    if image not in state:
+        sys.exit(1)
+    if ".Manifest" in fmt:
+        mt = "application/vnd.oci.image.manifest.v1+json"
+        print(json.dumps({"digest": state[image]["digest"], "mediaType": mt}))
+    else:
+        print(json.dumps({"config": {"Labels": state[image]["labels"] or None}}))
+else:
+    sys.exit(2)
+"""
+
+
+# A stand-in `aws` for build.sh: `aws s3 cp [--quiet] s3://<bucket>/<key> <dest>` from $FAKE_S3.
+_FAKE_AWS_GET = """#!/usr/bin/env bash
+[ "$1 $2" = "s3 cp" ] || exit 2
+shift 2
+[ "$1" = --quiet ] && shift
+cp "$FAKE_S3/${1#s3://}" "$2"
+"""
+
+
+def _native_arch() -> str:
+    return {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[os.uname().machine]
+
+
+@pytest.fixture
+def image_build(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """Run codebuild/image/build.sh against stand-in `docker` and `aws` with a staged context;
+    returns a runner taking the extra environment, and the docker log and state paths."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, text in (("docker", _FAKE_DOCKER), ("aws", _FAKE_AWS_GET)):
+        (bin_dir / name).write_text(text)
+        (bin_dir / name).chmod(0o755)
+    context = tmp_path / "ctx"
+    context.mkdir()
+    (context / "Dockerfile").write_text("FROM x AS builder\nFROM x\n")
+    tarball = tmp_path / "s3/bucket/contexts/t.tar.gz"
+    tarball.parent.mkdir(parents=True)
+    subprocess.run(["tar", "-czf", str(tarball), "-C", str(context), "."], check=True)
+    sha = hashlib.sha256(tarball.read_bytes()).hexdigest()
+    paths = {"log": tmp_path / "docker.log", "state": tmp_path / "docker.json"}
+
+    def run(env: dict[str, str]) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
+        outputs = tmp_path / "outputs.env"
+        got = subprocess.run(
+            ["bash", str(IMAGE_BUILD)],
+            env={
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "FAKE_S3": str(tmp_path / "s3"),
+                "FAKE_DOCKER_STATE": str(paths["state"]),
+                "FAKE_DOCKER_LOG": str(paths["log"]),
+                "BIFFIX_SKIP_ECR_LOGIN": "1",
+                "BIFFIX_BUILD_SUBJECT": "image:build:k:arch",
+                "BIFFIX_BUILD_ARCH": _native_arch(),
+                "BIFFIX_BUILDS_REPO": BUILDS,
+                "BIFFIX_CONTENT_KEY": "0123456789abcdef",
+                "BIFFIX_CONTEXT_URI": "s3://bucket/contexts/t.tar.gz",
+                "BIFFIX_CONTEXT_SHA256": sha,
+                "BIFFIX_DOCKERFILE": "Dockerfile",
+                "BIFFIX_OUTPUTS": str(outputs),
+                **env,
+            },
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        text = outputs.read_text() if outputs.exists() else ""
+        return got, dict(line.split("=", 1) for line in text.splitlines() if line)
+
+    return run, paths
+
+
+def test_a_build_with_options_labels_its_image_and_reports_them(image_build) -> None:  # type: ignore[no-untyped-def]
+    run, paths = image_build
+    options = {"BIFFIX_BUILD_TARGET": "builder", "BIFFIX_BUILD_ARGS_B64": ARGS_B64}
+    got, outputs = run(options)
+    assert got.returncode == 0, got.stderr
+    assert outputs["BUILD_OPTIONS"] == OPTIONS_SHA
+    built = json.loads(paths["log"].read_text().splitlines()[0])
+    for flag in (
+        ["--target", "builder"],
+        ["--build-arg", "TOOL_VERSION=1.2"],
+        ["--label", f"{OPTIONS_LABEL}={OPTIONS_SHA}"],
+    ):
+        i = built.index(flag[0])
+        assert built[i : i + 2] == flag, built
+    # Built again: the tag carries the options' label, so it is reused (and reported).
+    again, outputs = run(options)
+    assert again.returncode == 0, again.stderr
+    assert "reusing it" in again.stderr
+    assert outputs["BUILD_OPTIONS"] == OPTIONS_SHA
+    assert len(paths["log"].read_text().splitlines()) == 1
+
+
+@pytest.mark.parametrize("label", [None, "0" * 64])
+def test_a_reused_tag_without_the_options_label_is_refused(image_build, label: str | None) -> None:  # type: ignore[no-untyped-def]
+    run, paths = image_build
+    # An image-build script that predates options pushed the tag without them.
+    old, _ = run({})
+    assert old.returncode == 0, old.stderr
+    if label is not None:
+        state = json.loads(paths["state"].read_text())
+        for entry in state.values():
+            entry["labels"] = {OPTIONS_LABEL: label}
+        paths["state"].write_text(json.dumps(state))
+    got, outputs = run({"BIFFIX_BUILD_TARGET": "builder", "BIFFIX_BUILD_ARGS_B64": ARGS_B64})
+    assert got.returncode != 0
+    assert "was built without its build options; delete it and retry" in got.stderr
+    assert "IMAGE" not in outputs and "BUILD_OPTIONS" not in outputs
+
+
+def test_a_build_without_options_is_unchanged(image_build) -> None:  # type: ignore[no-untyped-def]
+    run, paths = image_build
+    got, outputs = run({})
+    assert got.returncode == 0, got.stderr
+    assert set(outputs) == {"IMAGE", "IMAGE_DIGEST", "ARCH"}
+    built = json.loads(paths["log"].read_text().splitlines()[0])
+    assert "--label" not in built and "--target" not in built and "--build-arg" not in built
+    # Reused without reading any label.
+    again, outputs = run({})
+    assert again.returncode == 0, again.stderr
+    assert set(outputs) == {"IMAGE", "IMAGE_DIGEST", "ARCH"}

@@ -36,6 +36,10 @@ pub struct ImageBuildJob {
     pub dockerfile: Option<String>,
     /// The Dockerfile's text (one biffix generated, e.g. for a pixi environment).
     pub dockerfile_text: Option<String>,
+    /// The Dockerfile stage to build (`--target`).
+    pub target: Option<String>,
+    /// `--build-arg KEY=VALUE`, by key (checked at registration: no value holds a newline).
+    pub build_args: std::collections::BTreeMap<String, String>,
 }
 
 /// The index joining a built image's architectures (the image-import project,

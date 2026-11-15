@@ -255,6 +255,16 @@ biffix workflows reregister --all
 Re-register workflow versions after deploying a backend that adds launch-form features, too: a
 version registered against an older backend lacks the newer form fields.
 
+Deploy an upgrade whole (`deploy.sh` with no `--stack`), never only the api stack
+with `--stack biffix-<tenant>-api`. Some features change the backend and the build projects
+together. For example, Dockerfile images with a `target:` or `build_args:` need the image-build
+script in the build stack as well as the backend. A backend deployed ahead of that script fails
+such a build rather than use the image it pushed: the old script built it without its target and
+build args, and that image's tag must be deleted before it can be rebuilt. Upgrade the CLI after
+the deployment: a newer CLI registering against an older backend fails when the backend drops
+options it sent. The version is registered by then, and the error names it: do not run it;
+register again once the deployment is current.
+
 A release that replaces the event store (for example, one that changes the database's encryption
 key) cannot be applied in place. CloudFormation fails safely and rolls back the persistence stack,
 leaving the tenant as it was. Tear the tenant down with `infra/teardown.sh` and deploy the release

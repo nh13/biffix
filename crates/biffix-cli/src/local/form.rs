@@ -31,17 +31,89 @@ pub(crate) fn prepare_form(
     Ok((manifest, engine, form_schema))
 }
 
-/// [`prepare_form`] for a registration: `biffix.yaml`, the parameter schema and every file the
-/// form reads must be among `files`, the source runs get, so nothing the version is not made of
-/// (an untracked or git-ignored file) shapes its form.
+/// [`prepare_form`] for a registration: `biffix.yaml` (or `manifest`, `--manifest` as given,
+/// resolved by [`resolve_manifest`]), the parameter schema and every file the form reads must be
+/// among `files`, the source runs get, so nothing the version is not made of (an untracked or
+/// git-ignored file) shapes its form. A missing `biffix.yaml` is an empty one; a missing
+/// `manifest` is an error.
 pub(crate) fn prepare_form_shipped(
     root: &Path,
+    manifest: Option<&str>,
     files: &SourceFiles,
 ) -> CliResult<(BiffixManifest, Engine, FormSchema)> {
-    shipped(root, "biffix.yaml", Some(files))?;
-    let (manifest, engine) = manifest_and_engine(root, None, files)?;
+    let path = match manifest {
+        None => {
+            shipped(root, "biffix.yaml", Some(files))?;
+            None
+        }
+        Some(given) => Some(resolve_manifest(root, given, Some(files))?.path),
+    };
+    let (manifest, engine) = manifest_and_engine(root, path.as_deref(), files)?;
     let form_schema = derive_form_schema(root, &manifest, engine, Some(files))?;
     Ok((manifest, engine, form_schema))
+}
+
+/// A `--manifest` resolved within the workflow: its root-relative path, cleaned, and the file it
+/// names on disk (symlinks resolved).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedManifest {
+    pub(crate) rel: String,
+    pub(crate) path: std::path::PathBuf,
+}
+
+/// Resolve `--manifest` as given, one way for `workflows form` and `workflows register`: a path
+/// relative to `root` (not absolute, no `\`, no `..` out of it; `./a.yaml` is `a.yaml`) naming an
+/// existing file that, through any symlinks, stays inside the workflow. With `files` (a
+/// registration), it must also be among them, the source runs get; without (a preview of the
+/// working tree), an untracked file is read too.
+pub(crate) fn resolve_manifest(
+    root: &Path,
+    given: &str,
+    files: Option<&SourceFiles>,
+) -> CliResult<ResolvedManifest> {
+    let refuse = |why: String| CliError::InvalidInput(format!("--manifest {given}: {why}"));
+    let rel = biffix_workflow::images::clean_path(given)
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| refuse("must be a relative path to a file inside the workflow".into()))?;
+    if let Some(files) = files {
+        if !files.is_file(&rel) {
+            return Err(CliError::InvalidInput(format!(
+                "--manifest {rel} is not part of the source runs get ({}); commit it first",
+                files.describe()
+            )));
+        }
+    }
+    let canonical_root = root.canonicalize().map_err(|e| refuse(e.to_string()))?;
+    let path = match root.join(&rel).canonicalize() {
+        Ok(path) => path,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(refuse("no such file".into()))
+        }
+        Err(e) => return Err(refuse(e.to_string())),
+    };
+    if !path.starts_with(&canonical_root) {
+        return Err(refuse("the file is outside the workflow (through a symlink)".into()));
+    }
+    if !path.is_file() {
+        return Err(refuse("not a file".into()));
+    }
+    Ok(ResolvedManifest { rel, path })
+}
+
+/// `register --manifest`'s path as recorded: relative to the workflow's root, cleaned (`./a.yaml`
+/// is `a.yaml`), and `None` for the default `biffix.yaml` (given or not), so naming the default
+/// records nothing.
+pub(crate) fn manifest_path(manifest: Option<&str>) -> CliResult<Option<String>> {
+    let Some(given) = manifest else {
+        return Ok(None);
+    };
+    let clean =
+        biffix_workflow::images::clean_path(given).filter(|p| !p.is_empty()).ok_or_else(|| {
+            CliError::InvalidInput(format!(
+                "--manifest {given} must be a relative path to a file inside the workflow"
+            ))
+        })?;
+    Ok((clean != "biffix.yaml").then_some(clean))
 }
 
 /// Refuse `rel` when it is on disk under `root` but not among `files` (when given): the form
@@ -385,7 +457,7 @@ mod tests {
         write("demo.yaml", "reads: s3://b/r.fq\n");
         let refused = |files: &[&str], rel: &str| {
             let files = SourceFiles::of(files);
-            let err = prepare_form_shipped(dir.path(), &files)
+            let err = prepare_form_shipped(dir.path(), None, &files)
                 .and_then(|(m, ..)| read_about(dir.path(), &m, Some(&files)).map(|_| ()))
                 .unwrap_err();
             assert!(
@@ -398,7 +470,7 @@ mod tests {
         refused(&["Snakefile", "biffix.yaml"], "schema.json");
         refused(&["Snakefile", "biffix.yaml", "schema.json"], "about.md");
         let files = SourceFiles::of(&["Snakefile", "biffix.yaml", "schema.json", "about.md"]);
-        let (manifest, _, form) = prepare_form_shipped(dir.path(), &files).unwrap();
+        let (manifest, _, form) = prepare_form_shipped(dir.path(), None, &files).unwrap();
         assert_eq!(
             read_about(dir.path(), &manifest, Some(&files)).unwrap(),
             Some("# About\n".to_string())
@@ -409,6 +481,95 @@ mod tests {
         let (_, _, preview) =
             prepare_form(dir.path(), None, &SourceFiles::of(&["Snakefile"])).unwrap();
         assert_eq!(preview.fields.len(), 1);
+    }
+
+    #[test]
+    fn a_registration_reads_another_manifest_only_when_it_is_shipped() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Snakefile"), "rule all:\n    input: []\n").unwrap();
+        std::fs::write(dir.path().join("biffix.yaml"), "engine_version: \"9.1.0\"\n").unwrap();
+        std::fs::create_dir(dir.path().join("alt")).unwrap();
+        std::fs::write(dir.path().join("alt/biffix.yaml"), "engine_version: \"9.2.0\"\n").unwrap();
+        let files = SourceFiles::of(&["Snakefile", "biffix.yaml", "alt/biffix.yaml"]);
+        let (manifest, ..) =
+            prepare_form_shipped(dir.path(), Some("alt/biffix.yaml"), &files).unwrap();
+        assert_eq!(manifest.engine_version.as_deref(), Some("9.2.0"));
+        let (manifest, ..) = prepare_form_shipped(dir.path(), None, &files).unwrap();
+        assert_eq!(manifest.engine_version.as_deref(), Some("9.1.0"));
+        // On disk but not shipped (untracked), or not there at all: refused, unlike a missing
+        // default `biffix.yaml`.
+        for files in
+            [SourceFiles::of(&["Snakefile", "biffix.yaml"]), SourceFiles::of(&["Snakefile"])]
+        {
+            for rel in ["alt/biffix.yaml", "alt/missing.yaml"] {
+                let err = prepare_form_shipped(dir.path(), Some(rel), &files).unwrap_err();
+                assert!(
+                    matches!(&err, CliError::InvalidInput(m)
+                        if m.contains(&format!("--manifest {rel} is not part of the source"))),
+                    "{rel}: {err:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn form_and_register_resolve_a_manifest_to_the_same_file() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("wf");
+        std::fs::create_dir_all(root.join("alt")).unwrap();
+        std::fs::write(root.join("Snakefile"), "rule all:\n    input: []\n").unwrap();
+        std::fs::write(root.join("alt/biffix.yaml"), "engine: snakemake\n").unwrap();
+        std::fs::write(outer.path().join("x.yaml"), "engine: snakemake\n").unwrap();
+        std::os::unix::fs::symlink("../../x.yaml", root.join("alt/escape.yaml")).unwrap();
+        let files = SourceFiles::of(&["Snakefile", "alt/biffix.yaml", "alt/escape.yaml"]);
+        let preview = |given: &str| resolve_manifest(&root, given, None);
+        let register = |given: &str| resolve_manifest(&root, given, Some(&files));
+        let message = |r: CliResult<ResolvedManifest>| match r {
+            Err(CliError::InvalidInput(m)) => m,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        for given in ["alt/biffix.yaml", "./alt/biffix.yaml", "alt/./biffix.yaml"] {
+            let (a, b) = (preview(given).unwrap(), register(given).unwrap());
+            assert_eq!(a, b, "{given}");
+            assert_eq!(a.rel, "alt/biffix.yaml");
+            assert_eq!(a.path, root.join("alt/biffix.yaml").canonicalize().unwrap());
+        }
+        // The same spellings are refused by both: not relative, or climbing out.
+        let absolute = root.join("alt/biffix.yaml").display().to_string();
+        for bad in ["../x.yaml", absolute.as_str(), ".", "alt\\biffix.yaml"] {
+            for got in [preview(bad), register(bad)] {
+                assert!(message(got).contains("relative path"), "{bad}");
+            }
+        }
+        // A symlink out of the workflow, even a tracked one.
+        for got in [preview("alt/escape.yaml"), register("alt/escape.yaml")] {
+            assert!(message(got).contains("outside the workflow"));
+        }
+        // A missing file is an error for both, not "no manifest".
+        assert!(message(preview("alt/missing.yaml")).contains("no such file"));
+        assert!(message(register("alt/missing.yaml")).contains("not part of the source"));
+        // An untracked file: a preview reads it, a registration refuses it.
+        std::fs::write(root.join("alt/draft.yaml"), "engine: snakemake\n").unwrap();
+        assert_eq!(preview("alt/draft.yaml").unwrap().rel, "alt/draft.yaml");
+        assert!(message(register("alt/draft.yaml")).contains("not part of the source"));
+    }
+
+    #[test]
+    fn a_manifest_path_is_relative_to_the_root_and_spelled_one_way() {
+        assert_eq!(manifest_path(None).unwrap(), None);
+        assert_eq!(
+            manifest_path(Some("./alt/biffix.yaml")).unwrap().as_deref(),
+            Some("alt/biffix.yaml")
+        );
+        // The default, named, is the default: nothing to record.
+        assert_eq!(manifest_path(Some("biffix.yaml")).unwrap(), None);
+        for bad in ["../biffix.yaml", "/abs/biffix.yaml", ".", "a\\b.yaml"] {
+            let err = manifest_path(Some(bad)).unwrap_err();
+            assert!(
+                matches!(&err, CliError::InvalidInput(m) if m.contains("relative path")),
+                "{bad}: {err:?}"
+            );
+        }
     }
 
     #[test]

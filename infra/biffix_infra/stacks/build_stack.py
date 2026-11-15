@@ -82,7 +82,9 @@ IMAGE_IMPORT_OUTPUTS = [
     "ARCHIVED",
 ]
 # What an image build reports back (codebuild/image/build.sh "Outputs").
-IMAGE_BUILD_OUTPUTS = ["IMAGE", "IMAGE_DIGEST", "ARCH"]
+# BUILD_OPTIONS: the digest of a build's target and build args, which a build given them must
+# report (the backend checks it: crates/biffix-backend/src/images/build.rs).
+IMAGE_BUILD_OUTPUTS = ["IMAGE", "IMAGE_DIGEST", "ARCH", "BUILD_OPTIONS"]
 # The architectures workflow images are built for, and the CodeBuild image native to each.
 BUILD_IMAGES = {
     "amd64": codebuild.LinuxBuildImage.AMAZON_LINUX_2023_5,

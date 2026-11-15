@@ -213,7 +213,7 @@ function buildingDetail() {
     registration_inputs: {
       source_mode: 's3',
       cli_version: '0.1.0',
-      overrides: { engine_version: '9.27.0' },
+      overrides: { engine_version: '9.27.0', manifest: 'deploy/biffix.yaml' },
       reregistered_from: RNASEQ_VERSION_ID,
     },
     state: 'failed',
@@ -242,6 +242,8 @@ function buildingDetail() {
         kind: 'dockerfile',
         declared_ref: 'align',
         source_ref: 'dockerfile:docker/align/Dockerfile',
+        target: 'runtime',
+        build_args: { BWA_VERSION: '0.7.18' },
         state: 'ready',
         image: `${repo}@sha256:` + '8'.repeat(64),
         archs: ['amd64'],

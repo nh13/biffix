@@ -404,6 +404,8 @@ pub fn reregister_request(
                     context_sha256: b.context_sha256.clone(),
                     tree_hash: b.tree_hash.clone(),
                     archs: b.archs.clone(),
+                    target: b.target.clone(),
+                    build_args: b.build_args.clone(),
                 }),
                 runtime: i.own_runtime.then(|| "own".to_string()),
             };
@@ -655,7 +657,7 @@ fn build_image(
     runtime: Option<&str>,
     project_bucket: &str,
 ) -> Result<crate::store::registry::VersionImage, ServiceError> {
-    use biffix_workflow::images::{build_content_key, Arch, BuildKind};
+    use biffix_workflow::images::{build_content_key_with, Arch, BuildKind};
     let bad = |m: String| ServiceError::Invalid(format!("image `{name}`: {m}"));
     // The name and `runtime` follow the same rules as an imported image's (the CLI's too).
     let decl_error =
@@ -685,6 +687,17 @@ fn build_image(
         (BuildKind::Pixi, Some(_)) => return Err(bad("a pixi build has no Dockerfile".into())),
         _ => {}
     }
+    // The target and build args reach the build (`--target`, `--build-arg`) and its key; checked as
+    // the CLI checks them.
+    if kind == BuildKind::Pixi && req.target.is_some() {
+        return Err(bad("a pixi build has no target".into()));
+    }
+    if kind == BuildKind::Pixi && !req.build_args.is_empty() {
+        return Err(bad("a pixi build has no build args".into()));
+    }
+    let options =
+        biffix_workflow::images::build_options(name, req.target.as_deref(), &req.build_args)
+            .map_err(decl_error)?;
     let mut archs = req
         .archs
         .iter()
@@ -712,7 +725,8 @@ fn build_image(
     }
     // Keyed by the tarball's sha256, which the build checks before it builds, not the tree hash
     // the client claims: the tenant-wide key names only what was really built from it.
-    let content_key = build_content_key(kind, &req.context_sha256, dockerfile.as_deref(), &archs);
+    let content_key =
+        build_content_key_with(kind, &req.context_sha256, dockerfile.as_deref(), &archs, &options);
     let path = match &dockerfile {
         Some(dockerfile) if context.is_empty() => dockerfile.clone(),
         Some(dockerfile) => format!("{context}/{dockerfile}"),
@@ -733,6 +747,8 @@ fn build_image(
             dockerfile,
             dockerfile_text: (kind == BuildKind::Pixi).then(biffix_workflow::pixi::dockerfile),
             archs: archs.iter().map(|a| a.as_str().to_string()).collect(),
+            target: options.target,
+            build_args: options.build_args,
         }),
     })
 }

@@ -88,6 +88,12 @@ pub struct BuildRecipe {
     pub dockerfile_text: Option<String>,
     /// The architectures built (`amd64`, `arm64`).
     pub archs: Vec<String>,
+    /// The Dockerfile stage built (`dockerfile` builds given `target`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// The build args (`dockerfile` builds), part of the build's key.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub build_args: std::collections::BTreeMap<String, String>,
 }
 
 impl BuildRecipe {

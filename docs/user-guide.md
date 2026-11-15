@@ -153,11 +153,41 @@ An image entry under `images:` is one of:
 - **A reference** to an existing image: `{ref: quay.io/biocontainers/samtools:1.21--h50ea8bc_0}`.
 - **A Dockerfile** in the repository: `{dockerfile: docker/align/Dockerfile}` (with optional
   `context:` and `archs: [amd64]` when the base image has one architecture). biffix builds it in
-  the deployment.
+  the deployment. Two more keys are optional:
+  - `target:` builds one stage of a multi-stage Dockerfile (`docker buildx build --target`), so
+    one Dockerfile can yield several images. Stage names are case-insensitive, as in Docker:
+    `Builder` and `builder` are the same build;
+  - `build_args:` is a map of `--build-arg` values. Each key must be a valid `ARG` name (a letter
+    or `_`, then letters, digits or `_`) and must not start with `BUILDKIT_` (those configure
+    BuildKit itself). A value may not contain a newline, carriage return or NUL. An image takes at most 64 build args,
+    at most 16 KiB in all (counted as `KEY=VALUE` lines).
+
+  Like the context's files, the target and build args are part of what identifies the build:
+  changing either builds a new image, and the version is a new build, never a reuse of the old
+  image.
+
+  **Build args are not secret.** They are stored on the version, shown on its Provenance tab and
+  in the API, passed to the build as plain CodeBuild environment variables, and kept in the built
+  image's configuration and history. Never put a token, password or key in one; `register` warns
+  about keys that look like one (`TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `APIKEY`, `CREDENTIAL`, `_KEY`). To build an image that
+  needs a credential, build it in your own CI with a Docker build secret (`--secret`), push it,
+  and declare it with `ref:`. If tasks need the credential at run time, they fetch it then rather
+  than having it built in.
 - **A pixi environment**: `{pixi: env}`, a directory holding `pixi.toml` and `pixi.lock`.
 
 A task names an image by its reference, or a built image by its name in `images:`
 (`aws_batch_container_image="align"` in Snakemake, `container 'align'` in Nextflow).
+
+For example, a multi-stage Dockerfile yielding a worker image and a separate build-tools image:
+
+```yaml
+images:
+  default: {dockerfile: docker/Dockerfile}            # the last stage
+  builder:
+    dockerfile: docker/Dockerfile
+    target: builder
+    build_args: {TOOL_VERSION: "1.2.0"}
+```
 
 To find the images a workflow uses, run:
 
@@ -182,7 +212,9 @@ biffix workflows form . --open        # the form itself in the UI; nothing is re
 biffix workflows form . --output json # the FormSchema exactly as `register` would send it
 ```
 
-`--manifest <file>` previews with a different `biffix.yaml`.
+`--manifest <path>` previews with a different `biffix.yaml`. The path is resolved exactly as
+`register --manifest` resolves it (relative to the checkout's root, and inside it), except that
+an uncommitted file is read too.
 
 ### Registering
 
@@ -208,6 +240,11 @@ Options worth knowing:
   `--source-mode s3` only.
 - `--project` chooses the project. On a deployment with several projects, a new workflow needs it.
 - `--name`, `--engine-version`, `--entrypoint` override the directory name and `biffix.yaml`.
+- `--manifest <path>` reads another manifest instead of the root's `biffix.yaml`, for example one
+  per deployment of the same repository. The path is relative to the repository root, must stay
+  inside it (symlinks included) and must name an existing, committed file, like `biffix.yaml`. Paths inside it (`schema`, `about`, image Dockerfiles)
+  stay relative to the root. The version records the path (shown on its Provenance tab), and
+  `reregister` keeps it.
 - `--image` sets a default task image from the command line.
 - `--queue-class` names the worker queue-classes the version uses (repeatable).
 

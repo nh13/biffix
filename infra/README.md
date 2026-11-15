@@ -429,6 +429,9 @@ builds the coordinator variants of the deployed base image (see **Engine runtime
 variants**).
 `deploy.sh --help` lists every flag; `--exclusively` (`--stack`) deploys only the named stack
 (skips its dependencies), for a targeted api/compute redeploy once the rest of the graph is up.
+Never use it to apply an upgrade: a release can change the backend and the build projects
+together (the image-build script reports a Dockerfile build's target and build args back to the
+backend), so deploy an upgrade with a full `deploy.sh` run (no `--stack`), not `--stack biffix-<tenant>-api` alone.
 
 ### Lambda artifacts and their guards
 

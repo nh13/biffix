@@ -265,6 +265,8 @@ mod tests {
             dockerfile: Some("Dockerfile".into()),
             dockerfile_text: None,
             archs: vec!["amd64".into()],
+            target: None,
+            build_args: Default::default(),
         });
         let map = build(&[built], None);
         let target = format!("{REPO}@sha256:imp-align");

@@ -31,8 +31,7 @@ pub(crate) fn form(session: Option<&Session>, opts: FormOpts) -> CliResult<()> {
     let root = Path::new(&opts.path);
     // Detected from the source a (default, git-mode) register would ship.
     let files = source::shipped_files(root, SourceMode::Git, None)?;
-    let (_, engine, form_schema) =
-        prepare_form(root, opts.manifest.as_deref().map(Path::new), &files)?;
+    let (engine, form_schema) = preview(root, opts.manifest.as_deref(), &files)?;
     match opts.output {
         OutputMode::Json => {
             // What `register` prints, which the human summary lists among its warnings.
@@ -59,6 +58,22 @@ pub(crate) fn form(session: Option<&Session>, opts: FormOpts) -> CliResult<()> {
         }
     }
     Ok(())
+}
+
+/// The engine and form a checkout at `root` would register with, from `manifest` (`--manifest` as
+/// given, resolved as `register --manifest` resolves it, but an untracked file is read too) or
+/// `biffix.yaml`.
+fn preview(
+    root: &Path,
+    manifest: Option<&str>,
+    files: &source::SourceFiles,
+) -> CliResult<(Engine, FormSchema)> {
+    let manifest = manifest
+        .map(|given| crate::local::form::resolve_manifest(root, given, None))
+        .transpose()?;
+    let (_, engine, form_schema) =
+        prepare_form(root, manifest.as_ref().map(|m| m.path.as_path()), files)?;
+    Ok((engine, form_schema))
 }
 
 /// The UI's preview page for a form: `/workflows/preview#<payload>`, where the payload is the
@@ -320,6 +335,21 @@ mod tests {
         std::fs::write(&other, "form:\n  title: Other title\n").unwrap();
         let (_, _, form) = prepare_form(dir.path(), Some(&other), &nf_files()).unwrap();
         assert_eq!(form.title.as_deref(), Some("Other title"));
+        // `--manifest` names it as `register --manifest` does: relative to the checkout's root.
+        let (_, form) = preview(dir.path(), Some("./other.yaml"), &nf_files()).unwrap();
+        assert_eq!(form.title.as_deref(), Some("Other title"));
+        let (_, form) = preview(dir.path(), None, &nf_files()).unwrap();
+        assert_ne!(form.title.as_deref(), Some("Other title"));
+        for refused in [other.display().to_string(), "missing.yaml".into(), "../other.yaml".into()]
+        {
+            assert!(
+                matches!(
+                    preview(dir.path(), Some(&refused), &nf_files()),
+                    Err(CliError::InvalidInput(_))
+                ),
+                "{refused}"
+            );
+        }
     }
 
     #[test]

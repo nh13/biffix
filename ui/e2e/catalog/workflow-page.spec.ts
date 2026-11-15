@@ -102,6 +102,8 @@ test('an image built from the workflow shows its recipe and each architecture', 
   const align = table.getByRole('row', { name: /align/ });
   await expect(align.getByTestId('image-kind')).toHaveText('dockerfile');
   await expect(align).toContainText('docker/align/Dockerfile');
+  await expect(align.getByTestId('build-options')).toContainText('target runtime');
+  await expect(align.getByTestId('build-options')).toContainText('BWA_VERSION=0.7.18');
   await expect(align.locator('.state')).toHaveText('ready');
 });
 
@@ -113,6 +115,7 @@ test('a re-registered version links the version it came from', async ({ page }) 
     '/workflows/aabbccddeeff%3Av1',
   );
   await expect(page.getByText('Engine release given')).toBeVisible();
+  await expect(page.getByTestId('manifest')).toContainText('deploy/biffix.yaml');
 });
 
 test('while a version builds its detail is polled, but its version list is fetched once', async ({
