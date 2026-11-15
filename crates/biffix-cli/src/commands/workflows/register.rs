@@ -33,6 +33,8 @@ pub struct RegisterOpts {
     pub allow_dirty: bool,
     pub engine_version: Option<String>,
     pub entrypoint: Option<String>,
+    /// A manifest to read instead of `biffix.yaml`: a git-tracked file, relative to the root.
+    pub manifest: Option<String>,
     /// Whether to record a git origin (public) or stage the source tarball to S3 (private-repo).
     pub source_mode: SourceMode,
     /// Wait (up to this long) until the version's engine runtime is built and it can run.
@@ -98,6 +100,7 @@ fn check_source_identity(
 
 pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()> {
     let root = Path::new(&opts.path);
+    let manifest_path = crate::local::form::manifest_path(opts.manifest.as_deref())?;
     let git = source::resolve_git(root)?;
     check_source_identity(root, &git, opts.source_mode, opts.allow_dirty)?;
     if opts.source_mode == SourceMode::Git {
@@ -137,7 +140,8 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
     // The source the coordinator gets: the engine is detected from it, the entrypoint must be in
     // it, and the memory check reads it.
     let files = source::shipped_files(root, opts.source_mode, tree.as_ref())?;
-    let (manifest, engine, form_schema) = prepare_form_shipped(root, &files)?;
+    let (manifest, engine, form_schema) =
+        prepare_form_shipped(root, opts.manifest.as_deref(), &files)?;
     crate::local::form::warn_form(&form_schema);
     let about_markdown = read_about(root, &manifest, Some(&files))?;
 
@@ -193,6 +197,7 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
             entrypoint: opts.entrypoint.as_ref().map(|_| entrypoint.path.clone()),
             image: opts.image.clone().filter(|s| !s.is_empty()),
             queue_classes: opts.queue_classes.clone(),
+            manifest: manifest_path,
         },
         reregistered_from: None,
     };
@@ -304,6 +309,13 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
     // bring versions up to date, reports the same reply as "up to date" instead.
     let view = client.register_workflow(&req).await.map_err(annotate_register)?;
     let id = view.id.as_str().to_string();
+    // A deployment that predates build options ignores them; say so rather than build the wrong
+    // image (asked only when there are any).
+    if super::images::sends_build_options(&req.images) {
+        let detail =
+            client.get_workflow(&id).await.map_err(|e| super::images::read_back_failed(&id, e))?;
+        super::images::check_build_options_kept(&id, &req.images, &detail.images)?;
+    }
 
     // The server is authoritative for the frozen id, but a divergence from the id the CLI computed
     // locally signals a client/server version-id drift (e.g. mismatched file normalization). Warn

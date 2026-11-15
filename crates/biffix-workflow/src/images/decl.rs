@@ -31,6 +31,14 @@ pub struct ImageDecl {
     /// `own`: a Snakemake image that carries its own Snakemake (no runtime layer is added).
     #[serde(default)]
     pub runtime: Option<String>,
+    /// The stage of a multi-stage `dockerfile` to build (`docker buildx build --target`), so one
+    /// Dockerfile can yield several images.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Build arguments for a `dockerfile` (`--build-arg KEY=VALUE`). Part of the image's key: a
+    /// changed value is a new build.
+    #[serde(default)]
+    pub build_args: Option<BTreeMap<String, String>>,
 }
 
 /// Why an `images:` entry is not accepted.
@@ -60,6 +68,28 @@ pub enum ImageDeclError {
     BadArch { name: String, arch: String },
     #[error("image `{0}`: `archs` is empty; list `amd64` and/or `arm64`, or leave it out")]
     NoArchs(String),
+    #[error("image `{0}`: `target` goes with `dockerfile`")]
+    TargetWithoutDockerfile(String),
+    #[error("image `{0}`: `build_args` goes with `dockerfile`")]
+    BuildArgsWithoutDockerfile(String),
+    #[error(
+        "image `{name}`: `target` `{target}` is not a build stage name (a letter, then letters, \
+         digits, `_`, `.` or `-`)"
+    )]
+    BadTarget { name: String, target: String },
+    #[error(
+        "image `{name}`: build arg `{key}` is not a valid name (a letter or `_`, then letters, \
+         digits or `_`)"
+    )]
+    BadBuildArgName { name: String, key: String },
+    #[error("image `{name}`: build arg `{key}` has a newline or NUL in its value")]
+    BadBuildArgValue { name: String, key: String },
+    #[error("image `{name}`: build arg `{key}` is reserved: `BUILDKIT_` args configure BuildKit")]
+    ReservedBuildArg { name: String, key: String },
+    #[error("image `{name}`: more than {max} build args")]
+    TooManyBuildArgs { name: String, max: usize },
+    #[error("image `{name}`: the build args are over {max} bytes (as `KEY=VALUE` lines)")]
+    BuildArgsTooLarge { name: String, max: usize },
     #[error("image `{0}`: `runtime` may only be `own`")]
     BadRuntime(String),
     #[error("image `{name}`: {error}")]
@@ -111,6 +141,96 @@ pub struct BuildSpec {
     pub dockerfile: Option<String>,
     /// The architectures a `dockerfile` is limited to (`None`: both; always `None` for `pixi`).
     pub archs: Option<Vec<Arch>>,
+    /// The `dockerfile`'s target stage and build args (always empty for `pixi`).
+    pub options: BuildOptions,
+}
+
+/// What a `dockerfile` build is given beyond its Dockerfile and context: the stage to build and
+/// the build args. Both are part of the build's key ([`crate::images::build_content_key_with`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BuildOptions {
+    /// The stage to build (`--target`); `None`: the Dockerfile's last stage.
+    pub target: Option<String>,
+    /// `--build-arg KEY=VALUE`, by key.
+    pub build_args: BTreeMap<String, String>,
+}
+
+impl BuildOptions {
+    /// Neither a target nor a build arg: a build as before either existed.
+    pub fn is_empty(&self) -> bool {
+        self.target.is_none() && self.build_args.is_empty()
+    }
+}
+
+/// The most build args an image may have.
+pub const MAX_BUILD_ARGS: usize = 64;
+
+/// The most bytes an image's build args may take, as the `KEY=VALUE` lines (each with its newline)
+/// they reach the build as. They travel base64-encoded (4/3 larger) in one CodeBuild environment
+/// variable. CodeBuild documents no size limit for one, but Linux caps each environment string at
+/// 128 KiB (`MAX_ARG_STRLEN`), so this stays well below that.
+pub const MAX_BUILD_ARGS_BYTES: usize = 16 * 1024;
+
+/// Check image `name`'s `target` and `build_args` into [`BuildOptions`]: a target is a build stage
+/// name (a letter, then letters, digits, `_`, `.`, `-`), lowercased as BuildKit reads stage names
+/// (so `Builder` and `builder` are one build); a build arg's key is a Dockerfile `ARG` name (a
+/// letter or `_`, then letters, digits, `_`) that is not one of BuildKit's own `BUILDKIT_*`; no
+/// value holds a newline or NUL (each reaches the build as one line); and there are at most
+/// [`MAX_BUILD_ARGS`] of them, in at most [`MAX_BUILD_ARGS_BYTES`]. The server checks a build
+/// request with this too, so the CLI and the server agree.
+pub fn build_options(
+    name: &str,
+    target: Option<&str>,
+    build_args: &BTreeMap<String, String>,
+) -> Result<BuildOptions, ImageDeclError> {
+    if let Some(target) = target {
+        let mut chars = target.chars();
+        let valid = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+        if !valid {
+            return Err(ImageDeclError::BadTarget {
+                name: name.to_string(),
+                target: target.to_string(),
+            });
+        }
+    }
+    if build_args.len() > MAX_BUILD_ARGS {
+        return Err(ImageDeclError::TooManyBuildArgs {
+            name: name.to_string(),
+            max: MAX_BUILD_ARGS,
+        });
+    }
+    let bytes: usize = build_args.iter().map(|(k, v)| k.len() + v.len() + 2).sum();
+    if bytes > MAX_BUILD_ARGS_BYTES {
+        return Err(ImageDeclError::BuildArgsTooLarge {
+            name: name.to_string(),
+            max: MAX_BUILD_ARGS_BYTES,
+        });
+    }
+    for (key, value) in build_args {
+        let mut chars = key.chars();
+        let valid = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !valid {
+            return Err(ImageDeclError::BadBuildArgName {
+                name: name.to_string(),
+                key: key.clone(),
+            });
+        }
+        if key.to_ascii_uppercase().starts_with("BUILDKIT_") {
+            return Err(ImageDeclError::ReservedBuildArg {
+                name: name.to_string(),
+                key: key.clone(),
+            });
+        }
+        if value.contains(['\n', '\r', '\0']) {
+            return Err(ImageDeclError::BadBuildArgValue {
+                name: name.to_string(),
+                key: key.clone(),
+            });
+        }
+    }
+    Ok(BuildOptions { target: target.map(str::to_ascii_lowercase), build_args: build_args.clone() })
 }
 
 /// `path` as a clean relative path (`./a/b/` → `a/b`, `.` → ``), or `None` when it is absolute,
@@ -146,11 +266,13 @@ fn build_spec(name: &str, decl: &ImageDecl) -> Result<BuildSpec, ImageDeclError>
         if decl.archs.is_some() {
             return Err(ImageDeclError::ArchsWithPixi(name.into()));
         }
+        check_dockerfile_only(name, decl)?;
         return Ok(BuildSpec {
             kind: BuildKind::Pixi,
             context: clean(dir)?,
             dockerfile: None,
             archs: None,
+            options: BuildOptions::default(),
         });
     }
     let dockerfile = clean(decl.dockerfile.as_deref().unwrap_or_default())?;
@@ -193,12 +315,29 @@ fn build_spec(name: &str, decl: &ImageDecl) -> Result<BuildSpec, ImageDeclError>
             Some(parsed)
         }
     };
+    let options = build_options(
+        name,
+        decl.target.as_deref(),
+        decl.build_args.as_ref().unwrap_or(&BTreeMap::new()),
+    )?;
     Ok(BuildSpec {
         kind: BuildKind::Dockerfile,
         dockerfile: Some(within.to_string()),
         context,
         archs,
+        options,
     })
+}
+
+/// Refuse `target` and `build_args` on an entry that is not a `dockerfile`.
+fn check_dockerfile_only(name: &str, decl: &ImageDecl) -> Result<(), ImageDeclError> {
+    if decl.target.is_some() {
+        return Err(ImageDeclError::TargetWithoutDockerfile(name.into()));
+    }
+    if decl.build_args.is_some() {
+        return Err(ImageDeclError::BuildArgsWithoutDockerfile(name.into()));
+    }
+    Ok(())
 }
 
 /// Check an `images:` name: lowercase letters, digits and `-`. The server checks a built image's
@@ -254,12 +393,14 @@ pub fn declared_images(
                 ),
                 None => ImageSource::Build(build_spec(&name, &decl)?),
             };
-            if decl.reference.is_some() && (decl.context.is_some() || decl.archs.is_some()) {
-                return Err(if decl.context.is_some() {
-                    ImageDeclError::ContextWithoutDockerfile(name)
-                } else {
-                    ImageDeclError::ArchsWithoutDockerfile(name)
-                });
+            if decl.reference.is_some() {
+                if decl.context.is_some() {
+                    return Err(ImageDeclError::ContextWithoutDockerfile(name));
+                }
+                if decl.archs.is_some() {
+                    return Err(ImageDeclError::ArchsWithoutDockerfile(name));
+                }
+                check_dockerfile_only(&name, &decl)?;
             }
             Ok(DeclaredImage { name, source, own_runtime })
         })

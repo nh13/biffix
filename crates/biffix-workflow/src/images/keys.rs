@@ -5,7 +5,7 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-use crate::images::DOCKERFILE_BUILD_VERSION;
+use crate::images::{BuildOptions, DOCKERFILE_BUILD_VERSION};
 
 /// The key an import of `source_digest` is cached under, tenant-wide: the same upstream bytes are
 /// imported once whichever version (or tag) names them.
@@ -132,6 +132,21 @@ pub fn build_content_key(
     dockerfile: Option<&str>,
     archs: &[Arch],
 ) -> String {
+    build_content_key_with(kind, context_sha256, dockerfile, archs, &BuildOptions::default())
+}
+
+/// [`build_content_key`] of a build given a target stage and build args too. Without either it is
+/// [`build_content_key`]'s key, so an image built before they existed keeps its key. With them,
+/// the `build2+opts:` scheme adds the sha256 of their canonical JSON (the args sorted by key) as
+/// another fixed-width hex part after the context's, so the key stays injective and a changed
+/// target or any changed, added or removed build arg is a new build, never the old image.
+pub fn build_content_key_with(
+    kind: BuildKind,
+    context_sha256: &str,
+    dockerfile: Option<&str>,
+    archs: &[Arch],
+    options: &BuildOptions,
+) -> String {
     let mut archs = archs.to_vec();
     archs.sort();
     archs.dedup();
@@ -140,8 +155,23 @@ pub fn build_content_key(
         BuildKind::Pixi => format!("{}:", hex::encode(Sha256::digest(crate::pixi::dockerfile()))),
         BuildKind::Dockerfile => String::new(),
     };
+    let (scheme, options) = if options.is_empty() {
+        ("build2", String::new())
+    } else {
+        #[derive(serde::Serialize)]
+        struct Canonical<'a> {
+            target: Option<&'a str>,
+            build_args: &'a std::collections::BTreeMap<String, String>,
+        }
+        let json = serde_json::to_vec(&Canonical {
+            target: options.target.as_deref(),
+            build_args: &options.build_args,
+        })
+        .expect("strings always serialize");
+        ("build2+opts", format!("{}:", hex::encode(Sha256::digest(json))))
+    };
     hex::encode(Sha256::digest(format!(
-        "build2:{}:{}:{recipe}{context_sha256}:{}:{}",
+        "{scheme}:{}:{}:{recipe}{context_sha256}:{options}{}:{}",
         kind.as_str(),
         kind.generator_version(),
         dockerfile.unwrap_or(""),

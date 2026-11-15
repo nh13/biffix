@@ -185,7 +185,13 @@ def test_the_image_build_projects_build_natively_and_privileged(default_stacks: 
         assert "BIFFIX_IMAGE_REPO" not in env, env
         assert '"${BIFFIX_BUILDS_REPO:?}"' in IMAGE_BUILD_SCRIPT.read_text()
         spec = json.loads(props["Source"]["BuildSpec"])
-        assert set(spec["env"]["exported-variables"]) == {"IMAGE", "IMAGE_DIGEST", "ARCH"}
+        # BUILD_OPTIONS: a build with a target or build args reports their digest.
+        assert set(spec["env"]["exported-variables"]) == {
+            "IMAGE",
+            "IMAGE_DIGEST",
+            "ARCH",
+            "BUILD_OPTIONS",
+        }
         packed = spec["phases"]["build"]["commands"][0].split()[1]
         assert gzip.decompress(base64.b64decode(packed)).decode() == bundled_script(
             IMAGE_BUILD_SCRIPT

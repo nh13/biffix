@@ -161,29 +161,14 @@ impl BuildService for AwsCloudProvider {
     }
 
     async fn start_image_build(&self, request: &ImageBuildJob) -> Result<String, AwsError> {
-        use base64::Engine as _;
         let project = self.cfg.image_build_projects.get(&request.arch).ok_or_else(|| {
             AwsError::Unsupported(format!(
                 "BIFFIX_IMAGE_BUILD_PROJECT_{} is unset",
                 request.arch.as_str().to_ascii_uppercase()
             ))
         })?;
-        let dockerfile_b64 = request
-            .dockerfile_text
-            .as_ref()
-            .map(|t| base64::engine::general_purpose::STANDARD.encode(t));
-        let mut env = vec![
-            (biffix_core::wire::aws_codebuild::SUBJECT_VARIABLE, request.subject.as_str()),
-            ("BIFFIX_CONTENT_KEY", request.content_key.as_str()),
-            ("BIFFIX_CONTEXT_URI", request.context_uri.as_str()),
-            ("BIFFIX_CONTEXT_SHA256", request.context_sha256.as_str()),
-        ];
-        if let Some(dockerfile) = &request.dockerfile {
-            env.push(("BIFFIX_DOCKERFILE", dockerfile.as_str()));
-        }
-        if let Some(b64) = &dockerfile_b64 {
-            env.push(("BIFFIX_DOCKERFILE_B64", b64.as_str()));
-        }
+        let env = image_build_env(request);
+        let env: Vec<(&str, &str)> = env.iter().map(|(n, v)| (*n, v.as_str())).collect();
         self.start_codebuild(project, &env, &request.idempotency_token).await
     }
 
@@ -214,9 +199,76 @@ impl BuildService for AwsCloudProvider {
     }
 }
 
+/// The environment an image build starts with (`codebuild/image/build.sh` documents it), with the
+/// target and build args as [`crate::images::build::options_env`] encodes them, each set only when
+/// there is one.
+fn image_build_env(request: &ImageBuildJob) -> Vec<(&'static str, String)> {
+    use base64::Engine as _;
+    let mut env = vec![
+        (biffix_core::wire::aws_codebuild::SUBJECT_VARIABLE, request.subject.clone()),
+        ("BIFFIX_CONTENT_KEY", request.content_key.clone()),
+        ("BIFFIX_CONTEXT_URI", request.context_uri.clone()),
+        ("BIFFIX_CONTEXT_SHA256", request.context_sha256.clone()),
+    ];
+    if let Some(dockerfile) = &request.dockerfile {
+        env.push(("BIFFIX_DOCKERFILE", dockerfile.clone()));
+    }
+    if let Some(text) = &request.dockerfile_text {
+        env.push(("BIFFIX_DOCKERFILE_B64", base64::engine::general_purpose::STANDARD.encode(text)));
+    }
+    let (target, args) =
+        crate::images::build::options_env(request.target.as_deref(), &request.build_args);
+    if let Some(target) = target {
+        env.push(("BIFFIX_BUILD_TARGET", target));
+    }
+    if let Some(args) = args {
+        env.push(("BIFFIX_BUILD_ARGS_B64", args));
+    }
+    env
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_image_build_is_given_its_target_and_build_args() {
+        use base64::Engine as _;
+        let job = |target: Option<&str>, args: &[(&str, &str)]| ImageBuildJob {
+            idempotency_token: "t".into(),
+            subject: "image:build:k:amd64".into(),
+            arch: biffix_workflow::images::Arch::Amd64,
+            content_key: "k".into(),
+            context_uri: "s3://b/c.tar.gz".into(),
+            context_sha256: "s".into(),
+            dockerfile: Some("Dockerfile".into()),
+            dockerfile_text: None,
+            target: target.map(str::to_string),
+            build_args: args.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        };
+        let names =
+            |env: &[(&'static str, String)]| env.iter().map(|(n, _)| *n).collect::<Vec<_>>();
+        // Without them, the environment is as before.
+        let plain = image_build_env(&job(None, &[]));
+        assert_eq!(
+            names(&plain),
+            [
+                "BIFFIX_BUILD_SUBJECT",
+                "BIFFIX_CONTENT_KEY",
+                "BIFFIX_CONTEXT_URI",
+                "BIFFIX_CONTEXT_SHA256",
+                "BIFFIX_DOCKERFILE"
+            ]
+        );
+        let env = image_build_env(&job(Some("builder"), &[("B", "x y=z"), ("A", "")]));
+        let get = |name: &str| env.iter().find(|(n, _)| *n == name).map(|(_, v)| v.clone());
+        assert_eq!(get("BIFFIX_BUILD_TARGET").as_deref(), Some("builder"));
+        // One `KEY=VALUE` line per arg, by key, base64 so any value travels as it is.
+        let lines = base64::engine::general_purpose::STANDARD
+            .decode(get("BIFFIX_BUILD_ARGS_B64").unwrap())
+            .unwrap();
+        assert_eq!(String::from_utf8(lines).unwrap(), "A=\nB=x y=z\n");
+    }
 
     #[test]
     fn a_polled_build_reads_like_its_state_change_event() {

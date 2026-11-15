@@ -108,6 +108,22 @@ fn image_keys_golden_vectors() {
         ),
         "30d5609cc09f755f36a54b1f63fbd8e24a59d1cab6497111c3a1a35f973b8c7e"
     );
+    // The same build with a target and build args (`build2+opts:`). Pinned like the key above:
+    // changing how options are hashed rebuilds every image built with them.
+    use biffix_workflow::images::{build_content_key_with, BuildOptions};
+    assert_eq!(
+        build_content_key_with(
+            BuildKind::Dockerfile,
+            "t",
+            Some("Dockerfile"),
+            &[Arch::Arm64, Arch::Amd64],
+            &BuildOptions {
+                target: Some("builder".into()),
+                build_args: [("V".to_string(), "1".to_string())].into(),
+            }
+        ),
+        "29e6dc0a8d946c4cf331269b34d31cca40f7aa561a284bd0f0fa1d491f518041"
+    );
 }
 
 proptest! {

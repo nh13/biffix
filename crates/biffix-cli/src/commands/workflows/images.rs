@@ -42,6 +42,21 @@ pub(super) fn request_images(
 
     let declared = biffix_workflow::images::declared_images(&images, default.as_deref())
         .map_err(|e| CliError::InvalidInput(e.to_string()))?;
+    for d in &declared {
+        if let biffix_workflow::images::ImageSource::Build(spec) = &d.source {
+            let suspect = secret_like_build_args(&spec.options.build_args);
+            if !suspect.is_empty() {
+                eprintln!(
+                    "[biffix] warning: image `{}`: build args {} look like credentials. Build args \
+                     are not secret: they are stored on the version, shown in the UI and API, \
+                     passed to the build as environment variables and kept in the image's \
+                     history. Use a build secret in the image's own CI instead",
+                    d.name,
+                    suspect.join(", ")
+                );
+            }
+        }
+    }
     let builds = declared
         .into_iter()
         .filter_map(|d| match d.source {
@@ -65,6 +80,21 @@ pub(super) fn request_images(
         })
         .collect();
     Ok(RequestedImages { default, named, builds })
+}
+
+/// The keys of `build_args` that look like credentials (`TOKEN`, `SECRET`, `PASSWORD` or `_KEY`
+/// in them, any case), sorted.
+fn secret_like_build_args(build_args: &std::collections::BTreeMap<String, String>) -> Vec<&str> {
+    build_args
+        .keys()
+        .filter(|k| {
+            let k = k.to_ascii_uppercase();
+            ["TOKEN", "SECRET", "PASSWORD", "PASSWD", "APIKEY", "CREDENTIAL", "_KEY"]
+                .iter()
+                .any(|s| k.contains(s))
+        })
+        .map(String::as_str)
+        .collect()
 }
 
 /// A build's context, tarred and hashed, ready to stage.
@@ -166,7 +196,7 @@ pub(super) async fn stage_builds(
     builds: Vec<PreparedBuild>,
 ) -> CliResult<Vec<(String, ImageRequest)>> {
     let mut out = Vec::with_capacity(builds.len());
-    for b in builds {
+    for mut b in builds {
         let upload = client
             .source_upload(&SourceUploadRequest {
                 version_id: source_id.to_string(),
@@ -174,31 +204,88 @@ pub(super) async fn stage_builds(
                 project: project.to_string(),
             })
             .await?;
-        client.put_presigned(&upload, b.context.bytes).await?;
+        client.put_presigned(&upload, std::mem::take(&mut b.context.bytes)).await?;
         eprintln!(
             "[biffix] image `{}`: staged its build context ({} for {})",
             b.name,
             source::context_label(&b.spec.context),
             b.archs.iter().map(|a| a.as_str()).collect::<Vec<_>>().join(", ")
         );
-        out.push((
-            b.name,
-            ImageRequest {
-                reference: None,
-                build: Some(biffix_api::ImageBuildRequest {
-                    kind: b.spec.kind.as_str().to_string(),
-                    context: b.spec.context,
-                    dockerfile: b.spec.dockerfile,
-                    context_uri: upload.uri,
-                    context_sha256: b.context.sha256,
-                    tree_hash: b.context.tree_hash,
-                    archs: b.archs.iter().map(|a| a.as_str().to_string()).collect(),
-                }),
-                runtime: b.runtime,
-            },
-        ));
+        out.push(build_request(b, upload.uri));
     }
     Ok(out)
+}
+
+/// Whether any of `images` is a build given a target or build args.
+pub(super) fn sends_build_options(
+    images: &std::collections::BTreeMap<String, ImageRequest>,
+) -> bool {
+    images
+        .values()
+        .filter_map(|i| i.build.as_ref())
+        .any(|b| b.target.is_some() || !b.build_args.is_empty())
+}
+
+/// `err`, from reading back the version `id` just registered, annotated with that id: the server
+/// stored the version, and an error that did not name it would lose it. Keeps the exit code.
+pub(super) fn read_back_failed(id: &str, err: CliError) -> CliError {
+    err.map_message(|m| {
+        format!("registered {id}, but its build options could not be read back: {m}")
+    })
+}
+
+/// Refuse a registration whose deployment dropped the target or build args `sent` (as a backend
+/// that predates them ignores fields it does not know): `shown`, the version `id`'s images as the
+/// deployment records them, must carry each build's target and build args as sent. The version is
+/// registered by then, but its images would build without them.
+pub(super) fn check_build_options_kept(
+    id: &str,
+    sent: &std::collections::BTreeMap<String, ImageRequest>,
+    shown: &[biffix_api::WorkflowImage],
+) -> CliResult<()> {
+    let dropped: Vec<&str> = sent
+        .iter()
+        .filter_map(|(name, i)| Some((name, i.build.as_ref()?)))
+        .filter(|(_, b)| b.target.is_some() || !b.build_args.is_empty())
+        .filter(|(name, b)| {
+            !shown
+                .iter()
+                .any(|s| &s.name == *name && s.target == b.target && s.build_args == b.build_args)
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    if dropped.is_empty() {
+        return Ok(());
+    }
+    Err(CliError::Unclassified(format!(
+        "registered {id}, but the deployment predates build options; deploy it first \
+         (`deploy.sh` without `--stack`): it recorded {} without the target or build args sent, \
+         so they would build the wrong image. Do not run {id}; register again once it is deployed",
+        dropped.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+    )))
+}
+
+/// The registration's request for build `b`, whose context was staged at `context_uri`.
+fn build_request(b: PreparedBuild, context_uri: String) -> (String, ImageRequest) {
+    let options = b.spec.options;
+    (
+        b.name,
+        ImageRequest {
+            reference: None,
+            build: Some(biffix_api::ImageBuildRequest {
+                kind: b.spec.kind.as_str().to_string(),
+                context: b.spec.context,
+                dockerfile: b.spec.dockerfile,
+                context_uri,
+                context_sha256: b.context.sha256,
+                tree_hash: b.context.tree_hash,
+                archs: b.archs.iter().map(|a| a.as_str().to_string()).collect(),
+                target: options.target,
+                build_args: options.build_args,
+            }),
+            runtime: b.runtime,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -324,5 +411,129 @@ mod tests {
                 if m.contains("Dockerfile is not a tracked file in its context")),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn a_dockerfile_build_s_target_and_build_args_reach_its_request() {
+        let repo = repo_with(&[("docker/Dockerfile", "FROM x AS builder\nFROM x\n")]);
+        let prepared = prepare_builds_in(
+            repo.path(),
+            builds_of(
+                "images:\n  builder:\n    dockerfile: docker/Dockerfile\n    target: builder\n    \
+                 build_args: {V: \"1\"}\n  worker:\n    dockerfile: docker/Dockerfile\n",
+            ),
+        )
+        .unwrap();
+        let mut prepared = prepared.into_iter();
+        let builder = build_request(prepared.next().unwrap(), "s3://b/c.tar.gz".into());
+        assert_eq!(builder.0, "builder");
+        let build = builder.1.build.unwrap();
+        assert_eq!(build.target.as_deref(), Some("builder"));
+        assert_eq!(build.build_args, [("V".to_string(), "1".to_string())].into());
+        assert_eq!(build.context_uri, "s3://b/c.tar.gz");
+        // Without them, the request is as before.
+        let worker = build_request(prepared.next().unwrap(), "s3://b/c.tar.gz".into()).1;
+        let json = serde_json::to_value(worker.build.unwrap()).unwrap();
+        assert!(json.get("target").is_none() && json.get("build_args").is_none(), "{json}");
+    }
+
+    #[test]
+    fn a_deployment_that_drops_build_options_is_caught_after_registering() {
+        let sent = |target: Option<&str>, args: &[(&str, &str)]| {
+            std::collections::BTreeMap::from([(
+                "builder".to_string(),
+                ImageRequest {
+                    reference: None,
+                    build: Some(biffix_api::ImageBuildRequest {
+                        kind: "dockerfile".into(),
+                        context: "docker".into(),
+                        dockerfile: Some("Dockerfile".into()),
+                        context_uri: "s3://b/c.tar.gz".into(),
+                        context_sha256: "0".repeat(64),
+                        tree_hash: "t".into(),
+                        archs: vec!["amd64".into()],
+                        target: target.map(str::to_string),
+                        build_args: args
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), v.to_string()))
+                            .collect(),
+                    }),
+                    runtime: None,
+                },
+            )])
+        };
+        // What an older backend shows: the image, without the options it never read.
+        let shown = |target: Option<&str>, args: &[(&str, &str)]| {
+            serde_json::from_value::<Vec<biffix_api::WorkflowImage>>(serde_json::json!([{
+                "name": "builder", "kind": "dockerfile", "declared_ref": "builder",
+                "source_ref": "dockerfile:docker/Dockerfile", "state": "building",
+                "target": target,
+                "build_args": args.iter().map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+            }]))
+            .unwrap()
+        };
+        let options = sent(Some("builder"), &[("V", "1")]);
+        // Nothing to compare when nothing was sent: no options, or no build.
+        assert!(!sends_build_options(&sent(None, &[])));
+        assert!(sends_build_options(&options));
+        assert!(check_build_options_kept("v:1", &options, &shown(Some("builder"), &[("V", "1")]))
+            .is_ok());
+        for dropped in [shown(None, &[]), shown(Some("builder"), &[]), shown(None, &[("V", "1")])] {
+            let err = check_build_options_kept("v:1", &options, &dropped).unwrap_err();
+            assert!(
+                matches!(&err, CliError::Unclassified(m)
+                    if m.contains("the deployment predates build options; deploy it first")
+                        && m.contains("v:1") && m.contains("`builder`")),
+                "{err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_read_back_names_the_version_and_keeps_its_exit_code() {
+        for err in [
+            CliError::Unavailable("service unavailable".into()),
+            CliError::Forbidden("forbidden".into()),
+        ] {
+            let code = err.exit_code();
+            let annotated = read_back_failed("v:1", err);
+            assert_eq!(annotated.exit_code(), code);
+            let m = annotated.to_string();
+            assert!(m.contains("registered v:1") && m.contains("could not be read back"), "{m}");
+        }
+    }
+
+    #[test]
+    fn build_args_that_look_like_credentials_are_named() {
+        let args = |keys: &[&str]| -> std::collections::BTreeMap<String, String> {
+            keys.iter().map(|k| (k.to_string(), "v".to_string())).collect()
+        };
+        assert_eq!(
+            secret_like_build_args(&args(&[
+                "GITHUB_TOKEN",
+                "db_password",
+                "Client_Secret",
+                "AWS_ACCESS_KEY_ID",
+                "api_key",
+                "DB_PASSWD",
+                "SERVICE_APIKEY",
+                "GCP_CREDENTIALS",
+                "TOOL_VERSION",
+                "KEYRING",
+                "MONKEY",
+            ])),
+            [
+                "AWS_ACCESS_KEY_ID",
+                "Client_Secret",
+                "DB_PASSWD",
+                "GCP_CREDENTIALS",
+                "GITHUB_TOKEN",
+                "SERVICE_APIKEY",
+                "api_key",
+                "db_password"
+            ]
+        );
+        assert!(secret_like_build_args(&args(&["TOOL_VERSION"])).is_empty());
     }
 }

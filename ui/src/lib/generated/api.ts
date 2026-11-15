@@ -2136,6 +2136,10 @@ export interface components {
     ImageBuildRequest: {
       /** @description The architectures to build (`amd64`, `arm64`). */
       archs: string[];
+      /** @description Build args (`dockerfile`; `--build-arg KEY=VALUE`), part of the build's key. */
+      build_args?: {
+        [key: string]: string;
+      };
       /**
        * @description The context directory in the workflow (`docker/align`; an empty string for the root). For
        *     `pixi`, the environment's directory.
@@ -2152,6 +2156,8 @@ export interface components {
       dockerfile?: string | null;
       /** @description `dockerfile` | `pixi`. */
       kind: string;
+      /** @description The stage of a multi-stage Dockerfile to build (`dockerfile`; `--target`). */
+      target?: string | null;
       /** @description The content hash of the context's files (paths within the context). */
       tree_hash: string;
     };
@@ -2599,6 +2605,11 @@ export interface components {
       entrypoint?: string | null;
       /** @description The default worker image as given (a tag or digest), before it was pinned. */
       image?: string | null;
+      /**
+       * @description The manifest read instead of the root's `biffix.yaml` (`register --manifest`), relative
+       *     to the workflow's root.
+       */
+      manifest?: string | null;
       queue_classes?: string[];
     };
     /** @description One image in a [`ReregisterPlan`]. */
@@ -3949,6 +3960,10 @@ export interface components {
       arch_builds?: components['schemas']['ImageArchBuild'][];
       archived?: boolean;
       archs?: string[];
+      /** @description The build args it is built with (a `dockerfile` image). */
+      build_args?: {
+        [key: string]: string;
+      };
       /** @description What the import found in it (`bash`, `libc`, `snakemake`). */
       capabilities?: Record<string, never>;
       /** @description As declared (a built image: its name). */
@@ -3981,6 +3996,8 @@ export interface components {
       source_ref: string;
       /** @description `unbuilt` | `building` | `failed` | `ready`. */
       state: string;
+      /** @description The Dockerfile stage it is built from (a `dockerfile` image given `target`). */
+      target?: string | null;
     };
     /** @description A workflow's listing, as stored (`PUT /workflows/listing` response). */
     WorkflowListing: {

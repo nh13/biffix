@@ -29,12 +29,13 @@ mod tests;
 #[cfg(test)]
 use decl::auto_name;
 pub use decl::{
-    check_image_name, clean_path, declared_images, new_images, own_runtime, BuildSpec,
-    DeclaredImage, ImageDecl, ImageDeclError, ImageSource, NewImage,
+    build_options, check_image_name, clean_path, declared_images, new_images, own_runtime,
+    BuildOptions, BuildSpec, DeclaredImage, ImageDecl, ImageDeclError, ImageSource, NewImage,
+    MAX_BUILD_ARGS, MAX_BUILD_ARGS_BYTES,
 };
 pub use keys::{
-    build_content_key, build_subject, content_key, derived_key, derived_subject, subject, Arch,
-    BuildKind, UnknownBuildKind,
+    build_content_key, build_content_key_with, build_subject, content_key, derived_key,
+    derived_subject, subject, Arch, BuildKind, UnknownBuildKind,
 };
 pub use reference::{ImageRef, ImageRefError};
 pub use registry::{ecr_coords_from_repo_uri, EcrCoords, EcrRefError, MANIFEST_MEDIA_TYPES};

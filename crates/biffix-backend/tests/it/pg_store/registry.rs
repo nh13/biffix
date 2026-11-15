@@ -247,6 +247,8 @@ async fn a_version_keeps_its_images_and_imports_are_recorded_once() {
             dockerfile: Some("Dockerfile".into()),
             dockerfile_text: None,
             archs: vec!["amd64".into()],
+            target: None,
+            build_args: Default::default(),
         }),
     };
     let version = |id: &str, hash: &str, images: Vec<VersionImage>| {
@@ -456,6 +458,8 @@ fn distinct_version(
                     dockerfile: Some("Dockerfile".into()),
                     dockerfile_text: None,
                     archs: vec!["amd64".into(), "arm64".into()],
+                    target: None,
+                    build_args: Default::default(),
                 }),
             },
             VersionImage {

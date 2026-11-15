@@ -329,3 +329,128 @@ async fn the_engine_version_is_recorded_in_its_canonical_spelling() {
     let id = view["id"].as_str().unwrap().to_string();
     assert_eq!(h.registry.versions.lock().unwrap()[&id].version.engine_version, "9.27.0");
 }
+
+#[tokio::test]
+async fn a_dockerfile_build_s_target_and_build_args_reach_its_build_and_key() {
+    use biffix_workflow::images::{
+        build_content_key, build_content_key_with, Arch, BuildKind, BuildOptions,
+    };
+    let h = harness();
+    let body = |sha: &str, build: Value| {
+        let mut body = snakemake_body(sha, SAMTOOLS, false);
+        let mut spec = json!({
+            "kind": "dockerfile",
+            "context": "docker",
+            "dockerfile": "Dockerfile",
+            "context_uri": staged_context(),
+            "context_sha256": TARBALL_SHA,
+            "tree_hash": TREE,
+            "archs": ["amd64"],
+        });
+        spec.as_object_mut().unwrap().extend(build.as_object().unwrap().clone());
+        body["images"]["builder"] = json!({"build": spec});
+        body
+    };
+    let options = BuildOptions {
+        target: Some("builder".into()),
+        build_args: [("TOOL_VERSION".to_string(), "1.2".to_string())].into(),
+    };
+    let (status, view) = register(
+        &h,
+        &body("abc", json!({"target": "builder", "build_args": {"TOOL_VERSION": "1.2"}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{view}");
+    let id = view["id"].as_str().unwrap().to_string();
+    let key = content_key(&h, &id, "builder");
+    assert_eq!(
+        key,
+        build_content_key_with(
+            BuildKind::Dockerfile,
+            TARBALL_SHA,
+            Some("Dockerfile"),
+            &[Arch::Amd64],
+            &options
+        )
+    );
+    assert_ne!(
+        key,
+        build_content_key(BuildKind::Dockerfile, TARBALL_SHA, Some("Dockerfile"), &[Arch::Amd64])
+    );
+    // The build is given them; the recipe records them, so a re-registration keeps them.
+    let builds = h.cloud.image_builds.lock().unwrap().clone();
+    assert_eq!(builds.len(), 1);
+    assert_eq!(builds[0].target.as_deref(), Some("builder"));
+    assert_eq!(builds[0].build_args, options.build_args);
+    let rec = h.registry.versions.lock().unwrap()[&id].clone();
+    let recipe = rec.images.iter().find(|i| i.name == "builder").unwrap().build.clone().unwrap();
+    assert_eq!(recipe.target.as_deref(), Some("builder"));
+    assert_eq!(recipe.build_args, options.build_args);
+    let again = biffix_backend::register::pipeline::reregister_request(&rec, None).unwrap();
+    let build = again.images["builder"].build.clone().unwrap();
+    assert_eq!(build.target.as_deref(), Some("builder"));
+    assert_eq!(build.build_args, options.build_args);
+    // The version's detail shows them.
+    let d = detail(&h, &id).await;
+    let shown = d["images"].as_array().unwrap().iter().find(|i| i["name"] == "builder").unwrap();
+    assert_eq!(shown["target"], "builder");
+    assert_eq!(shown["build_args"], json!({"TOOL_VERSION": "1.2"}));
+
+    // A build that reports no options (an image-build script that predates them, which built the
+    // image without them) is not used: it fails, saying why, and nothing is joined.
+    let subject = biffix_workflow::images::build_subject(&key, Some(Arch::Amd64));
+    let pushed = format!("{}@sha256:amd", testing::FAKE_WORKFLOW_REPO);
+    set_build(&h, &subject, BuildState::Succeeded, 3, &[("IMAGE", &pushed)]);
+    sweep_ok(&h).await;
+    assert!(h.cloud.image_indexes.lock().unwrap().is_empty());
+    let d = detail(&h, &id).await;
+    let shown = d["images"].as_array().unwrap().iter().find(|i| i["name"] == "builder").unwrap();
+    assert_eq!(shown["state"], "failed", "{shown}");
+    assert!(shown["reason"].as_str().unwrap().contains("without its build options"), "{shown}");
+    assert!(
+        shown["arch_builds"][0]["reason"].as_str().unwrap().contains("without its build options"),
+        "{shown}"
+    );
+    // One that reports them (the sha256 of the target and the encoded args it was given) is.
+    let digest = "bb17904df97b224cbbbef6396cb5da69a1e09ec125b10b7a75513c66a5803d1e";
+    set_build(
+        &h,
+        &subject,
+        BuildState::Succeeded,
+        3,
+        &[("IMAGE", &pushed), ("BUILD_OPTIONS", digest)],
+    );
+    sweep_ok(&h).await;
+    assert_eq!(h.cloud.image_indexes.lock().unwrap()[0].manifests, [pushed]);
+
+    // Another value is another build.
+    let (status, view) = register(
+        &h,
+        &body("abd", json!({"target": "builder", "build_args": {"TOOL_VERSION": "1.3"}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{view}");
+    let other = view["id"].as_str().unwrap().to_string();
+    assert_ne!(content_key(&h, &other, "builder"), key);
+
+    // They are checked as the CLI checks them.
+    for (build, want) in [
+        (json!({"target": "a b"}), "is not a build stage name"),
+        (json!({"build_args": {"1X": "v"}}), "is not a valid name"),
+        (json!({"build_args": {"K": "a\nb"}}), "newline or NUL"),
+    ] {
+        let (status, msg) = register(&h, &body("abe", build.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{build}: {msg}");
+        assert!(msg.as_str().unwrap().contains(want), "{want}: {msg}");
+    }
+    let mut pixi = pixi_body("abf");
+    pixi["images"]["default"]["build"]["target"] = json!("builder");
+    let (status, msg) = register(&h, &pixi).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{msg}");
+    assert!(msg.as_str().unwrap().contains("a pixi build has no target"), "{msg}");
+    let mut pixi = pixi_body("abg");
+    pixi["images"]["default"]["build"]["build_args"] = json!({"K": "v"});
+    let (status, msg) = register(&h, &pixi).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{msg}");
+    assert!(msg.as_str().unwrap().contains("a pixi build has no build args"), "{msg}");
+}

@@ -52,6 +52,12 @@
         <span class="v">{detail.registration_inputs.overrides.engine_version}</span>
       </div>
     {/if}
+    {#if detail.registration_inputs?.overrides?.manifest}
+      <div class="prov-row" data-testid="manifest">
+        <span class="k">Manifest</span>
+        <span class="v mono">{detail.registration_inputs.overrides.manifest}</span>
+      </div>
+    {/if}
 
     {#if detail.runtime}
       {@const rt = detail.runtime}
@@ -97,6 +103,14 @@
                 {#if isBuilt(image)}
                   <span class="kind" data-testid="image-kind">{image.kind}</span>
                   {image.source_ref.slice(image.source_ref.indexOf(':') + 1)}
+                  {#if image.target || Object.keys(image.build_args ?? {}).length > 0}
+                    <div class="build-options" data-testid="build-options">
+                      {#if image.target}target {image.target}{/if}
+                      {#each Object.entries(image.build_args ?? {}) as [k, v] (k)}
+                        <span class="build-arg">{k}={v}</span>
+                      {/each}
+                    </div>
+                  {/if}
                 {:else}{image.declared_ref}{/if}
               </td>
               <td>
@@ -290,6 +304,14 @@
   }
   .state.failed {
     color: var(--fg-fail);
+  }
+  .build-options {
+    font-size: 0.75rem;
+    margin-top: 0.15rem;
+    color: var(--text-muted);
+  }
+  .build-arg {
+    margin-left: 0.4rem;
   }
   .derived {
     font-size: 0.75rem;

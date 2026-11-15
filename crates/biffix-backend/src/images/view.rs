@@ -29,20 +29,38 @@ pub(crate) fn image_view(status: &crate::images::ImageStatus) -> biffix_api::Wor
         keep_tag: artifact.and_then(|a| a.keep_tag.clone()),
         derived_image: derived.and_then(|d| d.artifact.as_ref().map(|a| a.image.clone())),
         derived_state: derived.map(|d| d.phase.as_str().to_string()),
-        reason: status.problem.clone().or_else(|| {
-            build.and_then(|b| {
-                reason_of(b, status.phase == crate::images::build_follow::Phase::Failed)
+        reason: status
+            .problem
+            .clone()
+            .or_else(|| {
+                // A build that ignored its options says so rather than "reported no image".
+                (status.phase == crate::images::build_follow::Phase::Failed
+                    && status
+                        .arch_builds
+                        .iter()
+                        .any(crate::images::build::ArchBuild::lacks_options))
+                .then(|| crate::images::build::NO_BUILD_OPTIONS.to_string())
             })
-        }),
+            .or_else(|| {
+                build.and_then(|b| {
+                    reason_of(b, status.phase == crate::images::build_follow::Phase::Failed)
+                })
+            }),
         logs_url: build.and_then(|b| b.logs_url.clone()),
         generated_dockerfile: status.image.build.as_ref().and_then(|b| b.dockerfile_text.clone()),
+        target: status.image.build.as_ref().and_then(|b| b.target.clone()),
+        build_args: status.image.build.as_ref().map(|b| b.build_args.clone()).unwrap_or_default(),
         arch_builds: status
             .arch_builds
             .iter()
             .map(|a| biffix_api::ImageArchBuild {
                 arch: a.arch.to_string(),
                 state: a.build.as_ref().map_or("unbuilt", |b| b.state.as_str()).to_string(),
-                reason: a.build.as_ref().and_then(|b| b.reason.clone()),
+                reason: if a.lacks_options() {
+                    Some(crate::images::build::NO_BUILD_OPTIONS.to_string())
+                } else {
+                    a.build.as_ref().and_then(|b| b.reason.clone())
+                },
                 logs_url: a.build.as_ref().and_then(|b| b.logs_url.clone()),
             })
             .collect(),

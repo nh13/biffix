@@ -18,6 +18,12 @@
 //! else (a repository the deploy no longer builds into, such as the workflow repository, where
 //! third-party workflow CI can push) is not trusted: it is built again, once, into the builds
 //! repository, and its recorded result replaced ([`recorded`]).
+//!
+//! A Dockerfile build given a target or build args ([`options_env`]) must report them back: the
+//! build script labels the image with their [`options_digest`] and outputs it as `BUILD_OPTIONS`,
+//! and checks the label on any image it reuses. An image-build script that predates options would
+//! build the image without them, under the key that names them (and the tag is write-once), so an
+//! architecture build that does not report the digest is not used ([`ArchBuild::image`]).
 
 use biffix_core::builds::{BuildProjection, BuildState};
 use biffix_workflow::images::{build_subject, Arch};
@@ -53,20 +59,83 @@ pub(crate) async fn recorded(
     })
 }
 
+/// The build output a build with options reports their [`options_digest`] as.
+pub(crate) const BUILD_OPTIONS_OUTPUT: &str = "BUILD_OPTIONS";
+
+/// Why a build with options that pushed an image is not used.
+pub(crate) const NO_BUILD_OPTIONS: &str =
+    "the build pushed an image without its build options (an image-build script that predates \
+     them); deploy every stack (`deploy.sh` without `--stack`), then delete the image's build-* \
+     tag and rebuild";
+
+/// The environment a build's target and build args reach the build script as:
+/// `BIFFIX_BUILD_TARGET`, and `BIFFIX_BUILD_ARGS_B64`, the base64 of one `KEY=VALUE` line per arg
+/// (by key; no value holds a newline). Each is `None` when there is none.
+pub(crate) fn options_env(
+    target: Option<&str>,
+    build_args: &std::collections::BTreeMap<String, String>,
+) -> (Option<String>, Option<String>) {
+    use base64::Engine as _;
+    let args = (!build_args.is_empty()).then(|| {
+        let lines: String = build_args.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
+        base64::engine::general_purpose::STANDARD.encode(lines)
+    });
+    (target.map(str::to_string), args)
+}
+
+/// What a build with options must report as `BUILD_OPTIONS` (and labels its image with): the
+/// sha256 hex of `"<BIFFIX_BUILD_TARGET>\n<BIFFIX_BUILD_ARGS_B64>"` (each empty when unset), as
+/// `codebuild/image/build.sh` computes it. `None` for a build without options.
+pub(crate) fn options_digest(
+    target: Option<&str>,
+    build_args: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
+    let (target, args) = options_env(target, build_args);
+    if target.is_none() && args.is_none() {
+        return None;
+    }
+    Some(crate::sha256_hex(format!("{}\n{}", target.unwrap_or_default(), args.unwrap_or_default())))
+}
+
 /// One architecture's build of an image.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ArchBuild {
     pub(crate) arch: Arch,
     pub(crate) build: Option<BuildProjection>,
+    /// The [`options_digest`] the build must report, for a build with options.
+    pub(crate) options: Option<String>,
 }
 
 impl ArchBuild {
-    /// The image it pushed (`<workflow repo>@sha256:…`), once it succeeded.
+    /// The image it pushed (`<workflow repo>@sha256:…`), once it succeeded and, for a build with
+    /// options, reported them ([`Self::lacks_options`]).
     pub(crate) fn image(&self) -> Option<&str> {
+        if self.lacks_options() {
+            return None;
+        }
+        self.pushed()
+    }
+
+    /// The image it pushed, once it succeeded, whatever it reported.
+    fn pushed(&self) -> Option<&str> {
         self.build
             .as_ref()
             .filter(|b| b.state == BuildState::Succeeded)
             .and_then(|b| crate::images::build_follow::output(b, "IMAGE"))
+    }
+
+    /// It pushed an image but did not report the build options it was given: built by a script
+    /// that ignored them ([`NO_BUILD_OPTIONS`]).
+    pub(crate) fn lacks_options(&self) -> bool {
+        let Some(want) = &self.options else {
+            return false;
+        };
+        self.pushed().is_some()
+            && self
+                .build
+                .as_ref()
+                .and_then(|b| crate::images::build_follow::output(b, BUILD_OPTIONS_OUTPUT))
+                != Some(want.as_str())
     }
 }
 
@@ -184,7 +253,8 @@ pub(crate) async fn load(
     for arch in recipe.archs() {
         let build =
             state.registry.get_build(&build_subject(&image.content_key, Some(arch))).await?;
-        arch_builds.push(ArchBuild { arch, build });
+        let options = options_digest(recipe.target.as_deref(), &recipe.build_args);
+        arch_builds.push(ArchBuild { arch, build, options });
     }
     let index = state.registry.get_build(&build_subject(&image.content_key, None)).await?;
     Ok((arch_builds, index))
@@ -209,6 +279,8 @@ async fn start_arch(
             context_sha256: recipe.context_sha256.clone(),
             dockerfile: recipe.dockerfile.clone(),
             dockerfile_text: recipe.dockerfile_text.clone(),
+            target: recipe.target.clone(),
+            build_args: recipe.build_args.clone(),
         })
         .await?;
     tracing::info!(subject, build_arn, "images: build started");
@@ -349,7 +421,7 @@ mod tests {
     }
 
     fn arch(arch: Arch, build: Option<BuildProjection>) -> ArchBuild {
-        ArchBuild { arch, build }
+        ArchBuild { arch, build, options: None }
     }
 
     fn pushed(image: &str) -> Option<BuildProjection> {
@@ -392,6 +464,59 @@ mod tests {
             next_step("k", &built, Some(&indexed), Some(&artifact), true, false, ""),
             Step::Nothing
         );
+    }
+
+    #[test]
+    fn the_options_digest_is_of_what_the_build_script_is_given() {
+        // `codebuild/image/build.sh` hashes `$BIFFIX_BUILD_TARGET\n$BIFFIX_BUILD_ARGS_B64`; these
+        // vectors were computed apart from this code (and the build script's test checks the same).
+        let args = BTreeMap::from([("TOOL_VERSION".to_string(), "1.2".to_string())]);
+        let (target, b64) = options_env(Some("builder"), &args);
+        assert_eq!(
+            (target.as_deref(), b64.as_deref()),
+            (Some("builder"), Some("VE9PTF9WRVJTSU9OPTEuMgo="))
+        );
+        assert_eq!(
+            options_digest(Some("builder"), &args).as_deref(),
+            Some("bb17904df97b224cbbbef6396cb5da69a1e09ec125b10b7a75513c66a5803d1e")
+        );
+        assert_eq!(
+            options_digest(None, &BTreeMap::from([("V".to_string(), "1".to_string())])).as_deref(),
+            Some("943a916ca3b456651aaf313ff95a40907e8c2c3aecf9de0f84ce22350f7d6542")
+        );
+        assert_eq!(
+            options_digest(Some("builder"), &BTreeMap::new()).as_deref(),
+            Some("55beec1d4d191e45027c223c79692dc04ea0db1417798db12b93e8bc58a778cb")
+        );
+        // Without options there is nothing to check (and nothing is set or labelled).
+        assert_eq!(options_digest(None, &BTreeMap::new()), None);
+        assert_eq!(options_env(None, &BTreeMap::new()), (None, None));
+    }
+
+    #[test]
+    fn a_build_with_options_counts_only_when_it_reports_them() {
+        let with = |outputs: &[(&str, &str)]| ArchBuild {
+            arch: Arch::Amd64,
+            build: Some(build(BuildState::Succeeded, 1, outputs)),
+            options: Some("d".into()),
+        };
+        // An image-build script that predates options pushes an image without them: not used.
+        let old = with(&[("IMAGE", "r@sha256:a")]);
+        assert_eq!(old.image(), None);
+        assert!(old.lacks_options());
+        let wrong = with(&[("IMAGE", "r@sha256:a"), ("BUILD_OPTIONS", "e")]);
+        assert_eq!(wrong.image(), None);
+        assert!(wrong.lacks_options());
+        let right = with(&[("IMAGE", "r@sha256:a"), ("BUILD_OPTIONS", "d")]);
+        assert_eq!(right.image(), Some("r@sha256:a"));
+        assert!(!right.lacks_options());
+        // It failed, and says why.
+        assert_eq!(phase(None, std::slice::from_ref(&old), None), Phase::Failed);
+        assert_eq!(phase(None, std::slice::from_ref(&right), None), Phase::Building);
+        // A build without options is as before: `BUILD_OPTIONS` is neither needed nor read.
+        let plain = arch(Arch::Amd64, pushed("r@sha256:a"));
+        assert_eq!(plain.image(), Some("r@sha256:a"));
+        assert!(!plain.lacks_options());
     }
 
     #[test]

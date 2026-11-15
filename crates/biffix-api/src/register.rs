@@ -123,6 +123,12 @@ pub struct ImageBuildRequest {
     pub tree_hash: String,
     /// The architectures to build (`amd64`, `arm64`).
     pub archs: Vec<String>,
+    /// The stage of a multi-stage Dockerfile to build (`dockerfile`; `--target`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// Build args (`dockerfile`; `--build-arg KEY=VALUE`), part of the build's key.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub build_args: std::collections::BTreeMap<String, String>,
 }
 
 /// One of a version's images and where its import is.
@@ -173,6 +179,12 @@ pub struct WorkflowImage {
     /// The Dockerfile biffix generated to build it (a `pixi` image).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generated_dockerfile: Option<String>,
+    /// The Dockerfile stage it is built from (a `dockerfile` image given `target`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// The build args it is built with (a `dockerfile` image).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub build_args: std::collections::BTreeMap<String, String>,
     /// A built image's build per architecture.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub arch_builds: Vec<ImageArchBuild>,
@@ -226,6 +238,10 @@ pub struct RegistrationOverrides {
     pub image: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queue_classes: Vec<String>,
+    /// The manifest read instead of the root's `biffix.yaml` (`register --manifest`), relative
+    /// to the workflow's root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<String>,
 }
 
 /// `POST /workflows/{id}/reregister` — register a version again from what it recorded, on this
