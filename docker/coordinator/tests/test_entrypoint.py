@@ -201,6 +201,8 @@ def _after(argv: list[str], flag: str) -> str:
     [
         ("snakemake", "9.27.0", "9.27.0"),
         ("nextflow", "nextflow version 25.10.4.11177", "25.10.4"),
+        ("nextflow", "nextflow version 26.04.9.14305", "26.04.9"),
+        ("nextflow", "nextflow version 26.10.5.14654", "26.10.5"),
     ],
 )
 def test_a_matching_runtime_passes_the_check(
@@ -218,6 +220,7 @@ def test_a_matching_runtime_passes_the_check(
     [
         ("snakemake", "9.26.0", "9.27.0"),
         ("nextflow", "nextflow version 25.10.3.11000", "25.10.4"),
+        ("nextflow", "nextflow version 26.04.9.14305", "26.10.5"),
     ],
 )
 def test_a_different_release_fails_with_ex_config(

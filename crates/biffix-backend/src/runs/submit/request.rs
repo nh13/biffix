@@ -333,8 +333,10 @@ async fn check_request(
     // The target is one word of the engine's command line, after the coordinator's own options:
     // it must read as a target, never as an option (`--snakefile=…`) or more than one word.
     req.target = req.target.take().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-    if let Some(problem) = req.target.as_deref().and_then(|t| rec.version.engine.target_problem(t))
-    {
+    if let Some(problem) = req.target.as_deref().and_then(|t| {
+        let engine = rec.version.engine;
+        engine.target_problem(t).or_else(|| engine.target_unsupported(&rec.version.engine_version))
+    }) {
         return Err(bad(format!("target: {problem}")));
     }
     // The experiment the run launches into: one of the version's project that is not archived.

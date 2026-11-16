@@ -290,6 +290,6 @@ test('settings lists the engine releases a workflow may pin', async ({ page }) =
   await expect(table.getByRole('row')).toHaveText([
     /Engine\s*From\s*Up to/,
     /snakemake\s*9\.0\.0\s*10\.0\.0/,
-    /nextflow\s*25\.10\.4\s*26\.0\.0/,
+    /nextflow\s*25\.10\.4\s*27\.0\.0/,
   ]);
 });

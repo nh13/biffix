@@ -229,7 +229,7 @@ fn inspection_json(
 fn nextflow_inspect(root: &Path, args: &[String]) -> CliResult<ImageScan> {
     let args = [["-format".to_string(), "json".to_string()].as_slice(), args].concat();
     let output = crate::local::nf_plugins::run_nextflow(root, "inspect", &args)?;
-    biffix_workflow::scan::from_nextflow_inspect(&output)
+    biffix_workflow::scan::from_nextflow_inspect(crate::local::nf_plugins::json_document(&output))
         .map_err(|e| CliError::Unclassified(e.to_string()))
 }
 

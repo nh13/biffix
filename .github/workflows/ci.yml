@@ -216,6 +216,36 @@ jobs:
         working-directory: plugins/nf-biffix
         run: ./gradlew --no-daemon test
 
+  # One nf-biffix serves every Nextflow line biffix pins
+  # (crates/biffix-workflow/src/runtime/pins.rs). The job above builds and tests it against the oldest. This one runs the same specs, on the
+  # same main classes, against each newer line's Nextflow and the nf-amazon it defaults to (only
+  # the test classpath changes), so a binary break there fails here.
+  plugin-nextflow-lines:
+    name: plugin · nextflow observer (gradle, nextflow ${{ matrix.nextflow }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {nextflow: 26.04.9, nf-amazon: 3.9.3}
+          - {nextflow: 26.10.5, nf-amazon: 3.12.1}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - name: gradle build + test
+        working-directory: plugins/nf-biffix
+        env:
+          NEXTFLOW: ${{ matrix.nextflow }}
+          NF_AMAZON: ${{ matrix.nf-amazon }}
+        run: >-
+          ./gradlew --no-daemon test -PtestNextflowVersion="$NEXTFLOW"
+          -PtestNfAmazonVersion="$NF_AMAZON"
+
   # The coordinator image's entrypoint, run for real against stand-in engines and a stand-in boto3;
   # no Docker build (that is build-coordinator-image.yml).
   coordinator:

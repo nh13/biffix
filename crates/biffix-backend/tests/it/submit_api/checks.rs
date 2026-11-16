@@ -379,6 +379,35 @@ async fn a_target_that_is_not_one_engine_target_is_refused_before_anything_launc
     assert!(text_body(res).await.starts_with("target: "));
 }
 
+/// Nextflow 26's default (strict) parser refuses `-entry`, which is how the coordinator runs a
+/// target: a version pinned to 26 takes none, at registration or at submit.
+#[tokio::test]
+async fn a_nextflow_26_version_takes_no_target() {
+    let (state, events, cloud) = state();
+    let app = api::router(state);
+    let mut register = nextflow_register_body();
+    register["engine_version"] = json!("26.04.9");
+    register["target"] = json!("ALIGN_ONLY");
+    let res = app.clone().oneshot(post("/workflows", Some("developers"), &register)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let msg = text_body(res).await;
+    assert!(msg.starts_with("target: Nextflow 26.04.9 has no `-entry`"), "{msg}");
+    // Without one it registers, and a run of it is held to the same rule.
+    register.as_object_mut().unwrap().remove("target");
+    setup(&app, "/workflows", "developers", &register).await;
+    let submit = json!({
+        "workflow_version_id": "abc:hash:0",
+        "params": {"reads": "s3://b/in.fastq", "outdir": "s3://b/out/"},
+        "target": "ALIGN_ONLY"
+    });
+    let res = app.clone().oneshot(post("/runs", Some("operators"), &submit)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let msg = text_body(res).await;
+    assert!(msg.starts_with("target: Nextflow 26.04.9 has no `-entry`"), "{msg}");
+    assert!(cloud.launched.lock().unwrap().is_empty());
+    assert!(events.events.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn without_a_capability_secret_a_submit_is_refused_as_the_sweep_refuses_it() {
     let (state, events, cloud) = state();

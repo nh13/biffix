@@ -58,7 +58,7 @@ run_nextflow() {
   #     (NXF_PLUGINS_DEFAULT), not a `plugins {}` block in the -c config below (nor `-plugins`):
   #     either REPLACES the pipeline's own plugins list, so e.g. nf-core's nf-schema would never
   #     load. NXF_PLUGINS_DEFAULT is added to the declared list instead, and replaces Nextflow's
-  #     executor-based default (so nf-amazon is named too) (verified on Nextflow 25.10).
+  #     executor-based default (so nf-amazon is named too) (verified on Nextflow 25.10 and 26.x).
   #   - Any other layer (for a workflow that declares none) runs nf-biffix in a `plugins {}` block
   #     in the -c config, which replaces the pipeline's own list: a pipeline that declares plugins
   #     its layer lacks still runs, where the pipeline's list would fail it offline before any task.
@@ -73,7 +73,7 @@ run_nextflow() {
   # Nextflow reads — not the `-c` file below. A `-c` file outranks the pipeline's own config, so a
   # generic `process.errorStrategy` there silently replaced e.g. nf-core's conf/base.config retry
   # policy; from here the pipeline's config and process directives win, and this applies only where
-  # the pipeline sets nothing (verified on Nextflow 25.10).
+  # the pipeline sets nothing (verified on Nextflow 25.10 and 26.x).
   local NF_DEFAULTS="${NXF_HOME:-$HOME/.nextflow}/config"
   mkdir -p "$(dirname "$NF_DEFAULTS")"
   {
@@ -109,7 +109,7 @@ run_nextflow() {
     # The pipeline's own `withName:`/`withLabel:` selectors and process `executor` directives outrank
     # process.executor, and -preview still constructs each process's executor, so a dry run pins
     # every process to the local one with a match-all selector: this file is read after the
-    # pipeline's, so its selector applies last (verified on Nextflow 25.10).
+    # pipeline's, so its selector applies last (verified on Nextflow 25.10 and 26.x).
     [ -z "${BIFFIX_DRY_RUN:-}" ] || echo "process { withName: '.*' { executor = 'local' } }"
     echo "process.queue = ${queue}"
     [ -z "$image" ] || echo "process.container = ${image}"

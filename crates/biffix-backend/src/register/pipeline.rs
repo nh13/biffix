@@ -193,6 +193,15 @@ pub(crate) async fn prepare(
     let pinned =
         biffix_workflow::engines::check_engine_version(engine.as_str(), &req.engine_version)
             .map_err(|e| ServiceError::Invalid(e.to_string()))?;
+    // And the release must be able to run one.
+    if let Some(problem) = req
+        .target
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .and_then(|_| engine.target_unsupported(&pinned.canonical))
+    {
+        return Err(ServiceError::Invalid(format!("target: {problem}")));
+    }
     // The engine runtime that release is built into: frozen onto the version with every pin.
     let recipe =
         biffix_workflow::runtime::recipe_for(engine.as_str(), pinned.version).ok_or_else(|| {

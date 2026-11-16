@@ -6,11 +6,11 @@
 //! the pins below — and its [`runtime_key`] is the sha256 of the recipe, so two versions pinning the
 //! same release share one runtime, and any pin change builds a new one.
 //!
-//! The pin tables are per engine major: every Snakemake 9.x release runs with the same executor,
-//! storage and logger plugins, every Nextflow 25.x with the same nf-biffix. biffix-owned code (the
-//! executor fork, the logger, nf-biffix) is not downloaded by the build: it ships as wheels in the
-//! base coordinator image (`/opt/biffix/wheels/`), and the build checks the base carries exactly the
-//! versions the recipe names.
+//! The pin tables are per engine: every Snakemake 9.x release runs with the same executor, storage
+//! and logger plugins, and every pinned Nextflow release (25.10 and 26.x) with the same nf-biffix.
+//! biffix-owned code (the executor fork, the logger, nf-biffix) is not downloaded by the build: it
+//! ships as wheels in the base coordinator image (`/opt/biffix/wheels/`), and the build checks the
+//! base carries exactly the versions the recipe names.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -25,7 +25,7 @@ mod pins;
 #[cfg(test)]
 mod tests;
 
-use pins::{nextflow_25, snakemake_9};
+use pins::{nextflow, snakemake_9};
 
 /// Bumped when the runtime build itself changes what it produces from the same pins (a new layout
 /// under `/opt/biffix/`, a new wrapper script), so every runtime is rebuilt.
@@ -278,7 +278,8 @@ pub fn recipe_for(engine: &str, version: EngineVersion) -> Option<RuntimeRecipe>
             engine_version,
             pins: snakemake_9(),
         }),
-        ("nextflow", 25) => nextflow_25(&engine_version).map(|pins| RuntimeRecipe::Nextflow {
+        // The range above and the exact-release pin table gate Nextflow, not its major.
+        ("nextflow", _) => nextflow(&engine_version).map(|pins| RuntimeRecipe::Nextflow {
             recipe_version: RECIPE_VERSION,
             engine_version,
             pins,

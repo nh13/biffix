@@ -770,7 +770,7 @@ rule f:
 
     #[test]
     fn nextflow_inspect_output_lists_each_process_container() {
-        // The shape `nextflow inspect -format json` (25.10) prints.
+        // The shape `nextflow inspect -format json` (25.10 and 26.x) prints.
         let json = r#"{"processes": [
             {"name": "FASTQC", "container": "quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0"},
             {"name": "MULTIQC", "container": "quay.io/biocontainers/multiqc:1.25--pyhdfd78af_0"},
