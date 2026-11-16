@@ -304,6 +304,15 @@ jobs:
       - name: pytest (synth)
         working-directory: infra
         run: uv run pytest
+      # CodeBuild's runtime build runs codebuild/runtime/build.sh's zip reading on Python 3.11,
+      # whose zipfile refuses zips that the runner's newer Python accepts. Rerun the build-script
+      # tests with their zip reading's `python3` as a 3.11 (BIFFIX_TEST_CODEBUILD_PYTHON).
+      - name: pytest (runtime-build zip reading on Python 3.11)
+        working-directory: infra
+        run: |
+          uv python install 3.11
+          BIFFIX_TEST_CODEBUILD_PYTHON="$(uv python find --no-project 3.11)" \
+            uv run pytest tests/test_codebuild_scripts.py
 
   # The workflows (actionlint, which also shellchecks every `run:` block) and every shell script,
   # including the extensionless pre-push hook.

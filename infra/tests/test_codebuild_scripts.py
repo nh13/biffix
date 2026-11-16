@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
 import struct
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -1133,6 +1135,139 @@ def test_the_nextflow_layer_smoke_requires_nf_biffix_s_awsbatch_executor(
         assert not (smoke / "seen.pipeline.config").exists()
 
 
+# ── runtime/build.sh zip_read (unzip_to, nf_plugins_info) ──
+
+
+# CodeBuild's runtime build (Amazon Linux 2023 standard:5) runs build.sh's `python3` on Python 3.11,
+# whose zipfile refuses zips that 3.12 and later accept. CI sets this to a 3.11 interpreter, so the
+# tests below run `zip_read` on it; unset, they run on the `python3` on PATH.
+CODEBUILD_PYTHON = os.environ.get("BIFFIX_TEST_CODEBUILD_PYTHON")
+
+
+def _codebuild_python(tmp_path: Path) -> dict[str, str]:
+    """An env whose PATH puts `CODEBUILD_PYTHON` first as `python3`, or none when it is unset."""
+    if not CODEBUILD_PYTHON:
+        return {}
+    shim = tmp_path / "codebuild-python"
+    shim.mkdir()
+    (shim / "python3").symlink_to(CODEBUILD_PYTHON)
+    return {"PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"}
+
+
+def _zip_fns() -> str:
+    return "".join(_function(RUNTIME_BUILD, n) for n in ("zip_read", "unzip_to", "nf_plugins_info"))
+
+
+def _zip(entries: dict[str, str], compression: int = zipfile.ZIP_DEFLATED) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression) as z:
+        for name, text in entries.items():
+            z.writestr(name, text)
+    return buf.getvalue()
+
+
+def _with_duplicate_central_entry(data: bytes) -> bytes:
+    """`data` with its first central-directory record listed twice, as Nextflow 26's plugin zips
+    list `classes/META-INF/MANIFEST.MF` (two records, one local header)."""
+    eocd = data.rindex(b"PK\x05\x06")
+    disk_n, total, cd_size, cd_off = struct.unpack("<HHII", data[eocd + 8 : eocd + 20])
+    n, m, k = struct.unpack("<HHH", data[cd_off + 28 : cd_off + 34])
+    record = data[cd_off : cd_off + 46 + n + m + k]
+    new_eocd = (
+        data[eocd : eocd + 8]
+        + struct.pack("<HHII", disk_n + 1, total + 1, cd_size + len(record), cd_off)
+        + data[eocd + 20 :]
+    )
+    return data[: cd_off + cd_size] + record + new_eocd
+
+
+@pytest.mark.parametrize(
+    "compression", [zipfile.ZIP_DEFLATED, zipfile.ZIP_STORED], ids=["deflated", "stored"]
+)
+def test_the_launcher_s_default_plugins_are_read_past_its_script(
+    tmp_path: Path, compression: int
+) -> None:
+    # A `-dist` launcher: a shell script with a jar appended.
+    jar = _zip(
+        {
+            "META-INF/MANIFEST.MF": "Main-Class: nextflow.cli.Launcher\n",
+            "META-INF/plugins-info.txt": "nf-amazon@3.9.3\nnf-cloudcache@0.6.0\n",
+        },
+        compression,
+    )
+    launcher = tmp_path / "nextflow"
+    launcher.write_bytes(b'#!/bin/bash\nexec java -jar "$0" "$@"\n' + jar)
+    got = _common(f'{_zip_fns()}\nnf_plugins_info "{launcher}"', _codebuild_python(tmp_path))
+    assert got.returncode == 0, got.stderr
+    assert got.stdout.splitlines() == ["nf-amazon@3.9.3", "nf-cloudcache@0.6.0"]
+
+
+def test_a_zip_listing_an_entry_twice_unpacks_it_once(tmp_path: Path) -> None:
+    data = _with_duplicate_central_entry(
+        _zip({"classes/META-INF/MANIFEST.MF": "Plugin-Id: nf-x\n", "lib/a.jar": "jar"})
+    )
+    assert [i.filename for i in zipfile.ZipFile(io.BytesIO(data)).infolist()].count(
+        "classes/META-INF/MANIFEST.MF"
+    ) == 2
+    src, dest = tmp_path / "p.zip", tmp_path / "out"
+    src.write_bytes(data)
+    got = _common(f'{_zip_fns()}\nunzip_to "{src}" "{dest}"', _codebuild_python(tmp_path))
+    assert got.returncode == 0, got.stderr
+    assert (dest / "classes/META-INF/MANIFEST.MF").read_text() == "Plugin-Id: nf-x\n"
+    assert (dest / "lib/a.jar").read_text() == "jar"
+
+
+def test_a_zip_entry_outside_the_target_is_refused(tmp_path: Path) -> None:
+    src, dest = tmp_path / "p.zip", tmp_path / "out"
+    src.write_bytes(_zip({"../escape.txt": "x"}))
+    got = _common(f'{_zip_fns()}\nunzip_to "{src}" "{dest}"', _codebuild_python(tmp_path))
+    assert got.returncode != 0
+    assert "outside the target directory" in got.stderr
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_a_corrupt_zip_entry_fails_its_crc(tmp_path: Path) -> None:
+    data = bytearray(_zip({"a.txt": "hello world"}, zipfile.ZIP_STORED))
+    data[data.index(b"hello")] = ord("j")
+    src = tmp_path / "p.zip"
+    src.write_bytes(bytes(data))
+    got = _common(
+        f'{_zip_fns()}\nunzip_to "{src}" "{tmp_path / "out"}"', _codebuild_python(tmp_path)
+    )
+    assert got.returncode != 0
+    assert "CRC mismatch" in got.stderr
+
+
+@pytest.mark.skipif(not CODEBUILD_PYTHON, reason="BIFFIX_TEST_CODEBUILD_PYTHON is not set")
+def test_the_codebuild_python_s_zipfile_refuses_a_zip_listing_an_entry_twice(
+    tmp_path: Path,
+) -> None:
+    # The zip tests above prove something only when their `python3` is this interpreter, and it
+    # refuses this zip.
+    assert CODEBUILD_PYTHON is not None
+    version = [CODEBUILD_PYTHON, "-I", "-c", "import sys; print(sys.version)"]
+    want = subprocess.run(version, capture_output=True, text=True, check=True).stdout
+    got_bash = _bash('python3 -I -c "import sys; print(sys.version)"', _codebuild_python(tmp_path))
+    assert got_bash.stdout == want, got_bash.stderr
+    src = tmp_path / "p.zip"
+    src.write_bytes(_with_duplicate_central_entry(_zip({"a.txt": "a", "b.txt": "b"})))
+    got = subprocess.run(
+        [
+            CODEBUILD_PYTHON,
+            "-I",
+            "-c",
+            "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])",
+            str(src),
+            str(tmp_path / "out"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert got.returncode != 0
+    assert "Overlapped entries" in got.stderr
+
+
 # ── runtime/build.sh install_nf_workflow_plugins ──
 
 
@@ -1141,7 +1276,7 @@ def _install_workflow_plugins(
 ) -> subprocess.CompletedProcess[str]:
     fns = "".join(
         _function(RUNTIME_BUILD, name)
-        for name in ("unzip_to", "install_nf_plugin", "install_nf_workflow_plugins")
+        for name in ("zip_read", "unzip_to", "install_nf_plugin", "install_nf_workflow_plugins")
     )
     nf = tmp_path / "nf"
     (nf / "plugins").mkdir(parents=True)
@@ -1153,7 +1288,7 @@ def _install_workflow_plugins(
         "python3 -c 'import sys, zipfile; "
         'zipfile.ZipFile(sys.argv[1], "w").writestr("x", "1")\' "$2"; }\n'
     )
-    env = {"WORK": str(work)}
+    env = {"WORK": str(work), **_codebuild_python(tmp_path)}
     if plugins is not None:
         env["BIFFIX_RT_NF_WORKFLOW_PLUGINS"] = plugins
     return _common(f'{fns}\n{stub}install_nf_workflow_plugins "{nf}"', env)

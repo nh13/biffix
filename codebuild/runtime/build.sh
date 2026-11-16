@@ -282,9 +282,68 @@ check_nf_awsbatch_executor() {
   log "smoke: awsbatch is $biffix's executor (over $amazon)$with"
 }
 
+# zip_read cat <zip> <entry> | zip_read extract <zip> <dir>: one entry to stdout, or every entry
+# under <dir>. Read here rather than with ZipFile.read/extractall, which CodeBuild's Python 3.11
+# refuses ("Overlapped entries ... possible zip bomb") for Nextflow 26's zips: its launcher (a shell
+# script with a jar appended), and plugin zips whose central directory lists an entry twice, at one
+# local header (3.12 and later read both). Each entry is read from its local header, an exact
+# duplicate is skipped, its CRC is checked, and no entry may land outside <dir>.
+zip_read() {
+  python3 - "$@" <<'PY'
+import os, struct, sys, zipfile, zlib
+
+mode, src = sys.argv[1], sys.argv[2]
+z = zipfile.ZipFile(src)
+
+def read(f, i):
+    f.seek(i.header_offset)
+    h = f.read(30)
+    if h[:4] != b"PK\x03\x04":
+        sys.exit(f"{src}: {i.filename}: no local file header at its offset")
+    n, m = struct.unpack("<HH", h[26:30])
+    f.seek(i.header_offset + 30 + n + m)
+    raw = f.read(i.compress_size)
+    if i.compress_type == zipfile.ZIP_STORED:
+        data = raw
+    elif i.compress_type == zipfile.ZIP_DEFLATED:
+        data = zlib.decompressobj(-15).decompress(raw)
+    else:
+        sys.exit(f"{src}: {i.filename}: unsupported compression {i.compress_type}")
+    if zlib.crc32(data) != i.CRC:
+        sys.exit(f"{src}: {i.filename}: CRC mismatch")
+    return data
+
+with open(src, "rb") as f:
+    if mode == "cat":
+        sys.stdout.write(read(f, z.getinfo(sys.argv[3])).decode())
+        sys.exit(0)
+    root = os.path.realpath(sys.argv[3])
+    seen = set()
+    for i in z.infolist():
+        if (i.filename, i.header_offset) in seen:
+            continue
+        seen.add((i.filename, i.header_offset))
+        target = os.path.realpath(os.path.join(root, i.filename))
+        if target != root and not target.startswith(root + os.sep):
+            sys.exit(f"{src}: {i.filename}: outside the target directory")
+        if i.is_dir():
+            os.makedirs(target, exist_ok=True)
+            continue
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as out:
+            out.write(read(f, i))
+PY
+}
+
 # unzip_to <zip> <dir>: unpack <zip> into <dir>.
 unzip_to() {
-  python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$1" "$2"
+  zip_read extract "$1" "$2"
+}
+
+# nf_plugins_info <launcher>: the plugin versions a Nextflow `-dist` launcher defaults to, its
+# META-INF/plugins-info.txt.
+nf_plugins_info() {
+  zip_read cat "$1" META-INF/plugins-info.txt
 }
 
 # install_nf_plugin <id> <version> <sha256> <plugins dir>: a plugin's registry zip, checked against
@@ -352,7 +411,7 @@ build_nextflow_layers() {
   # nf-amazon and nf-cloudcache: the versions this release defaults to (what `nextflow run` would
   # pick online), which the recipe pins with each zip's sha256; fetched from the plugin registry.
   local defaults plugin id pv sha
-  defaults=$(python3 -c 'import sys, zipfile; print(zipfile.ZipFile(sys.argv[1]).read("META-INF/plugins-info.txt").decode())' "$nf/bin/nextflow")
+  defaults=$(nf_plugins_info "$nf/bin/nextflow") || die "nextflow $v: cannot read its plugins-info.txt"
   for plugin in "nf-amazon@$BIFFIX_RT_NF_AMAZON_VERSION@$BIFFIX_RT_NF_AMAZON_SHA256" \
     "nf-cloudcache@$BIFFIX_RT_NF_CLOUDCACHE_VERSION@$BIFFIX_RT_NF_CLOUDCACHE_SHA256"; do
     IFS=@ read -r id pv sha <<<"$plugin"
