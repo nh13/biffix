@@ -354,8 +354,8 @@ sample" until the top of the hour.
   `biffix workflows show <id> --output json` (its `state`, `not_ready`, `runtime` and `images`),
   shows what is missing.
   A build is started at most three times automatically (the first and two retries); after that,
-  a Developer starts it again with `POST /workflows/{id}/runtime/rebuild` or
-  `POST /workflows/{id}/images/{name}/rebuild`.
+  a Developer starts it again with `biffix workflows rebuild <id>` (or the API's
+  `POST /workflows/{id}/runtime/rebuild` and `POST /workflows/{id}/images/{name}/rebuild`).
 - **Google sign-in fails with `redirect_uri_mismatch`.** The Google client lacks the identity
   stack's `GoogleAuthorizedRedirectUri`. This also happens after changing `cognito_domain_prefix`
   or moving to a new account.

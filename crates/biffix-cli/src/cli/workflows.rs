@@ -1,7 +1,7 @@
 //! `biffix workflows …`: the workflow commands' flags, and their dispatch into
 //! [`commands::workflows`].
 
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 
 use crate::commands::{self, GlobalArgs, Session};
 use crate::error::CliResult;
@@ -12,16 +12,39 @@ use crate::render::OutputMode;
 /// and makes a nonsensical value a usage error before anything is registered.
 const MAX_WAIT_MINUTES: u64 = 7 * 24 * 60;
 
-/// A `--wait-minutes` value as the wait it means.
-fn wait_for(no_wait: bool, wait_minutes: u64) -> Option<std::time::Duration> {
-    (!no_wait).then(|| std::time::Duration::from_secs(wait_minutes.saturating_mul(60)))
+/// `--no-wait` / `--wait-minutes`: whether, and how long, a command waits until the version it
+/// registered or rebuilt can run.
+#[derive(Args, Debug)]
+pub(crate) struct WaitArgs {
+    /// Return without waiting until the version can run (by default the command waits for its
+    /// engine runtime and images to be built).
+    #[arg(long)]
+    no_wait: bool,
+    /// How long to wait for the version to be ready, in minutes (at most a week); a version still
+    /// not ready then exits 7, as when the service is unavailable.
+    #[arg(
+        long,
+        default_value_t = 30,
+        conflicts_with = "no_wait",
+        value_parser = clap::value_parser!(u64).range(1..=MAX_WAIT_MINUTES)
+    )]
+    wait_minutes: u64,
+}
+
+impl WaitArgs {
+    /// The wait the flags mean: `None` for `--no-wait`.
+    fn wait(&self) -> Option<std::time::Duration> {
+        (!self.no_wait)
+            .then(|| std::time::Duration::from_secs(self.wait_minutes.saturating_mul(60)))
+    }
 }
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum WorkflowsCommand {
     /// Freeze an immutable workflow version from a local git checkout. The same source with the
     /// same inputs again is refused (exit 6) naming the version already registered; `reregister`
-    /// reports that case as up to date instead.
+    /// reports that case as up to date instead. Then waits until the version can run; one still
+    /// not ready when the wait ends stays registered.
     Register {
         /// Path to the workflow checkout (must be inside a git work tree; with `--source-mode git`,
         /// its top level, since runs clone the repository and run its root).
@@ -67,19 +90,8 @@ pub(crate) enum WorkflowsCommand {
         /// reproducibility generally (no GitHub credential ever reaches the coordinator).
         #[arg(long, value_enum, default_value_t = SourceMode::Git)]
         source_mode: SourceMode,
-        /// Return as soon as the version is registered, without waiting for its engine runtime and
-        /// images to be built (by default the command waits until the version can run).
-        #[arg(long)]
-        no_wait: bool,
-        /// How long to wait for the version to be ready, in minutes (at most a week). A version
-        /// still not ready then exits 7, as when the service is unavailable; it stays registered.
-        #[arg(
-            long,
-            default_value_t = 30,
-            conflicts_with = "no_wait",
-            value_parser = clap::value_parser!(u64).range(1..=MAX_WAIT_MINUTES)
-        )]
-        wait_minutes: u64,
+        #[command(flatten)]
+        wait: WaitArgs,
     },
     /// Preview the launch form a checkout would register with, without registering it. With
     /// `--output json` (or piped), the form as JSON — exactly what `register` sends.
@@ -98,7 +110,9 @@ pub(crate) enum WorkflowsCommand {
     /// Register workflow versions again from what they recorded, on this deployment's engine
     /// runtime, with their images pinned again (a tag that moved is pinned to where it is now).
     /// The form and About page stay as they were registered; to derive them again, register a
-    /// checkout. A version with nothing new to register is reported as up to date.
+    /// checkout. A version with nothing new to register is reported as up to date. Each version
+    /// is then waited for until it can run; one still not ready stays registered (with --all, it
+    /// is reported as not ready, and the command exits 1).
     Reregister {
         /// A version id, or a workflow name (its newest version).
         #[arg(required_unless_present = "all", conflicts_with = "all")]
@@ -119,19 +133,8 @@ pub(crate) enum WorkflowsCommand {
         /// Show what would be registered, without registering anything.
         #[arg(long)]
         dry_run: bool,
-        /// Return as soon as each version is registered, without waiting until it can run.
-        #[arg(long)]
-        no_wait: bool,
-        /// How long to wait for each version to be ready, in minutes (at most a week). A version
-        /// still not ready then stays registered: exit 7, as when the service is unavailable (with
-        /// --all, it is reported as not ready, and the command exits 1).
-        #[arg(
-            long,
-            default_value_t = 30,
-            conflicts_with = "no_wait",
-            value_parser = clap::value_parser!(u64).range(1..=MAX_WAIT_MINUTES)
-        )]
-        wait_minutes: u64,
+        #[command(flatten)]
+        wait: WaitArgs,
     },
     /// List registered workflow versions, each marked released or developer.
     List {
@@ -155,6 +158,24 @@ pub(crate) enum WorkflowsCommand {
     Unrelease {
         /// Frozen version id.
         id: String,
+    },
+    /// Start a version's failed engine-runtime and image builds again, once their automatic
+    /// retries are spent (e.g. after a transient outage has passed). With neither --runtime nor
+    /// --image, the runtime and every image; anything ready or still building is left as it is.
+    /// Needs the Developer or Admin role. Then waits until the version can run, as `register`
+    /// does: a build it did not rebuild that is still failed ends the wait at once (rebuild it
+    /// too, or pass --no-wait).
+    Rebuild {
+        /// Frozen version id.
+        id: String,
+        /// Rebuild the engine runtime (alone, unless --image is given too).
+        #[arg(long)]
+        runtime: bool,
+        /// Rebuild this image (`default`, or a name the workflow declares); repeatable.
+        #[arg(long = "image", value_name = "NAME")]
+        images: Vec<String>,
+        #[command(flatten)]
+        wait: WaitArgs,
     },
     /// Show one workflow version, including its parameter form.
     Show {
@@ -186,8 +207,7 @@ impl WorkflowsCommand {
                 entrypoint,
                 manifest,
                 source_mode,
-                no_wait,
-                wait_minutes,
+                wait,
             } => {
                 commands::workflows::register(
                     &mut session()?,
@@ -202,7 +222,7 @@ impl WorkflowsCommand {
                         entrypoint,
                         manifest,
                         source_mode,
-                        wait: wait_for(no_wait, wait_minutes),
+                        wait: wait.wait(),
                     },
                 )
                 .await
@@ -213,8 +233,7 @@ impl WorkflowsCommand {
                 project,
                 engine_version,
                 dry_run,
-                no_wait,
-                wait_minutes,
+                wait,
             } => {
                 commands::workflows::reregister(
                     &mut session()?,
@@ -224,7 +243,7 @@ impl WorkflowsCommand {
                         project,
                         engine_version,
                         dry_run,
-                        wait: wait_for(no_wait, wait_minutes),
+                        wait: wait.wait(),
                     },
                 )
                 .await
@@ -239,6 +258,13 @@ impl WorkflowsCommand {
             }
             WorkflowsCommand::Unrelease { id } => {
                 commands::workflows::release(&mut session()?, &id, false).await
+            }
+            WorkflowsCommand::Rebuild { id, runtime, images, wait } => {
+                commands::workflows::rebuild(
+                    &mut session()?,
+                    commands::workflows::RebuildOpts { id, runtime, images, wait: wait.wait() },
+                )
+                .await
             }
             WorkflowsCommand::Show { id } => commands::workflows::show(&mut session()?, &id).await,
         }
@@ -274,11 +300,41 @@ mod tests {
                 "{huge}"
             );
         }
+        // The wait flags are the same on every command that waits.
+        for verb in [&["workflows", "rebuild", "a:h:0"][..], &["workflows", "reregister", "wf"]] {
+            let with = |extra: &[&'static str]| [verb, extra].concat();
+            assert_eq!(
+                kind(&with(&["--no-wait", "--wait-minutes", "5"])),
+                ErrorKind::ArgumentConflict,
+                "{verb:?}"
+            );
+            assert_eq!(kind(&with(&["--wait-minutes", "0"])), ErrorKind::ValueValidation);
+        }
+        let wait = |no_wait, wait_minutes| WaitArgs { no_wait, wait_minutes }.wait();
         assert_eq!(
-            wait_for(false, MAX_WAIT_MINUTES),
+            wait(false, MAX_WAIT_MINUTES),
             Some(std::time::Duration::from_secs(MAX_WAIT_MINUTES * 60))
         );
-        assert_eq!(wait_for(true, 30), None);
+        assert_eq!(wait(true, 30), None);
+    }
+
+    #[test]
+    fn rebuild_takes_the_runtime_and_repeated_images() {
+        let parse = |argv: &[&str]| {
+            let full = [&["biffix", "workflows", "rebuild", "a:h:0"][..], argv].concat();
+            match Cli::try_parse_from(full).unwrap().command {
+                Command::Workflows {
+                    command: WorkflowsCommand::Rebuild { runtime, images, wait, .. },
+                } => (runtime, images, wait.wait()),
+                other => panic!("{other:?}"),
+            }
+        };
+        let thirty = Some(std::time::Duration::from_secs(30 * 60));
+        assert_eq!(parse(&[]), (false, vec![], thirty));
+        assert_eq!(
+            parse(&["--runtime", "--image", "a", "--image", "b", "--no-wait"]),
+            (true, vec!["a".to_string(), "b".to_string()], None)
+        );
     }
 
     #[test]

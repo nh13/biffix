@@ -1,7 +1,5 @@
-//! `register --wait`: poll a just-registered version until its engine runtime and images are
-//! built and it can run.
-
-use biffix_api::VersionRuntime;
+//! The wait of `register`, `reregister` and `rebuild`: poll a version until its engine runtime and
+//! images are built and it can run.
 
 use crate::api::ApiClient;
 use crate::error::{CliError, CliResult, TRANSIENT_BUDGET};
@@ -38,7 +36,7 @@ fn version_wait(detail: &biffix_api::WorkflowVersionDetail) -> RuntimeWait {
 /// How often [`wait_for_runtime`] polls.
 const WAIT_POLL: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Poll the version until its runtime is ready, failed, or `timeout` passes. A blip while polling
+/// Poll the version until it is ready (returning its detail then), failed, or `timeout` passes. A blip while polling
 /// (the service unavailable, a 5xx) is polled through within [`TRANSIENT_BUDGET`], as `runs
 /// follow` does: the registration already succeeded. Every error names the version, so a script
 /// can pick it up again.
@@ -46,7 +44,7 @@ pub(super) async fn wait_for_runtime(
     client: &ApiClient,
     id: &str,
     timeout: std::time::Duration,
-) -> CliResult<Option<VersionRuntime>> {
+) -> CliResult<biffix_api::WorkflowVersionDetail> {
     // A timeout too large to add to now is no deadline at all.
     let deadline = std::time::Instant::now().checked_add(timeout);
     let mut last = String::new();
@@ -56,7 +54,7 @@ pub(super) async fn wait_for_runtime(
             Ok(detail) => {
                 transient = 0;
                 match version_wait(&detail) {
-                    RuntimeWait::Ready => return Ok(detail.runtime),
+                    RuntimeWait::Ready => return Ok(detail),
                     RuntimeWait::Failed(why) => {
                         return Err(CliError::Unclassified(format!("{id}: {why}")))
                     }

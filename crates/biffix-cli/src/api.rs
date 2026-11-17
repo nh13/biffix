@@ -18,7 +18,8 @@ use biffix_api::{
     EngineSupport, ExperimentList, Project, RegisterRequest, ReregisterPlan, ReregisterRequest,
     RunDetail, RunExperimentSetRequest, RunFilter, RunPage, RunRenameRequest, RunSubmitRequest,
     RunSummary, SourceUploadRequest, SourceUploadTarget, StatusReport, SubmittedRun,
-    WorkflowRelease, WorkflowReleaseUpdateRequest, WorkflowVersionDetail, WorkflowVersionSummary,
+    VersionRuntime, WorkflowImage, WorkflowRelease, WorkflowReleaseUpdateRequest,
+    WorkflowVersionDetail, WorkflowVersionSummary,
 };
 
 use crate::auth::TokenSource;
@@ -258,6 +259,26 @@ impl ApiClient {
 
     pub(crate) async fn get_workflow(&self, id: &str) -> CliResult<WorkflowVersionDetail> {
         self.get_json(&format!("/workflows/{}", urlencoding::encode(id))).await
+    }
+
+    /// Build a version's engine runtime again (`POST /workflows/{id}/runtime/rebuild`) after its
+    /// automatic builds failed, and return where it is now. One that is ready or building is left
+    /// as it is, so this is safe to repeat.
+    pub(crate) async fn rebuild_runtime(&self, id: &str) -> CliResult<VersionRuntime> {
+        let path = format!("/workflows/{}/runtime/rebuild", urlencoding::encode(id));
+        self.post_json(&path, &(), Retry::Always).await
+    }
+
+    /// Import (or build, or derive) a version's image `name` again (`POST
+    /// /workflows/{id}/images/{name}/rebuild`) after its automatic builds failed, and return where
+    /// it is now. One that is done or in progress is left as it is, so this is safe to repeat.
+    pub(crate) async fn rebuild_image(&self, id: &str, name: &str) -> CliResult<WorkflowImage> {
+        let path = format!(
+            "/workflows/{}/images/{}/rebuild",
+            urlencoding::encode(id),
+            urlencoding::encode(name)
+        );
+        self.post_json(&path, &(), Retry::Always).await
     }
 
     /// Release a version (or, `false`, un-release it) with `PUT /workflows/{id}/release`, and
