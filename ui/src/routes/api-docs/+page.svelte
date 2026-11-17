@@ -16,7 +16,8 @@
       const mod = await import('swagger-ui-dist/swagger-ui-bundle.js');
       const SwaggerUIBundle = mod.default ?? mod;
       SwaggerUIBundle({
-        spec,
+        // The committed document's version is a fixed placeholder; show this build's release.
+        spec: { ...spec, info: { ...spec.info, version: __BIFFIX_VERSION__ } },
         domNode: container,
         // No deep links: Swagger UI's deep linking pushes history entries SvelteKit doesn't own, so
         // Back after leaving this page would change the URL without changing the page.

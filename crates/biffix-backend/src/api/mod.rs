@@ -108,8 +108,15 @@ impl OpenApi for ApiDoc {
     }
 }
 
-/// The document's own fields (its `info`, from the crate), which the families' operations join.
+/// The document's own fields (its `info`: the crate's name, description, author and license, and a
+/// fixed version), which the families' operations join.
+///
+/// The version is fixed rather than the crate's: the UI commits the document
+/// (`ui/src/lib/generated/openapi.json`) and CI checks it is current, so a crate version here
+/// would make every release bump commit a new copy. The UI's API docs page shows the release
+/// version instead, which its build reads from the workspace's Cargo.toml.
 #[derive(OpenApi)]
+#[openapi(info(version = "unversioned"))]
 struct DocInfo;
 
 /// `doc` with `tag` on each of its operations that has none.

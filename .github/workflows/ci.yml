@@ -313,6 +313,15 @@ jobs:
           uv python install 3.11
           BIFFIX_TEST_CODEBUILD_PYTHON="$(uv python find --no-project 3.11)" \
             uv run pytest tests/test_codebuild_scripts.py
+      # publish.yml's scripts (.github/scripts), which run only in a release: lint and test them
+      # here with infra's tools, as they have no project of their own.
+      - name: release scripts (ruff · mypy · pytest)
+        working-directory: infra
+        run: |
+          uv run ruff check ../.github/scripts
+          uv run ruff format --check ../.github/scripts
+          uv run mypy --strict ../.github/scripts
+          uv run pytest ../.github/scripts
 
   # The workflows (actionlint, which also shellchecks every `run:` block) and every shell script,
   # including the extensionless pre-push hook.
