@@ -21,7 +21,7 @@ member account: the scripts always refuse the organization's management account.
 |---|---|---|
 | AWS CLI v2, with credentials for the target account | yes | yes |
 | [uv](https://docs.astral.sh/uv/) (Python for the CDK app) | yes | yes |
-| Node.js 24 and npm (the CDK CLI, and the UI build from source) | yes | yes |
+| Node.js 26 and npm (the CDK CLI, and the UI build from source) | yes | yes |
 | [crane](https://github.com/google/go-containerregistry) (copies the release's coordinator image) | yes | no |
 | Rust (the toolchain in `rust-toolchain.toml`) and [cargo-lambda](https://www.cargo-lambda.info/) | no | yes |
 | The `biffix` CLI on `PATH`, for the post-deploy health check | recommended | built for you |

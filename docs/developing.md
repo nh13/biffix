@@ -32,7 +32,7 @@ docs/              these docs
 ## Toolchains
 
 - **Rust**, at the version pinned in `rust-toolchain.toml` (rustup installs it on first use).
-- **Node.js 24** for the UI and the CDK CLI.
+- **Node.js 26** for the UI and the CDK CLI.
 - **[uv](https://docs.astral.sh/uv/)** for the Python projects: `infra/`, `docker/coordinator/`
   and the Snakemake plugin.
 - **Java 17** for the Nextflow plugin.
