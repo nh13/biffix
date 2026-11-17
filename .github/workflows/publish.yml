@@ -2,9 +2,10 @@
 # biffix-api) and the two engine plugins.
 #
 #   release-pr  release-plz opens or updates the release PR (release-plz.toml): the next workspace
-#               version, which every crate shares, and its CHANGELOG.md section. It also stamps that
-#               version into the committed OpenAPI document, which embeds it, so CI's generated-types
-#               drift gate passes on the PR.
+#               version, which every crate shares, and its CHANGELOG.md section. Nothing else commits
+#               to it: release-plz closes and reopens a PR that holds another author's commit, and
+#               main's ruleset holds a bot's commit for an approval. So nothing a release bumps may need
+#               committing alongside (the OpenAPI document's version is fixed for that reason).
 #   release-pr-dispatch
 #               run by hand (Actions → publish → Run workflow, patch or minor): opens a release PR at
 #               the next version even when the crates have not changed, for a release of the UI,
@@ -23,9 +24,11 @@
 # Crates are published by crates.io trusted publishing (OIDC; each crate trusts this workflow file in
 # nh13/biffix), so there is no registry token. RELEASE_PLZ_TOKEN (a fine-grained token with contents
 # and pull-requests write on this repository) opens the PR and pushes the tag: what GITHUB_TOKEN does
-# starts no workflow, so neither CI on the release PR nor release.yml on the tag would run. PyPI
-# trusts this workflow file in the `pypi` environment (trusted publishing); the Nextflow registry has
-# no equivalent, so nf-biffix is published with the NPR_API_KEY secret.
+# starts no workflow, so neither CI on the release PR nor release.yml on the tag would run. Commits
+# go through the API with it (release-plz's own, and .github/scripts/commit_files.py's), so GitHub
+# signs them, as main's ruleset requires. PyPI trusts this workflow file in the `pypi` environment
+# (trusted publishing); the Nextflow registry has no equivalent, so nf-biffix is published with the
+# NPR_API_KEY secret.
 name: publish
 
 on:
@@ -62,37 +65,11 @@ jobs:
           token: ${{ secrets.RELEASE_PLZ_TOKEN }}
       # rustup honors rust-toolchain.toml on the first cargo invocation.
       - name: open or update the release PR
-        id: release-plz
         uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9 # v0.5.131
         with:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-      # The backend's OpenAPI document carries the crate version (`info.version`), and CI fails when
-      # the committed copy differs from what the backend generates. Only that field changes with a
-      # version bump, so set it here rather than build the backend.
-      - name: stamp the version into the OpenAPI document
-        env:
-          PR: ${{ steps.release-plz.outputs.pr }}
-        run: |
-          set -euo pipefail
-          # `pr` is the release PR release-plz opened or updated, or `{}` when there is none.
-          branch=$(jq -r '.head_branch // empty' <<< "${PR:-"{}"}")
-          if [ -z "$branch" ]; then
-            echo "no release PR"
-            exit 0
-          fi
-          git fetch origin "$branch"
-          git switch -C "$branch" "origin/$branch"
-          python3 .github/scripts/set_version.py
-          if git diff --quiet; then
-            echo "the OpenAPI document already has this version"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -q -m "chore(release): stamp the version into the OpenAPI document" -- ui/src/lib/generated/openapi.json
-          git push origin "$branch"
 
   release-pr-dispatch:
     name: release PR (by hand)
@@ -139,18 +116,25 @@ jobs:
           )
           branch="release-v$next"
           echo "$current -> $next on $branch"
-          git switch -c "$branch"
           # The changelog covers every commit since the last release, not only the crates'.
           uvx --from git-cliff==2.14.2 git-cliff --config cliff.toml --unreleased --tag "v$next" \
             --strip header > "$RUNNER_TEMP/section.md"
           python3 .github/scripts/set_version.py "$next" --changelog-section "$RUNNER_TEMP/section.md"
           cargo update --workspace
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -q -m "chore(release): v$next" -- Cargo.toml Cargo.lock CHANGELOG.md ui/src/lib/generated/openapi.json
-          git push origin "$branch"
-          gh pr create --base main --head "$branch" --label release --title "chore(release): v$next" \
-            --body "Releases v$next. Merging this publishes the crates and pushes \`v$next\`, which runs release.yml."
+          # Create the branch at main, then commit through the API so the commit is signed (the
+          # script says why). If the commit or the PR fails, the branch is removed again, so a
+          # re-run starts clean.
+          git push origin "HEAD:refs/heads/$branch"
+          if ! {
+            python3 .github/scripts/commit_files.py "$branch" "chore(release): v$next" \
+              Cargo.toml Cargo.lock CHANGELOG.md &&
+            gh pr create --base main --head "$branch" --label release \
+              --title "chore(release): v$next" \
+              --body "Releases v$next. Merging this publishes the crates and pushes \`v$next\`, which runs release.yml."
+          }; then
+            git push origin --delete "$branch" || true
+            exit 1
+          fi
 
   release:
     if: github.event_name == 'push'
