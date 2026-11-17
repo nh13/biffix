@@ -11,6 +11,11 @@ ignore = [
   # rsa's Marvin timing side channel has no fixed release. rsa is a dev-dependency only: the
   # backend's auth tests sign test JWTs with a throwaway key; no shipped binary links it.
   { id = "RUSTSEC-2023-0071", reason = "dev-dependency only (test JWT signing); no fixed release" },
+  # chrono is unmaintained (an advisory, not a vulnerability). The AWS Lambda crates depend on it
+  # (lambda_http, aws_lambda_events), so it stays in the tree whatever ours do; our own use is
+  # parsing RFC 3339 timestamps (biffix-core eventbridge decode, biffix-db idle). Revisit when those
+  # crates move to jiff or time.
+  { id = "RUSTSEC-2026-0543", reason = "unmaintained, not vulnerable; required by lambda_http and aws_lambda_events" },
 ]
 
 [licenses]
