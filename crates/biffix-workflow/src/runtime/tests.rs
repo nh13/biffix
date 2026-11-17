@@ -1,15 +1,35 @@
 use super::*;
 use crate::engines::SUPPORTED;
+use std::collections::BTreeSet;
 
 #[test]
 fn every_buildable_nextflow_release_has_pins_and_no_other_does() {
     for release in crate::engines::NEXTFLOW_RELEASES {
-        assert!(nextflow_25(release).is_some(), "{release} is buildable but unpinned");
+        assert!(nextflow(release).is_some(), "{release} is buildable but unpinned");
     }
     // 25.04.0 is retired (crate::engines::RETIRED): its pins are gone with it.
-    for unpinned in ["25.04.0", "25.04.1", "25.10.2", "25.10.5"] {
-        assert!(nextflow_25(unpinned).is_none(), "{unpinned} is pinned but not listed");
+    for unpinned in ["25.04.0", "25.04.1", "25.10.2", "25.10.5", "26.04.0", "26.10.6"] {
+        assert!(nextflow(unpinned).is_none(), "{unpinned} is pinned but not listed");
     }
+}
+
+#[test]
+fn every_buildable_nextflow_release_has_its_own_recipe_and_one_nf_biffix() {
+    // Oldest first, from the range's minimum: nf-biffix builds against the first.
+    let parsed: Vec<_> = crate::engines::NEXTFLOW_RELEASES
+        .iter()
+        .map(|r| EngineVersion::parse(r).unwrap())
+        .collect();
+    assert!(parsed.windows(2).all(|w| w[0] < w[1]), "NEXTFLOW_RELEASES is not oldest-first");
+    let range = SUPPORTED.iter().find(|r| r.engine == "nextflow").unwrap();
+    assert_eq!(crate::engines::NEXTFLOW_RELEASES[0], range.min);
+    let recipes: Vec<_> =
+        crate::engines::NEXTFLOW_RELEASES.iter().map(|r| recipe("nextflow", r).unwrap()).collect();
+    let keys: BTreeSet<_> = recipes.iter().map(runtime_key).collect();
+    assert_eq!(keys.len(), recipes.len());
+    let biffix: BTreeSet<_> =
+        recipes.iter().map(|r| r.runtime_plugin_version("nf-biffix").unwrap()).collect();
+    assert_eq!(biffix.len(), 1, "one nf-biffix serves every release");
 }
 
 fn recipe(engine: &str, version: &str) -> Option<RuntimeRecipe> {
@@ -424,8 +444,29 @@ fn the_pin_tables_match_what_the_base_image_ships() {
     );
     // (The coordinator enables whichever nf-biffix its runtime layer carries, so the entrypoint
     // names no version of its own.)
-    let nf = nextflow_25("25.10.4").unwrap();
+    let nf = nextflow("25.10.4").unwrap();
     has_line("plugins/nf-biffix/build.gradle", format!("version = '{}'", nf.nf_biffix_version));
+    // nf-biffix builds against the oldest release and its nf-amazon (which it also declares as its
+    // minimum); CI re-runs its specs on every other pinned release and the nf-amazon that release
+    // defaults to, and on nothing else.
+    let (oldest, newer) = crate::engines::NEXTFLOW_RELEASES.split_first().unwrap();
+    let oldest_amazon = nextflow(oldest).unwrap().release.nf_amazon.version;
+    has_line("plugins/nf-biffix/build.gradle", format!("def nfVersion = '{oldest}'"));
+    has_line("plugins/nf-biffix/build.gradle", format!("def amazonVersion = '{oldest_amazon}'"));
+    let matrix: BTreeSet<String> = read(".github/workflows/ci.yml")
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("- {nextflow: "))
+        .map(str::to_string)
+        .collect();
+    let want: BTreeSet<String> = newer
+        .iter()
+        .map(|r| {
+            let amazon = nextflow(r).unwrap().release.nf_amazon.version;
+            format!("- {{nextflow: {r}, nf-amazon: {amazon}}}")
+        })
+        .collect();
+    assert_eq!(matrix, want, "ci.yml plugin-nextflow-lines matrix");
 }
 
 /// The build scripts spell the names this crate gives the layer images, the shim and the

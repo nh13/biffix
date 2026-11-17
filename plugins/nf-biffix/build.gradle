@@ -4,10 +4,32 @@ plugins {
 
 version = '0.6.2'
 
+// The Nextflow release (and the nf-amazon it defaults to) the plugin compiles against: the oldest
+// release biffix runs (engines.rs SUPPORTED), which is also the plugin's declared minimum
+// (Plugin-Requires). One jar serves every supported line, since the nf-amazon API it extends is
+// unchanged through 26.x.
+def nfVersion = '25.10.4'
+def amazonVersion = '3.4.4'
+
+// To check that jar on a newer line, `-PtestNextflowVersion=… -PtestNfAmazonVersion=…` (CI's
+// plugin-nextflow-lines job) runs the specs on that line's Nextflow and nf-amazon. Only the test
+// classpaths change: the main classes, and so the jar and zip, are still built against the above.
+def testNfVersion = findProperty('testNextflowVersion')
+def testAmazonVersion = findProperty('testNfAmazonVersion')
+def testClasspaths = ['testCompileClasspath', 'testRuntimeClasspath']
+configurations.matching { it.name in testClasspaths }.configureEach {
+    resolutionStrategy.eachDependency { DependencyResolveDetails d ->
+        if( d.requested.group != 'io.nextflow' )
+            return
+        // nf-amazon is a plugin with its own version; every other io.nextflow module is Nextflow's.
+        final want = d.requested.name == 'nf-amazon' ? testAmazonVersion : testNfVersion
+        if( want )
+            d.useVersion(want as String)
+    }
+}
+
 nextflowPlugin {
-    // Compile against the one Nextflow release biffix runs (25.10.4, with nf-amazon 3.x): this is
-    // also the plugin's declared minimum (Plugin-Requires), matching engines.rs SUPPORTED.
-    nextflowVersion = '25.10.4'
+    nextflowVersion = nfVersion
     provider = 'Nils Homer'
     description = 'Reports Nextflow run and task events to biffix, maps task containers through the run image map, and tags AWS Batch job definitions with the run project'
     className = 'io.github.nh13.biffix.BiffixPlugin'
@@ -20,7 +42,7 @@ nextflowPlugin {
     // this plugin's class loader (pf4j resolves a plugin's classes through its Plugin-Dependencies)
     // and nf-amazon must start first. A constraint rather than a pin: the runtime layer carries the
     // nf-amazon its Nextflow release defaults to; the API this compiles against is the one below.
-    requirePlugins = ['nf-amazon@>=3.4.4']
+    requirePlugins = ["nf-amazon@>=${amazonVersion}".toString()]
 }
 
 repositories {
@@ -32,13 +54,13 @@ dependencies {
     // packaged): at runtime they come from the nf-amazon plugin itself, and a second copy in this
     // plugin's lib/ would be a different AwsBatchExecutor class. From Seqera's Maven repository
     // (added by the nextflow-plugin Gradle plugin), with its AWS SDK v2 dependencies.
-    compileOnly 'io.nextflow:nf-amazon:3.4.4'
-    testImplementation 'io.nextflow:nf-amazon:3.4.4'
+    compileOnly "io.nextflow:nf-amazon:${amazonVersion}"
+    testImplementation "io.nextflow:nf-amazon:${amazonVersion}"
     // Gradle 9 no longer supplies the JUnit Platform launcher to the test runtime; its version comes
     // from the JUnit BOM Spock brings in.
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-    // Spock (Groovy 4, matching Nextflow 25.x) + a JSON-schema validator (draft 2020-12, the draft
-    // schemars writes), so the emitted engine events can be checked against the canonical
+    // Spock (Groovy 4, matching Nextflow 25.10 and 26.x) + a JSON-schema validator (draft 2020-12,
+    // the draft schemars writes), so the emitted engine events can be checked against the canonical
     // schemas/wire.engine.schema.json.
     testImplementation 'org.spockframework:spock-core:2.5-groovy-4.0'
     testImplementation 'com.networknt:json-schema-validator:3.0.8'

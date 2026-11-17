@@ -6,7 +6,9 @@ the Snakemake logger plugin in `../snakemake-logger-plugin-biffix`, and both rep
 contract (`schemas/wire.engine.schema.json`).
 
 The plugin id is `nf-biffix`; its classes live in the `io.github.nh13.biffix` package. It requires
-Nextflow 25.10.4 or later and nf-amazon 3.4.4 or later.
+Nextflow 25.10.4 or later and nf-amazon 3.4.4 or later. One release serves both the 25.10 and
+26.x lines: it is built against 25.10.4 and nf-amazon 3.4.4, and CI runs its specs, on those same
+classes, against each pinned 26.x release and its nf-amazon (3.9 and 3.12).
 
 ## What it does
 

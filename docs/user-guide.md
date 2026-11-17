@@ -65,7 +65,9 @@ A workflow is a git repository with a Snakemake or Nextflow entry point. biffix 
 
 - **An engine release.** Set `engine_version` in `biffix.yaml` to one exact release in the range
   `biffix engines` prints. Snakemake runs any 9.x release; Nextflow runs only the releases biffix
-  pins (25.10.4 today), which `biffix engines` lists.
+  pins (25.10.4, 26.04.9 and 26.10.5 today), which `biffix engines` lists. A pipeline that uses
+  Nextflow 26 language features (record types, typed processes and workflows) or declares
+  `manifest.nextflowVersion = '>=26.04.0'` pins a 26 release.
 - **Container images for the tasks.** Either a default image for every task, or each rule and
   process naming its own: Nextflow's `container` directive, or Snakemake's
   `aws_batch_container_image` resource (the AWS Batch executor does not read Snakemake's
@@ -123,7 +125,7 @@ What each key does:
 
 | Key | Purpose |
 |---|---|
-| `engine`, `engine_version`, `entrypoint`, `target` | Which engine, which exact release, which file to run, and an optional default target (a Snakemake target rule or file, or a Nextflow `-entry` workflow). |
+| `engine`, `engine_version`, `entrypoint`, `target` | Which engine, which exact release, which file to run, and an optional default target (a Snakemake target rule or file, or a Nextflow `-entry` workflow; Nextflow 26 has no `-entry`, so a version pinned to it takes no target and selects the workflow with a param instead). |
 | `schema` | The parameter schema file. Nextflow defaults to `nextflow_schema.json`; Snakemake has no default. |
 | `params` | Per-parameter hints the schema cannot express: `format` (`s3-file`, `s3-dir`, `reference-bundle`, `samplesheet`), `suffix` (accepted file endings), `multiple`, `output` (a path the workflow writes, never checked for existence), `secret` (never stored or shown in clear), `help`, `unit`. |
 | `form` | The form's `title` and `description`, `sections` (order, titles, `advanced`), per-parameter overrides under `params` (label, help, section, hidden, default, min/max/step, `presets`, `show_if`, validation `rules`, `samplesheet` columns), named `examples` that fill the whole form, a `run_name` template, and `references`. |
@@ -132,7 +134,7 @@ What each key does:
 | `reports` | Reports a run writes: `name`, `path` (a glob relative to the output prefix), optional `description`, `kind` (`html`, `table`, `image`, `pdf`, `alignment`, `reads`, `fastqc`, `file`) and `per_sample`. |
 | `samples` | A hint for per-sample progress: the Snakemake `wildcard` that names the sample, a Nextflow `tag` regex with a `sample` group, `steps` forced to `study` or `sample` scope, and display `labels` for steps. |
 | `image`, `images` | The container images, by name. `image:` is shorthand for `images: {default: …}`. See below. |
-| `plugins` | Nextflow only: the pipeline's own plugins as `id@version`. |
+| `plugins` | Nextflow only: the pipeline's own plugins as `id@version`. Runs are offline, so a plugin Nextflow would load implicitly (`nf-tower`/`nf-wave` for a `tower`, `wave` or `fusion` scope; from 26.10 `nf-agent`/`nf-agent-pi` for an `agent` scope) must be declared, in the pipeline's `plugins {}` and here. |
 | `cache` | Snakemake only: reuse results of `cache: True` rules across runs (kept per project). |
 
 Unknown keys are warned about, not silently ignored, except inside an `images:` entry, where an

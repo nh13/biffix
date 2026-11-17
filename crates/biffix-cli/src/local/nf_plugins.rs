@@ -55,6 +55,21 @@ impl NextflowError {
 /// The Nextflow launcher: the `nextflow` on the PATH.
 const NEXTFLOW: &str = "nextflow";
 
+/// The variables that turn on Nextflow's agent mode from 26.04, any of them truthy (Nextflow's
+/// `SysEnv.isAgentMode`). It prints `[PIPELINE]`/`[WORKDIR]`/`[SUCCESS]` lines to stdout around a
+/// command's own output, so the JSON of `inspect -format json` would not parse. Cleared for every
+/// `nextflow` biffix runs, since it reads their stdout (`biffix inspect` run by a coding agent).
+const NEXTFLOW_AGENT_MODE_ENV: [&str; 3] = ["NXF_AGENT_MODE", "AGENT", "CLAUDECODE"];
+
+/// `<nextflow>`, outside agent mode ([`NEXTFLOW_AGENT_MODE_ENV`]).
+fn nextflow_command(nextflow: &str) -> Command {
+    let mut cmd = Command::new(nextflow);
+    for var in NEXTFLOW_AGENT_MODE_ENV {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
 /// Run `<nextflow> <command> <args> .` in `root`; its stdout.
 fn try_run_nextflow(
     nextflow: &str,
@@ -62,7 +77,7 @@ fn try_run_nextflow(
     command: &str,
     args: &[String],
 ) -> Result<String, NextflowError> {
-    let output = Command::new(nextflow)
+    let output = nextflow_command(nextflow)
         .arg(command)
         .args(args)
         .arg(".")
@@ -95,9 +110,9 @@ pub(crate) fn run_nextflow(root: &Path, command: &str, args: &[String]) -> CliRe
 
 /// The arguments of the user's `nextflow inspect` that also go to `nextflow config`: only a
 /// `-profile` (`-profile x` or `-profile=x`), so profile-scoped config evaluates as it will for the
-/// run. `nextflow config` (25.10) takes no `-params-file`, `-c` or `--param`, so config that
-/// branches on a param sees its default. The pipeline's plugins at run time are its own config's:
-/// biffix adds none through `-c`.
+/// run. `nextflow config` (25.10 and 26.x) takes no `-params-file`, `-c` or `--param`, so config
+/// that branches on a param sees its default. The pipeline's plugins at run time are its own
+/// config's: biffix adds none through `-c`.
 fn profile_args(args: &[String]) -> Vec<String> {
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -112,9 +127,23 @@ fn profile_args(args: &[String]) -> Vec<String> {
     Vec::new()
 }
 
+/// The JSON document a `nextflow` command printed: from the first line that opens an object.
+/// Nextflow 26.04 prints its own lines to stdout ahead of it (`Downloading plugin …`,
+/// `WARN: Unrecognized config option …`), which never start with `{`.
+pub(crate) fn json_document(stdout: &str) -> &str {
+    let mut offset = 0;
+    for line in stdout.split_inclusive('\n') {
+        if line.trim_start().starts_with('{') {
+            return &stdout[offset..];
+        }
+        offset += line.len();
+    }
+    stdout
+}
+
 /// The `plugins` list of `nextflow config -output json`'s document (none when it has no key).
 fn plugins_of_config_json(json: &str) -> CliResult<Vec<String>> {
-    let doc: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+    let doc: serde_json::Value = serde_json::from_str(json_document(json)).map_err(|e| {
         CliError::Unclassified(format!("`nextflow config` printed no JSON document: {e}"))
     })?;
     match doc.get("plugins") {
@@ -520,6 +549,11 @@ mod tests {
             .unwrap(),
             ["nf-prov@1.4.0", "nf-schema@2.7.2"]
         );
+        // On Nextflow 26 the runtime carries that release's own nf-amazon.
+        assert_eq!(
+            pipeline_plugins(&["nf-amazon@3.12.1", "nf-schema@2.7.3"], Some("26.10.5")).unwrap(),
+            ["nf-schema@2.7.3"]
+        );
         assert!(pipeline_plugins::<&str>(&[], None).unwrap().is_empty());
         // Without biffix's own, no engine_version is needed.
         assert_eq!(pipeline_plugins(&["nf-schema@2.7.2"], None).unwrap(), ["nf-schema@2.7.2"]);
@@ -537,6 +571,9 @@ mod tests {
         assert!(m.contains("without a version") && m.contains("offline"), "{m}");
         let m = err(pipeline_plugins(&["nf-amazon@3.0.0"], Some("25.10.4")));
         assert!(m.contains("runtime for Nextflow 25.10.4 carries nf-amazon@3.4.4"), "{m}");
+        // 25.10's nf-amazon is not 26.10's.
+        let m = err(pipeline_plugins(&["nf-amazon@3.4.4"], Some("26.10.5")));
+        assert!(m.contains("runtime for Nextflow 26.10.5 carries nf-amazon@3.12.1"), "{m}");
         let m = err(pipeline_plugins(&["nf-amazon@3.4.4"], None));
         assert!(m.contains("engine_version"), "{m}");
         let m = err(pipeline_plugins(&["nf-schema@2.7.2", "nf-schema@2.7.3"], None));
@@ -664,6 +701,17 @@ mod tests {
         assert!(check_declared_with(&nf, dir.path(), "main.nf", &[], "25.10.4").is_ok());
     }
 
+    /// Nextflow 26 in agent mode surrounds a command's stdout with its own status lines; biffix
+    /// clears the variables that turn it on, whatever its own environment.
+    #[test]
+    fn nextflow_runs_without_agent_mode() {
+        let cmd = nextflow_command("nextflow");
+        let removed: std::collections::BTreeSet<_> =
+            cmd.get_envs().filter(|(_, v)| v.is_none()).map(|(k, _)| k.to_str().unwrap()).collect();
+        // Nextflow 26's SysEnv.isAgentMode reads exactly these.
+        assert_eq!(removed, ["AGENT", "CLAUDECODE", "NXF_AGENT_MODE"].into());
+    }
+
     #[cfg(unix)]
     #[test]
     fn detection_reads_the_pipeline_s_plugins_through_nextflow_config() {
@@ -677,6 +725,14 @@ mod tests {
             detect_with(missing.to_str().unwrap(), dir.path(), &[], None),
             Err(NextflowError::NotInstalled)
         ));
+    }
+
+    #[test]
+    fn the_json_document_starts_at_its_first_object_line() {
+        assert_eq!(json_document("{}"), "{}");
+        assert_eq!(json_document("WARN: x\n  {\"a\": 1}\n"), "  {\"a\": 1}\n");
+        assert_eq!(json_document("[PIPELINE] main.nf\n{\n}\n[SUCCESS]\n"), "{\n}\n[SUCCESS]\n");
+        assert_eq!(json_document("no json"), "no json");
     }
 
     #[test]
@@ -706,6 +762,10 @@ mod tests {
         );
         assert!(unclassified(plugins_of_config_json(r#"{"plugins": "x"}"#)).contains("not a list"));
         assert!(unclassified(plugins_of_config_json("not json")).contains("no JSON document"));
+        // Nextflow 26.04's own stdout lines ahead of the document are skipped.
+        let noisy = "Downloading plugin nf-schema@2.7.3\nWARN: Unrecognized config option \
+                     'foo.bar'\n{\n    \"plugins\": [\"nf-schema@2.7.3\"]\n}\n";
+        assert_eq!(plugins_of_config_json(noisy).unwrap(), ["nf-schema@2.7.3"]);
     }
 
     // ── downloads ──

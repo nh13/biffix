@@ -29,26 +29,37 @@ pub(super) fn snakemake_9() -> SnakemakePins {
     }
 }
 
-/// The Nextflow 25 pin table, for `release` (spelled as the engine writes it); `None` for a release
+/// The Nextflow pin table, for `release` (spelled as the engine writes it); `None` for a release
 /// whose downloads are not pinned here, since biffix never installs an unverified launcher or
 /// plugin. A release is added with the sha256 of its `-dist` asset and of the plugin zips its
 /// `plugins-info.txt` names (`registry.nextflow.io/api/v1/plugins/<id>/<version>/download/…`).
-pub(super) fn nextflow_25(release: &str) -> Option<NextflowPins> {
+///
+/// One nf-biffix serves every release: it builds against the oldest (25.10.4, nf-amazon 3.4.4), and
+/// the nf-amazon API it extends is unchanged through 26.10.
+pub(super) fn nextflow(release: &str) -> Option<NextflowPins> {
     let plugin =
         |version: &str, sha256: &str| PluginPin { version: version.into(), sha256: sha256.into() };
+    let downloads = |launcher_sha256: &str, nf_amazon, nf_cloudcache| NextflowRelease {
+        launcher_sha256: launcher_sha256.into(),
+        nf_amazon,
+        nf_cloudcache,
+    };
     let release = match release {
-        "25.10.4" => NextflowRelease {
-            launcher_sha256: "60db869a7618783e3ee60183a2b0c6c50ffc67221eabec60800b904991786aaa"
-                .into(),
-            nf_amazon: plugin(
-                "3.4.4",
-                "677f69b82f63a43cb5809eb61d7045846a10af394d29168211c9a3c74fa39ac7",
-            ),
-            nf_cloudcache: plugin(
-                "0.5.0",
-                "39afd45d1dcc2765ce77a0ee429559f2cf1ff52c27347f2a94b2f35a05b46775",
-            ),
-        },
+        "25.10.4" => downloads(
+            "60db869a7618783e3ee60183a2b0c6c50ffc67221eabec60800b904991786aaa",
+            plugin("3.4.4", "677f69b82f63a43cb5809eb61d7045846a10af394d29168211c9a3c74fa39ac7"),
+            plugin("0.5.0", "39afd45d1dcc2765ce77a0ee429559f2cf1ff52c27347f2a94b2f35a05b46775"),
+        ),
+        "26.04.9" => downloads(
+            "240befc5fc206b76bdbed75fb3f34ca43ad822e7dfd1649474491cdc54e107be",
+            plugin("3.9.3", "e567cb638e2844db61ccd26f10cf95b9a571daeb2c3cc32ae238552eca3c8357"),
+            plugin("0.6.0", "852a979adac1b57e47a09ceeacd8bf525d6747a33383f1c96ff02d150d326860"),
+        ),
+        "26.10.5" => downloads(
+            "b030030c06040bf5f13ac423c318d146c95e8d1d82f5022799dcb24738bccf3e",
+            plugin("3.12.1", "ac12f6c517b54e1955fe5ccdef64ebe8ae9023991cf4c0c8e42d50ffc84e002e"),
+            plugin("0.6.2", "14d4df81b76074c51979b9a24ce5746b9a7c23825fb6807fb020c9404bb5f1b4"),
+        ),
         _ => return None,
     };
     Some(NextflowPins { nf_biffix_version: "0.6.2".into(), release, workflow_plugins: Vec::new() })

@@ -35,8 +35,9 @@ impl Engine {
 
     /// Why `target` cannot be this engine's target (`None` when it can). The coordinator passes a
     /// target as one word of the engine's command line (Snakemake: a positional target after its
-    /// own options; Nextflow: `-entry <target>`), so it must read as a target and never as an
-    /// option or more than one word:
+    /// own options; Nextflow: `-entry <target>`, which only Nextflow 25 has: see
+    /// [`Engine::target_unsupported`]), so it must read as a target and never as an option or more
+    /// than one word:
     ///
     /// - Snakemake: a rule name or a file path relative to the workflow, made of ASCII letters,
     ///   digits and `_ . - + /`, starting with a letter, digit or `_` (never `-` or `/`);
@@ -63,7 +64,27 @@ impl Engine {
         }
         (!ok).then(|| format!("a {self} target must be {what}; got {target:?}"))
     }
+
+    /// Why this engine at `engine_version` (as a workflow version pins it) cannot run a target at
+    /// all (`None` when it can). Nextflow 26 parses a pipeline with its strict parser by default,
+    /// which refuses `-entry` ("use a param to run a named workflow from the entry workflow"), so
+    /// a target there would fail every run at launch. An unparseable version is left to
+    /// [`check_engine_version`].
+    pub fn target_unsupported(self, engine_version: &str) -> Option<String> {
+        let version = EngineVersion::parse(engine_version.trim())?;
+        (self == Engine::Nextflow && version >= NEXTFLOW_STRICT_PARSER).then(|| {
+            format!(
+                "Nextflow {} has no `-entry` (its strict parser refuses it), so a version \
+                 pinned to it takes no target; select the workflow with a param in the entry \
+                 workflow instead",
+                spelling(self.as_str(), version)
+            )
+        })
+    }
 }
+
+/// The first Nextflow line whose default (strict, v2) parser refuses `-entry`.
+const NEXTFLOW_STRICT_PARSER: EngineVersion = EngineVersion::new(26, 0, 0);
 
 /// The longest target ([`Engine::target_problem`]) accepted.
 pub const MAX_TARGET_CHARS: usize = 256;
@@ -148,7 +169,7 @@ impl fmt::Display for SupportedRange {
 
 /// The Nextflow releases biffix can build: each has its launcher and plugins pinned by sha256 in
 /// the runtime's pin table (a test keeps the two in step). Spelled as Nextflow writes them.
-pub(crate) const NEXTFLOW_RELEASES: &[&str] = &["25.10.4"];
+pub(crate) const NEXTFLOW_RELEASES: &[&str] = &["25.10.4", "26.04.9", "26.10.5"];
 
 /// A release biffix once built and no longer does: a registration pinning it, and a launch of a
 /// version registered on it, are refused by name with the release to re-register on, rather than
@@ -192,14 +213,15 @@ pub fn retired(engine: &str, version: &str) -> Option<Retired> {
 ///
 /// - Snakemake 9: the biffix logger plugin and the S3 storage plugin line the coordinator uses both
 ///   require it.
-/// - Nextflow from 25.10.4: the nf-biffix plugin's declared minimum (it builds against Nextflow
-///   25.10 and nf-amazon 3.x).
+/// - Nextflow from 25.10.4 through 26.x: 25.10.4 is the nf-biffix plugin's declared minimum (it
+///   builds against Nextflow 25.10 and nf-amazon 3.x, whose API it extends is unchanged through
+///   26.10), and only the releases in [`NEXTFLOW_RELEASES`] can build.
 pub const SUPPORTED: &[SupportedRange] = &[
     SupportedRange { engine: "snakemake", min: "9.0.0", below: "10.0.0", releases: &[] },
     SupportedRange {
         engine: "nextflow",
         min: "25.10.4",
-        below: "26.0.0",
+        below: "27.0.0",
         releases: NEXTFLOW_RELEASES,
     },
 ];
@@ -326,6 +348,23 @@ mod tests {
     }
 
     #[test]
+    fn nextflow_26_takes_no_target() {
+        assert_eq!(Engine::Nextflow.target_unsupported("25.10.4"), None);
+        assert_eq!(Engine::Snakemake.target_unsupported("9.27.0"), None);
+        for v in ["26.04.9", "26.10.5", " 26.4.9\n"] {
+            let m = Engine::Nextflow.target_unsupported(v).unwrap();
+            assert!(m.starts_with("Nextflow 26."), "{m}");
+            assert!(m.contains("select the workflow with a param"), "{m}");
+        }
+        assert_eq!(
+            Engine::Nextflow.target_unsupported("26.4.9").unwrap(),
+            Engine::Nextflow.target_unsupported("26.04.9").unwrap()
+        );
+        // Not an exact release: check_engine_version reports it.
+        assert_eq!(Engine::Nextflow.target_unsupported("26"), None);
+    }
+
+    #[test]
     fn an_engine_s_name_is_its_serde_form_both_ways() {
         // `ALL` is every variant: this match has no wildcard, so a new engine fails to compile here
         // until it is added to `ALL` (and so reaches as_str/FromStr/serde).
@@ -350,8 +389,13 @@ mod tests {
         }
         assert_eq!(
             check_engine_version("nextflow", "25.10.5").unwrap_err().to_string(),
-            "nextflow 25.10.5 is not a release biffix can build; pin one of 25.10.4"
+            "nextflow 25.10.5 is not a release biffix can build; pin one of 25.10.4, 26.04.9, \
+             26.10.5"
         );
+        assert!(matches!(
+            check_engine_version("nextflow", "26.04.0"),
+            Err(EngineVersionError::NotBuildable { .. })
+        ));
         // The month's spelling doesn't matter: `25.10.04` is `25.10.4`.
         assert!(check_engine_version("nextflow", "25.10.04").is_ok());
     }
@@ -419,6 +463,8 @@ mod tests {
         );
         assert!(check_engine_version("snakemake", "9.99.3").is_ok());
         assert!(check_engine_version("nextflow", "25.10.4").is_ok());
+        assert!(check_engine_version("nextflow", "26.04.9").is_ok());
+        assert!(check_engine_version("nextflow", "26.10.5").is_ok());
         // Surrounding whitespace from a YAML value is tolerated.
         assert!(check_engine_version("nextflow", " 25.10.4\n").is_ok());
     }
@@ -429,7 +475,7 @@ mod tests {
             ("snakemake", "8.30.0"),
             ("snakemake", "10.0.0"),
             ("nextflow", "24.10.5"),
-            ("nextflow", "26.0.0"),
+            ("nextflow", "27.04.0"),
         ] {
             let err = check_engine_version(engine, version).unwrap_err();
             assert!(
@@ -457,7 +503,7 @@ mod tests {
     fn reports_nextflow_versions_as_nextflow_writes_them() {
         assert_eq!(
             check_engine_version("nextflow", "24.10.5").unwrap_err().to_string(),
-            "nextflow 24.10.5 is not supported; biffix supports nextflow >=25.10.4, <26.0.0"
+            "nextflow 24.10.5 is not supported; biffix supports nextflow >=25.10.4, <27.0.0"
         );
     }
 
@@ -469,6 +515,7 @@ mod tests {
             ("snakemake", " 9.27.00\n", "9.27.0"),
             ("nextflow", "25.10.04", "25.10.4"),
             ("nextflow", "25.10.4", "25.10.4"),
+            ("nextflow", "26.4.9", "26.04.9"),
         ] {
             let pinned = check_engine_version(engine, given).unwrap();
             assert_eq!(pinned.canonical, canonical, "{engine} {given:?}");
