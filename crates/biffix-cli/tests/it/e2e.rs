@@ -78,12 +78,14 @@ struct Server {
     token_forms: Arc<Mutex<Vec<HashMap<String, String>>>>,
 }
 
-/// Request-level observation: which submits reached the server, and whether a polled run in
-/// flight is found finished.
+/// Request-level observation: which submits and workflow requests reached the server, and whether a polled
+/// run in flight is found finished.
 struct Probe {
     store: Arc<MemStore>,
     /// `POST /runs` requests that reached the server (a CLI-side rejection sends none).
     submits: AtomicU64,
+    /// The `/workflows/…` requests that reached the server (`METHOD path`), in order.
+    workflow_requests: Mutex<Vec<String>>,
     /// While set, a `GET /runs/{id}` of a run still in flight finds it succeeded: its coordinator
     /// finished by the time the CLI polls. (The doubles run no coordinator.)
     finish_on_poll: AtomicBool,
@@ -93,6 +95,9 @@ async fn observe(State(probe): State<Arc<Probe>>, req: Request, next: Next) -> R
     let path = req.uri().path().to_string();
     if req.method() == axum::http::Method::POST && path == "/runs" {
         probe.submits.fetch_add(1, Ordering::SeqCst);
+    }
+    if path.starts_with("/workflows/") {
+        probe.workflow_requests.lock().unwrap().push(format!("{} {path}", req.method()));
     }
     if req.method() == axum::http::Method::GET && probe.finish_on_poll.load(Ordering::SeqCst) {
         if let Some(run_id) = path.strip_prefix("/runs/").filter(|id| !id.contains('/')) {
@@ -220,6 +225,7 @@ async fn start_server() -> Server {
     let probe = Arc::new(Probe {
         store: store.clone(),
         submits: AtomicU64::new(0),
+        workflow_requests: Default::default(),
         finish_on_poll: AtomicBool::new(false),
     });
     let token_forms = TokenForms::default();
@@ -876,6 +882,54 @@ async fn e2e_refresh_submit_and_follow() {
         let after: Vec<Value> = api_get(&base, "/workflows").await;
         assert_eq!(after.len(), before + 1);
         assert!(after.iter().any(|v| v["id"] == "abc:hash:1"), "{after:?}");
+    }
+
+    // workflows rebuild: through the real `POST …/runtime/rebuild` and `…/images/{name}/rebuild`;
+    // with no flags, the runtime and every image (each left as it is unless its build failed). A
+    // blank id, or an image the version lacks, is refused before any build is started; an unknown
+    // version is the server's 404.
+    {
+        let mut session = Session::resolve(&args()).unwrap();
+        let opts = |runtime: bool, images: &[&str], id: &str| workflows::RebuildOpts {
+            id: id.into(),
+            runtime,
+            images: images.iter().map(ToString::to_string).collect(),
+            wait: None,
+        };
+        server.probe.workflow_requests.lock().unwrap().clear();
+        let requests = || std::mem::take(&mut *server.probe.workflow_requests.lock().unwrap());
+        // The client encodes the id.
+        let read = "GET /workflows/abc%3Ahash%3A0";
+        let runtime = "POST /workflows/abc%3Ahash%3A0/runtime/rebuild";
+        let image = "POST /workflows/abc%3Ahash%3A0/images/default/rebuild";
+        // With a wait, the version is read again after the rebuilds; it is ready, so the wait ends
+        // at that first poll.
+        let mut all = opts(false, &[], "abc:hash:0");
+        all.wait = Some(std::time::Duration::from_secs(60));
+        let out = workflows::rebuild(&mut session, all).await;
+        assert!(out.is_ok(), "rebuild: {out:?}");
+        assert_eq!(requests(), [read, runtime, image, read]);
+        let out = workflows::rebuild(&mut session, opts(true, &[], "abc:hash:0")).await;
+        assert!(out.is_ok(), "rebuild --runtime: {out:?}");
+        assert_eq!(requests(), [read, runtime]);
+        let out =
+            workflows::rebuild(&mut session, opts(false, &["default", "default"], "abc:hash:0"))
+                .await;
+        assert!(out.is_ok(), "rebuild --image default (twice): {out:?}");
+        assert_eq!(requests(), [read, image]);
+        let err = workflows::rebuild(&mut session, opts(true, &["nope"], "abc:hash:0"))
+            .await
+            .expect_err("an image the version lacks");
+        assert!(matches!(err, CliError::InvalidInput(_)), "{err:?}");
+        assert_eq!(requests(), [read]);
+        let err = workflows::rebuild(&mut session, opts(false, &[], " ")).await.expect_err("blank");
+        assert!(matches!(err, CliError::InvalidInput(_)), "{err:?}");
+        assert!(requests().is_empty());
+        let err = workflows::rebuild(&mut session, opts(false, &[], "nope:hash:0"))
+            .await
+            .expect_err("an unknown version");
+        assert!(matches!(err, CliError::NotFound(_)), "{err:?}");
+        assert_eq!(requests(), ["GET /workflows/nope%3Ahash%3A0"]);
     }
 
     // workflows release / unrelease: through the real `PUT /workflows/{id}/release`, recorded with

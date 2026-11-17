@@ -1,10 +1,12 @@
 //! `biffix workflows …` and `biffix engines`, a module per command family:
-//! `register` (with its `images`, and the `wait` until a version can run), `reregister`, `catalog`
-//! (list, release, show, engines) and `form` (the launch-form preview).
+//! `register` (with its `images`, and the `wait` until a version can run), `reregister`, `rebuild`
+//! (a failed runtime or image build, again), `catalog` (list, release, show, engines) and `form`
+//! (the launch-form preview).
 
 mod catalog;
 mod form;
 mod images;
+mod rebuild;
 mod register;
 mod reregister;
 mod wait;
@@ -14,6 +16,7 @@ use std::path::Path;
 pub(crate) use catalog::engines;
 pub use catalog::{list, release, show};
 pub(crate) use form::{form, FormOpts};
+pub use rebuild::{rebuild, RebuildOpts};
 pub use register::{register, RegisterOpts};
 pub use reregister::{reregister, ReregisterOpts};
 

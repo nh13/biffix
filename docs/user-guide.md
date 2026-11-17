@@ -266,6 +266,14 @@ biffix workflows show <version-id>     # one version and its parameters
 engine runtime and with their images pinned again; use it after a biffix upgrade
 (`reregister --all --dry-run` first). To change the form or About page, register the checkout.
 
+A version's engine runtime and image builds are retried automatically, at most three builds each.
+If they still fail (for example during an upstream outage), a Developer starts them again with
+`biffix workflows rebuild <version-id>`: the runtime and every image, or only what `--runtime` and
+`--image <name>` name. Anything ready or still building is left as it is, and one rebuild that
+fails does not stop the others (the command then names what was and was not started). Like
+`register`, it then waits until the version can run (`--no-wait`, `--wait-minutes`), so a failed
+build it did not rebuild ends the wait at once.
+
 ## Launching runs
 
 ### From the Lab view

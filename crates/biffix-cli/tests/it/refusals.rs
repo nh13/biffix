@@ -5,7 +5,7 @@ use crate::common::biffix;
 
 #[test]
 fn a_blank_version_id_is_invalid_input_before_any_request() {
-    for verb in ["show", "release", "unrelease"] {
+    for verb in ["show", "release", "unrelease", "rebuild"] {
         let home = tempfile::tempdir().unwrap();
         // No login: a command that went on to the API would stop at the credential (exit 3).
         let out = biffix(home.path())

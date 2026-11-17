@@ -44,7 +44,7 @@ pub async fn release(session: &mut Session, id: &str, released: bool) -> CliResu
 
 /// A version id as given, trimmed; a blank one is refused before any request (`GET /workflows/`
 /// with no id is the list route, not a version).
-fn version_id(id: &str) -> CliResult<&str> {
+pub(super) fn version_id(id: &str) -> CliResult<&str> {
     let id = id.trim();
     if id.is_empty() {
         return Err(CliError::InvalidInput("a version id must not be blank".into()));

@@ -335,7 +335,7 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
     let runtime = match opts.wait {
         Some(timeout) => {
             eprintln!("[biffix] registered {id}; waiting until it can run…");
-            wait_for_runtime(&client, &id, timeout).await?
+            wait_for_runtime(&client, &id, timeout).await?.runtime
         }
         None => None,
     };
