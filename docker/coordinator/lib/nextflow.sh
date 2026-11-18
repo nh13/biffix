@@ -2,9 +2,12 @@
 # biffix coordinator: the Nextflow engine. Sourced by entrypoint.sh; defines functions only.
 #   Reads: WORK, SRC, STORE, PARAMS_JSON, RUNTIME_ROOT, NXF_HOME, NXF_PLUGINS_DIR, the run's BIFFIX_*
 #          env, the resolved SNAKEMAKE_AWS_BATCH_JOB_QUEUE / _ROLE, BIFFIX_JOB_DEFINITION_MAP_FILE
-#          and QUEUE_SELECTORS_FILE.
+#          and QUEUE_SELECTORS_FILE; for a single-job run (lib/single_job.sh) SCRATCH, SJ_CPUS,
+#          SJ_TASK_MEMORY_MIB, SJ_JVM_HEAP_MIB, SJ_IMAGES and SJ_BIN.
 #   Sets:  rc (Nextflow's exit status); NXF_PLUGINS_DEFAULT, and NXF_UUID or
-#          NXF_IGNORE_RESUME_HISTORY.
+#          NXF_IGNORE_RESUME_HISTORY; for a single-job run NXF_OPTS, NXF_APPTAINER_NEW_PID_NAMESPACE,
+#          PATH, LOCAL_WORK_DIR, and BIFFIX_SINGLE_JOB_CPUS and BIFFIX_SINGLE_JOB_TASK_MEMORY_MIB
+#          (exported for nf-biffix's local-executor budget).
 
 # groovy_str <value> <what>: <value> as a Groovy single-quoted string literal for nextflow.config
 # (`\` and `'` escaped). A control character (a line break) has no business in any value written
@@ -48,13 +51,44 @@ layer_plugin_version() {
   printf '%s' "$version"
 }
 
+# local_cache_plugins: for a run whose work dir is local (a single-job run, a dry run), a -c
+# `plugins {}` keeping the workflow's own plugins but nf-cloudcache, when its layer lists that one.
+# On Nextflow 25.10 and 26.04 a loaded nf-cloudcache takes the cache over whatever
+# `cloudcache.enabled` says, then refuses the run for having no cloud path (26.10 serves only a
+# run that enables it). A -c `plugins {}` replaces the pipeline's list, so it names every other
+# workflow plugin, and nf-biffix so it is never empty; NXF_PLUGINS_DEFAULT still adds biffix's.
+# Nothing for any other layer: its -c config's `plugins {}` already replaces the pipeline's list.
+local_cache_plugins() {
+  local list="$RUNTIME_ROOT/nf/workflow-plugins" plugins line id
+  [ "$NF_PLUGIN_MODE" = defaults ] || return 0
+  # Read once, whole, and refuse a list that cannot be read: it might name nf-cloudcache, and a
+  # read cut short would write a `plugins {}` that drops a plugin the pipeline needs. Both the
+  # check and the block below come from this one copy.
+  plugins=$(cat -- "$list") \
+    || runtime_error "cannot read the runtime layer's workflow plugin list ($list)"
+  grep -q '^nf-cloudcache@' <<< "$plugins" || return 0
+  # Each id is quoted into a variable before it is written: groovy_str's refusal exits only the
+  # command substitution, so `echo "  id $(groovy_str …)"` would still write a bare `id` line and
+  # carry on. The `|| exit` takes its status (78) to the run.
+  echo "plugins {"
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] && [[ "$line" != nf-cloudcache@* ]] || continue
+    id=$(groovy_str "$line" "the workflow plugin $line") || exit $?
+    echo "  id ${id}"
+  done <<< "$plugins"
+  id=$(groovy_str "nf-biffix@${NF_BIFFIX_VERSION}" "the nf-biffix version") || exit $?
+  echo "  id ${id}"
+  echo "}"
+}
+
 # Run Nextflow with the AWS Batch executor (nf-amazon's, as nf-biffix's `awsbatch`, which runs each
 # task on the job definition biffix registered for its image; see "Project isolation" in
 # entrypoint.sh) + the nf-biffix TraceObserver plugin, both from the runtime layer.
 # nf-amazon stages each task's I/O to/from the S3 workDir with the host's AWS CLI, bind-mounted into
 # the task container (aws.batch.cliPath below), so task images need no `aws` of their own. The
 # plugin reports the same RunEvents to the same ingest route as the Snakemake logger;
-# queue/role/region come from the same resolved BIFFIX_* env.
+# queue/role/region come from the same resolved BIFFIX_* env. A single-job run runs every task on
+# this host instead (nextflow_single_job_config).
 run_nextflow() {
   local ENTRY="$SRC/$BIFFIX_ENTRYPOINT"
   local NF_CONFIG="$WORK/nextflow.config"
@@ -90,15 +124,156 @@ run_nextflow() {
   # the pipeline sets nothing (verified on Nextflow 25.10 and 26.x).
   local NF_DEFAULTS="${NXF_HOME:-$HOME/.nextflow}/config"
   mkdir -p "$(dirname "$NF_DEFAULTS")"
+  # A single-job run's tasks get its size less the engine's reserve, whose JVM heap is capped
+  # (single_job_memory).
+  local task_memory=""
+  if is_single_job; then
+    task_memory=$SJ_TASK_MEMORY_MIB
+    # nf-biffix bounds the effective local pool after workflow config merge, including $local
+    # overrides. Pass the computed task budget, not the allocation before the JVM reserve.
+    export BIFFIX_SINGLE_JOB_CPUS="$SJ_CPUS"
+    export BIFFIX_SINGLE_JOB_TASK_MEMORY_MIB="$task_memory"
+    export NXF_OPTS="${NXF_OPTS:+$NXF_OPTS }-Xmx${SJ_JVM_HEAP_MIB}m"
+    # Nextflow runs `apptainer exec --pid` by default, which cannot mount a new /proc under the
+    # paths Docker masks (and Batch cannot unmask them).
+    export NXF_APPTAINER_NEW_PID_NAMESPACE=false
+  fi
   {
     if [ "$RETRIES" -gt 0 ]; then
       echo "process.errorStrategy = 'retry'"
       echo "process.maxRetries = ${RETRIES}"
     fi
+    # No trace.enabled: Nextflow's task metrics (which the trace turns on) run `ps`, `awk` and
+    # more inside every task's container (.command.run), which a slim task image may lack.
+    if [ -n "$task_memory" ]; then
+      # What the local executor may run at once, and the most one task may ask for: the job's
+      # size, as defaults, so a pipeline's own settings win. An older nf-core template caps its
+      # requests with params.max_cpus/max_memory, which it declares in its own config, so a value
+      # here could never reach it (and a newer pipeline's schema would reject the unknown param);
+      # resourceLimits caps those requests all the same.
+      echo "executor.cpus = ${SJ_CPUS}"
+      echo "executor.memory = '${task_memory} MB'"
+      echo "process.resourceLimits = [cpus: ${SJ_CPUS}, memory: '${task_memory} MB']"
+      # nf-core modules name a different image (an image file URL on a Galaxy or Seqera depot) when
+      # the engine is Apptainer, unless this is set: the image the version registered is the
+      # Docker one, which the image map and the converted image files hold.
+      echo "process.ext.singularity_pull_docker_container = true"
+    fi
   } > "$NF_DEFAULTS"
+  local plugin="" image=""
+  [ "$NF_PLUGIN_MODE" = defaults ] || plugin=$(groovy_str "nf-biffix@${NF_BIFFIX_VERSION}" "the nf-biffix version")
+  [ -z "${BIFFIX_WORKER_IMAGE:-}" ] || image=$(groovy_str "$BIFFIX_WORKER_IMAGE" "BIFFIX_WORKER_IMAGE")
+  if is_single_job; then
+    nextflow_single_job_config > "$NF_CONFIG"
+  else
+    nextflow_batch_config > "$NF_CONFIG"
+  fi
+  if [ "$NF_PLUGIN_MODE" = defaults ]; then
+    # The runtime layer's nf-biffix reports to biffix; enabling it by default means the workflow's
+    # own .nf and config need not know about biffix.
+    export NXF_PLUGINS_DEFAULT="nf-amazon@${NF_AMAZON_VERSION},nf-biffix@${NF_BIFFIX_VERSION}"
+    echo "biffix-coordinator: NXF_PLUGINS_DEFAULT=${NXF_PLUGINS_DEFAULT}" >&2
+  fi
+  echo "biffix-coordinator: nextflow.config:" >&2
+  cat "$NF_CONFIG" >&2
+  echo "biffix-coordinator: default config ($NF_DEFAULTS):" >&2
+  cat "$NF_DEFAULTS" >&2
+  # Name the Nextflow run after the biffix run: the resume cache's index is written per run name
+  # (`<cache>/<session>/index.<name>`), so each biffix run's index is traceable. A resume needs it
+  # anyway: with history off (below) Nextflow cannot generate a name ("Missing workflow run name").
+  local -a SESSION_ARGS=(-name "$BIFFIX_RUN_ID")
+  # Batch retries the coordinator job (a lost host, a failed image pull) under the same env, so a
+  # later attempt resumes the session the first one started (NXF_UUID below) from the S3 cache, as
+  # a Snakemake attempt restores the metadata its first one synced: a task that attempt finished is
+  # not run, and paid for, again. A single-job run has no such cache (its work dir was on the lost
+  # host): every attempt starts afresh, under the session biffix chose.
+  local attempt="${AWS_BATCH_JOB_ATTEMPT:-1}"
+  [[ "$attempt" =~ ^[0-9]+$ ]] || attempt=1
+  if [ -n "${BIFFIX_ENGINE_SESSION_ID:-}" ]; then
+    if ! is_single_job && { [ "${BIFFIX_RESUME:-}" = 1 ] || [ "$attempt" -gt 1 ]; }; then
+      # Explicit id: a bare -resume reads the LOCAL .nextflow/history, which this container never
+      # has, and Nextflow then silently runs from scratch (ConfigBuilder.normalizeResumeId).
+      SESSION_ARGS+=(-resume "$BIFFIX_ENGINE_SESSION_ID")
+      # Even an explicit id is checked against that local history ("Can't find a run with the
+      # specified id", ScriptRunner) unless history tracking is off; the cache itself is in S3.
+      export NXF_IGNORE_RESUME_HISTORY=true
+    else
+      # Pre-choose the fresh session's uuid so the cache dir is known to biffix before the engine
+      # starts (Session reads NXF_UUID when no -resume is given).
+      export NXF_UUID="$BIFFIX_ENGINE_SESSION_ID"
+    fi
+  fi
+  echo "biffix-coordinator: nextflow session=${BIFFIX_ENGINE_SESSION_ID:-<engine-chosen>} resume=${BIFFIX_RESUME:-0} attempt=$attempt" >&2
+  # nf-biffix's own package is outside `nextflow.*`, which is the only package Nextflow logs at DEBUG
+  # by default; -debug keeps the plugin's diagnostics in the job's .nextflow.log.
+  local -a ARGS=(-log "$WORK/.nextflow.log" -debug io.github.nh13.biffix run "$ENTRY"
+    -c "$NF_CONFIG"
+    -params-file "$PARAMS_FILE"
+    -ansi-log false
+    "${SESSION_ARGS[@]}")
+  [ -z "${BIFFIX_DRY_RUN:-}" ] || ARGS+=(-preview)
+  [ -z "${BIFFIX_TARGET:-}" ] || ARGS+=(-entry "$BIFFIX_TARGET")
+  # A single-job run's tasks start their containers through biffix's apptainer wrapper
+  # (lib/single_job.sh); the work dir is this host's, so its failed tasks' files are in the logs.
+  if is_single_job; then
+    export PATH="$SJ_BIN:$PATH"
+    # shellcheck disable=SC2034 # read by lib/logs.sh
+    LOCAL_WORK_DIR="$SCRATCH/work"
+  fi
+  start_logs_sync
+  # From the source root, as `nextflow run <entrypoint>` from a checkout: Nextflow reads the
+  # nextflow.config of the launch dir and the entrypoint's own dir only, so a pipeline whose config
+  # sits at the repo root above its entrypoint (e.g. refprep/main.nf) would otherwise run without
+  # it: its plugins {}, params and profiles all silently ignored. Every path above is absolute.
+  run_engine TERM run_in "$SRC" nextflow "${ARGS[@]}"
+}
+
+# nextflow_single_job_config: the -c config of a single-job run (lib/single_job.sh): every task
+# runs on this host, with the local executor, in its image through Apptainer, from the image files
+# the coordinator converted before the run. Reads run_nextflow's image and plugin.
+nextflow_single_job_config() {
+  local region images cache workdir
+  region=$(groovy_str "$BIFFIX_REGION" "the region")
+  images=$(groovy_str "$SJ_IMAGES" "the scratch root")
+  cache=$(groovy_str "$SCRATCH/apptainer/nextflow-cache" "the scratch root")
+  workdir=$(groovy_str "$SCRATCH/work" "the scratch root")
+  echo "process.executor = 'local'"
+  # Selectors outrank process directives. nf-biffix also pins every existing selector to local
+  # at session creation: merging this match-all alone does not move an existing `.*` key last.
+  echo "process { withName: '.*' { executor = 'local' } }"
+  [ -z "$image" ] || echo "process.container = ${image}"
+  # S3 inputs and published outputs, which Nextflow itself reads and writes.
+  echo "aws.region = ${region}"
+  # Every task in its pinned image, through Apptainer, and no other engine: Nextflow looks for a
+  # tenant image's file in libraryDir first (the files single_job.py converted, named as Nextflow
+  # names them), and pulls one it lacks to cacheDir.
+  echo "apptainer.enabled = true"
+  # Never a pull at task launch, which a pipeline's own `ociAutoPull = true` would otherwise make:
+  # it bypasses libraryDir and would pull a private image without the conversion's ECR login.
+  echo "apptainer.ociAutoPull = false"
+  echo "apptainer.libraryDir = ${images}"
+  echo "apptainer.cacheDir = ${cache}"
+  local engine
+  for engine in docker podman singularity charliecloud shifter sarus conda spack wave fusion; do
+    echo "${engine}.enabled = false"
+  done
+  # On the instance store: a task's inputs and outputs never leave the host until published.
+  echo "workDir = ${workdir}"
+  # No cloud cache (the work dir it would index dies with the host), and off rather than unset: a
+  # pipeline's own `cloudcache.enabled = true` with no path would take this local work dir as its
+  # path, which Nextflow refuses before any task starts. No aws.batch settings and no queue:
+  # nothing is submitted to Batch.
+  echo "cloudcache.enabled = false"
+  local_cache_plugins
+  [ -z "$plugin" ] || echo "plugins { id ${plugin} }"
+}
+
+# nextflow_batch_config: the -c config of a run whose tasks are AWS Batch jobs (or, for a dry run,
+# previewed locally). Reads run_nextflow's image, plugin and SPOT_ATTEMPTS.
+nextflow_batch_config() {
   # Every value from the environment is written as an escaped Groovy string (groovy_str): the
   # output prefix, for one, is caller-chosen, and a `'` in it would otherwise end the string.
-  local executor="'awsbatch'" queue image run_id project region role workdir cache logs_group plugin
+  local executor="'awsbatch'" queue run_id project region role workdir cache logs_group
   queue=$(groovy_str "$SNAKEMAKE_AWS_BATCH_JOB_QUEUE" "the worker queue")
   run_id=$(groovy_str "$BIFFIX_RUN_ID" "BIFFIX_RUN_ID")
   project=$(groovy_str "$BIFFIX_PROJECT" "BIFFIX_PROJECT")
@@ -116,17 +291,11 @@ run_nextflow() {
     workdir=$(groovy_str "$WORK/nf-work" "the work root")
   fi
   cache=$(groovy_str "${STORE}.nextflow/cache" "the output prefix")
-  plugin=""
-  [ "$NF_PLUGIN_MODE" = defaults ] || plugin=$(groovy_str "nf-biffix@${NF_BIFFIX_VERSION}" "the nf-biffix version")
-  image=""
-  [ -z "${BIFFIX_WORKER_IMAGE:-}" ] || image=$(groovy_str "$BIFFIX_WORKER_IMAGE" "BIFFIX_WORKER_IMAGE")
   logs_group=$(groovy_str "$BIFFIX_TASK_LOG_GROUP" "BIFFIX_TASK_LOG_GROUP")
   {
     echo "process.executor = ${executor}"
-    # The pipeline's own `withName:`/`withLabel:` selectors and process `executor` directives outrank
-    # process.executor, and -preview still constructs each process's executor, so a dry run pins
-    # every process to the local one with a match-all selector: this file is read after the
-    # pipeline's, so its selector applies last (verified on Nextflow 25.10 and 26.x).
+    # Preview still constructs executors. nf-biffix pins existing selectors to local too, so
+    # an earlier `.*` key cannot let a later pipeline selector re-enable a remote executor.
     [ -z "${BIFFIX_DRY_RUN:-}" ] || echo "process { withName: '.*' { executor = 'local' } }"
     echo "process.queue = ${queue}"
     # The tasks the version sends to other queues (lib/tasks.sh): withLabel/withName selectors,
@@ -164,62 +333,17 @@ run_nextflow() {
     # A dry run writes nothing to S3: it keeps Nextflow's local cache (the cloud cache writes its
     # index on open), and does not upload the pipeline's bin/ to the work dir, which the AWS Batch
     # executor does as it is set up (Nextflow reads the switch from executor.disableRemoteBinDir).
+    # Off for a dry run, not just unset: a pipeline's own cloud cache with no path would take its
+    # local work dir as the path, which Nextflow refuses.
     if [ -z "${BIFFIX_DRY_RUN:-}" ]; then
       echo "cloudcache { enabled = true; path = ${cache} }"
     else
+      echo "cloudcache.enabled = false"
       echo "executor.disableRemoteBinDir = true"
+      local_cache_plugins
     fi
     # The runtime layer's plugin reports to biffix; enabling it in config means the workflow's own
     # .nf need not know about biffix (a layer without workflow plugins; see above).
     [ -z "$plugin" ] || echo "plugins { id ${plugin} }"
-  } > "$NF_CONFIG"
-  if [ "$NF_PLUGIN_MODE" = defaults ]; then
-    # The runtime layer's nf-biffix reports to biffix; enabling it by default means the workflow's
-    # own .nf and config need not know about biffix.
-    export NXF_PLUGINS_DEFAULT="nf-amazon@${NF_AMAZON_VERSION},nf-biffix@${NF_BIFFIX_VERSION}"
-    echo "biffix-coordinator: NXF_PLUGINS_DEFAULT=${NXF_PLUGINS_DEFAULT}" >&2
-  fi
-  echo "biffix-coordinator: nextflow.config:" >&2
-  cat "$NF_CONFIG" >&2
-  echo "biffix-coordinator: default config ($NF_DEFAULTS):" >&2
-  cat "$NF_DEFAULTS" >&2
-  # Name the Nextflow run after the biffix run: the resume cache's index is written per run name
-  # (`<cache>/<session>/index.<name>`), so each biffix run's index is traceable. A resume needs it
-  # anyway: with history off (below) Nextflow cannot generate a name ("Missing workflow run name").
-  local -a SESSION_ARGS=(-name "$BIFFIX_RUN_ID")
-  # Batch retries the coordinator job (a lost host, a failed image pull) under the same env, so a
-  # later attempt resumes the session the first one started (NXF_UUID below) from the S3 cache, as
-  # a Snakemake attempt restores the metadata its first one synced: a task that attempt finished is
-  # not run, and paid for, again.
-  local attempt="${AWS_BATCH_JOB_ATTEMPT:-1}"
-  [[ "$attempt" =~ ^[0-9]+$ ]] || attempt=1
-  if [ -n "${BIFFIX_ENGINE_SESSION_ID:-}" ]; then
-    if [ "${BIFFIX_RESUME:-}" = 1 ] || [ "$attempt" -gt 1 ]; then
-      # Explicit id: a bare -resume reads the LOCAL .nextflow/history, which this container never
-      # has, and Nextflow then silently runs from scratch (ConfigBuilder.normalizeResumeId).
-      SESSION_ARGS+=(-resume "$BIFFIX_ENGINE_SESSION_ID")
-      # Even an explicit id is checked against that local history ("Can't find a run with the
-      # specified id", ScriptRunner) unless history tracking is off; the cache itself is in S3.
-      export NXF_IGNORE_RESUME_HISTORY=true
-    else
-      # Pre-choose the fresh session's uuid so the cache dir is known to biffix before the engine
-      # starts (Session reads NXF_UUID when no -resume is given).
-      export NXF_UUID="$BIFFIX_ENGINE_SESSION_ID"
-    fi
-  fi
-  echo "biffix-coordinator: nextflow session=${BIFFIX_ENGINE_SESSION_ID:-<engine-chosen>} resume=${BIFFIX_RESUME:-0} attempt=$attempt" >&2
-  # nf-biffix's own package is outside `nextflow.*`, which is the only package Nextflow logs at DEBUG
-  # by default; -debug keeps the plugin's diagnostics in the job's .nextflow.log.
-  local -a ARGS=(-log "$WORK/.nextflow.log" -debug io.github.nh13.biffix run "$ENTRY"
-    -c "$NF_CONFIG"
-    -params-file "$PARAMS_FILE"
-    -ansi-log false
-    "${SESSION_ARGS[@]}")
-  [ -z "${BIFFIX_DRY_RUN:-}" ] || ARGS+=(-preview)
-  [ -z "${BIFFIX_TARGET:-}" ] || ARGS+=(-entry "$BIFFIX_TARGET")
-  # From the source root, as `nextflow run <entrypoint>` from a checkout: Nextflow reads the
-  # nextflow.config of the launch dir and the entrypoint's own dir only, so a pipeline whose config
-  # sits at the repo root above its entrypoint (e.g. refprep/main.nf) would otherwise run without
-  # it: its plugins {}, params and profiles all silently ignored. Every path above is absolute.
-  run_engine TERM run_in "$SRC" nextflow "${ARGS[@]}"
+  }
 }

@@ -1,12 +1,15 @@
 """A stand-in for the slice of boto3's S3 client the coordinator entrypoint uses, over a directory:
-s3://<bucket>/<key> is $FAKE_S3/<bucket>/<key>. For the entrypoint tests only. The parameter names
+s3://<bucket>/<key> is $FAKE_S3/<bucket>/<key>; and for its ECR login token. For the entrypoint
+tests only. The parameter names
 are boto3's (Bucket, Key, …)."""
 
 from __future__ import annotations
 
+import base64
 import io
 import os
 import shutil
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -43,9 +46,19 @@ class _S3:
         shutil.copyfile(src, dest)
 
     def put_object(self, Bucket: str, Key: str, Body: bytes) -> None:
+        # FAKE_S3_DENY_PUT: refuse every write; FAKE_S3_SLOW_PUT: take that many seconds first.
+        if os.environ.get("FAKE_S3_DENY_PUT"):
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "PutObject")
+        time.sleep(float(os.environ.get("FAKE_S3_SLOW_PUT") or 0))
         dest = _path(Bucket, Key)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(Body)
+
+    def delete_object(self, Bucket: str, Key: str) -> None:
+        # As S3 does, a missing key is no error; FAKE_S3_DENY_PUT refuses this write too.
+        if os.environ.get("FAKE_S3_DENY_PUT"):
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "DeleteObject")
+        _path(Bucket, Key).unlink(missing_ok=True)
 
     def get_object(self, Bucket: str, Key: str) -> dict[str, io.BytesIO]:
         # FAKE_S3_DENY_GET: refuse every read, as S3 does without the grant (or the KMS key's).
@@ -61,6 +74,18 @@ class _S3:
         return _Paginator()
 
 
-def client(service: str, **_kwargs: object) -> _S3:
-    assert service == "s3", service
-    return _S3()
+class _ECR:
+    """ECR's login token for FAKE_ECR_REGISTRY, of the password FAKE_ECR_PASSWORD; FAKE_ECR_DENY
+    refuses it, as ECR does without the grant."""
+
+    def get_authorization_token(self) -> dict[str, list[dict[str, str]]]:
+        if os.environ.get("FAKE_ECR_DENY"):
+            raise ClientError({"Error": {"Code": "AccessDeniedException"}}, "GetAuthorizationToken")
+        token = base64.b64encode(f"AWS:{os.environ['FAKE_ECR_PASSWORD']}".encode()).decode()
+        endpoint = f"https://{os.environ['FAKE_ECR_REGISTRY']}"
+        return {"authorizationData": [{"authorizationToken": token, "proxyEndpoint": endpoint}]}
+
+
+def client(service: str, **_kwargs: object) -> _S3 | _ECR:
+    assert service in ("s3", "ecr"), service
+    return _S3() if service == "s3" else _ECR()
