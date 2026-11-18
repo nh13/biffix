@@ -112,6 +112,12 @@ pub struct BiffixManifest {
     /// on); see [`crate::images`].
     #[serde(default)]
     pub images: BTreeMap<String, crate::images::ImageDecl>,
+    /// Runs of the version may execute as one AWS Batch job on one host (`single_job:`; see
+    /// [`crate::single_job`]), with this default queue-class and size. Absent ⇒ every run executes
+    /// one Batch job per task; a bare `single_job:` (null) allows it with the deploy's defaults,
+    /// as `single_job: {}` does.
+    #[serde(default, deserialize_with = "null_is_default")]
+    pub single_job: Option<SingleJobDecl>,
     /// Nextflow only: the plugins the workflow's own `nextflow.config` declares, each `id@version`
     /// (`nf-schema@2.7.2`). The coordinator runs Nextflow offline, so registration pins each by
     /// sha256 and builds it into the runtime layer; `biffix inspect --write` fills this in.
@@ -202,6 +208,9 @@ impl BiffixManifest {
         if let Some(samples) = &self.samples {
             note("samples: ", &samples.extra);
         }
+        if let Some(single_job) = &self.single_job {
+            note("single_job: ", &single_job.extra);
+        }
         if let Some(catalog) = &self.catalog {
             note("catalog: ", &catalog.extra);
             if let Some(contact) = &catalog.contact {
@@ -240,6 +249,38 @@ impl BiffixManifest {
         }
         out
     }
+}
+
+/// The `single_job:` block of `biffix.yaml`: runs of the version may execute as one Batch job, by
+/// default on this queue-class and at this size (each optional; `single_job: {}`, or a bare
+/// `single_job:`, allows it with the deploy's first single-job queue-class and its smallest
+/// instance type).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct SingleJobDecl {
+    /// The default queue-class and size, unchecked ([`Self::spec`] checks them).
+    #[serde(flatten)]
+    pub spec: crate::single_job::SingleJobSpec,
+    /// Keys this struct does not know, kept only to be warned about.
+    #[serde(flatten)]
+    pub extra: serde_norway::Mapping,
+}
+
+impl SingleJobDecl {
+    /// The declaration as a spec, its size checked ([`crate::single_job::SingleJobSpec::size`]).
+    pub fn spec(&self) -> Result<crate::single_job::SingleJobSpec, ManifestError> {
+        self.spec.size().map_err(|e| ManifestError(format!("single_job: {e}")))?;
+        Ok(self.spec.clone())
+    }
+}
+
+/// A key given with no value (`single_job:`, YAML null) as the block's defaults rather than as
+/// absent: `#[serde(default)]` alone covers an absent key, and plain `Option` reads null as `None`.
+fn null_is_default<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Some(Option::<T>::deserialize(deserializer)?.unwrap_or_default()))
 }
 
 /// The `catalog:` block of `biffix.yaml`: how the workflow is listed in the Lab's pipeline
@@ -663,6 +704,35 @@ form:
     }
 
     #[test]
+    fn single_job_reads_its_fields_and_a_bare_key_allows_it() {
+        let single = |yaml: &str| BiffixManifest::parse_yaml(yaml).unwrap().single_job;
+        // Absent: not allowed.
+        assert_eq!(single("engine: snakemake\n"), None);
+        // A bare key (null), `~` or `{}`: allowed with the deploy's defaults.
+        for yaml in ["single_job:\n", "single_job: ~\n", "single_job: {}\n"] {
+            let decl = single(yaml).unwrap_or_else(|| panic!("{yaml:?}"));
+            assert_eq!(
+                decl.spec().unwrap(),
+                crate::single_job::SingleJobSpec::default(),
+                "{yaml:?}"
+            );
+        }
+        let decl = single("single_job: { queue_class: big, cpus: 32, memory_gib: 64 }\n").unwrap();
+        assert_eq!(
+            decl.spec().unwrap(),
+            crate::single_job::SingleJobSpec {
+                queue_class: Some("big".into()),
+                instance: None,
+                cpus: Some(32),
+                memory_gib: Some(64),
+            }
+        );
+        assert!(decl.extra.is_empty());
+        let err = single("single_job: { cpus: 32 }\n").unwrap().spec().unwrap_err();
+        assert!(err.0.starts_with("single_job: "), "{err:?}");
+    }
+
+    #[test]
     fn unknown_keys_are_listed() {
         let m = BiffixManifest::parse_yaml(
             r"
@@ -673,6 +743,7 @@ params:
 reports:
   - { name: QC, path: qc.html, kind: html, format: html }
 samples: { wildcrad: sample, tag: x, steps: { joint: study } }
+single_job: { instance_type: c6id.8xlarge }
 catalog: { tags: [RNA-seq], verfied: true }
 form:
   titel: x
@@ -715,6 +786,7 @@ form:
                 "biffix.yaml: params.reads: unknown key `columns`; ignored",
                 "biffix.yaml: reports `QC`: unknown key `format`; ignored",
                 "biffix.yaml: samples: unknown key `wildcrad`; ignored",
+                "biffix.yaml: single_job: unknown key `instance_type`; ignored",
                 "biffix.yaml: catalog: unknown key `verfied`; ignored",
                 "biffix.yaml: form: unknown key `titel`; ignored",
                 "biffix.yaml: form.sections `main`: unknown key `hiden`; ignored",

@@ -254,6 +254,10 @@ pub struct FormSchema {
     /// per-project S3 cache (`cache: true` in `biffix.yaml`).
     #[serde(default, skip_serializing_if = "is_false")]
     pub cache: bool,
+    /// Runs may execute as one Batch job on one host, by default on this queue-class and at this
+    /// size (`single_job:` in `biffix.yaml`; see [`crate::single_job`]). Absent ⇒ they may not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_job: Option<crate::single_job::SingleJobSpec>,
 }
 /// Attach the manifest's `samples:` hint to `form`. A tag pattern that is not a valid regex, or has
 /// no `sample` group, is dropped with a warning (it could never name a sample); a step scope this

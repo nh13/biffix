@@ -26,8 +26,9 @@ pub(crate) fn prepare_form(
     manifest: Option<&Path>,
     files: &SourceFiles,
 ) -> CliResult<(BiffixManifest, Engine, FormSchema)> {
-    let (manifest, engine) = manifest_and_engine(root, manifest, files)?;
-    let form_schema = derive_form_schema(root, &manifest, engine, None)?;
+    let path = manifest.map_or_else(|| root.join("biffix.yaml"), Path::to_path_buf);
+    let (manifest, engine) = manifest_and_engine(root, Some(&path), files)?;
+    let form_schema = derive_form_schema(root, &path, &manifest, engine, None)?;
     Ok((manifest, engine, form_schema))
 }
 
@@ -49,7 +50,8 @@ pub(crate) fn prepare_form_shipped(
         Some(given) => Some(resolve_manifest(root, given, Some(files))?.path),
     };
     let (manifest, engine) = manifest_and_engine(root, path.as_deref(), files)?;
-    let form_schema = derive_form_schema(root, &manifest, engine, Some(files))?;
+    let path = path.unwrap_or_else(|| root.join("biffix.yaml"));
+    let form_schema = derive_form_schema(root, &path, &manifest, engine, Some(files))?;
     Ok((manifest, engine, form_schema))
 }
 
@@ -169,7 +171,10 @@ pub(crate) fn manifest_and_engine(
     Ok((manifest, engine))
 }
 
-/// A missing manifest is an empty one (every setting falls back to detection).
+/// A missing manifest is an empty one (every setting falls back to detection). Only parsed: a
+/// setting that parses but is refused (a `single_job:` size that is not one) is refused where the
+/// form is derived ([`derive_form_schema`]), so `inspect` can warn about it where `register`
+/// refuses it.
 fn load_manifest(path: &Path) -> CliResult<BiffixManifest> {
     match std::fs::read_to_string(path) {
         Ok(text) => BiffixManifest::parse_yaml(&text).map_err(|e| {
@@ -193,9 +198,11 @@ fn load_manifest(path: &Path) -> CliResult<BiffixManifest> {
 ///
 /// The author's `form:` overlay in `biffix.yaml`, if any, is applied over the derived form.
 ///
-/// With `files`, only those files may shape the form (see [`prepare_form_shipped`]).
+/// With `files`, only those files may shape the form (see [`prepare_form_shipped`]). `path` is the
+/// manifest's file, named in a refusal of a setting in it (the library does not know it).
 pub(crate) fn derive_form_schema(
     root: &Path,
+    path: &Path,
     manifest: &BiffixManifest,
     engine: Engine,
     files: Option<&SourceFiles>,
@@ -221,6 +228,11 @@ pub(crate) fn derive_form_schema(
             ));
         }
         form.cache = true;
+    }
+    if let Some(single_job) = &manifest.single_job {
+        form.single_job = Some(single_job.spec().map_err(|e| {
+            CliError::InvalidInput(format!("invalid manifest {}: {e}", path.display()))
+        })?);
     }
     Ok(form)
 }
@@ -604,5 +616,53 @@ mod tests {
                 contact: None,
             })
         );
+    }
+
+    #[test]
+    fn single_job_is_frozen_into_the_form_and_a_bad_size_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Snakefile"), "rule all:\n    input: []\n").unwrap();
+        let (_, _, form) = prepare_form(dir.path(), None, &snakefile()).unwrap();
+        assert_eq!(form.single_job, None);
+
+        std::fs::write(
+            dir.path().join("biffix.yaml"),
+            "single_job:\n  queue_class: single\n  instance: c6id.8xlarge\n",
+        )
+        .unwrap();
+        let (_, _, form) = prepare_form(dir.path(), None, &snakefile()).unwrap();
+        let spec = form.single_job.unwrap();
+        assert_eq!(spec.queue_class.as_deref(), Some("single"));
+        assert_eq!(spec.instance.as_deref(), Some("c6id.8xlarge"));
+
+        std::fs::write(dir.path().join("biffix.yaml"), "single_job: {}\n").unwrap();
+        let (_, _, form) = prepare_form(dir.path(), None, &snakefile()).unwrap();
+        assert_eq!(form.single_job, Some(Default::default()));
+
+        std::fs::write(dir.path().join("biffix.yaml"), "single_job:\n  cpus: 32\n").unwrap();
+        let err = prepare_form(dir.path(), None, &snakefile()).unwrap_err();
+        let want = format!("{}: single_job: ", dir.path().join("biffix.yaml").display());
+        assert!(matches!(err, CliError::InvalidInput(ref m) if m.contains(&want)), "{err:?}");
+
+        // A manifest named otherwise is named as it is.
+        let other = dir.path().join("alt.yaml");
+        std::fs::write(&other, "single_job:\n  memory_gib: 64\n").unwrap();
+        let err = prepare_form(dir.path(), Some(&other), &snakefile()).unwrap_err();
+        let want = format!("{}: single_job: ", other.display());
+        assert!(matches!(err, CliError::InvalidInput(ref m) if m.contains(&want)), "{err:?}");
+    }
+
+    #[test]
+    fn a_bad_single_job_size_is_refused_by_the_form_not_by_reading_the_manifest() {
+        // `inspect` reads the manifest first and only warns about a form `register` would refuse,
+        // so reading a manifest whose `single_job:` size is not one must not fail.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Snakefile"), "rule all:\n    input: []\n").unwrap();
+        let path = dir.path().join("biffix.yaml");
+        std::fs::write(&path, "single_job:\n  cpus: 32\n").unwrap();
+        let (manifest, engine) = manifest_and_engine(dir.path(), None, &snakefile()).unwrap();
+        let err = derive_form_schema(dir.path(), &path, &manifest, engine, None).unwrap_err();
+        let want = format!("invalid manifest {}: single_job: ", path.display());
+        assert!(matches!(err, CliError::InvalidInput(ref m) if m.contains(&want)), "{err:?}");
     }
 }
