@@ -17,6 +17,8 @@ import urllib.request
 from collections.abc import Iterator
 from typing import Literal
 
+from s3_uri import split_object
+
 # The route's limits and the delivery policy are the engine plugins' posters' (biffix_core::
 # ingest_limits, written to schemas/ingest-limits.json; tests/test_lib.py fails if these differ).
 # The route answers 413 over MAX_EVENTS events or ROUTE_MAX_BYTES of body, so chunks are cut by
@@ -63,9 +65,7 @@ def upload(src: str, dest: str) -> None:
     import boto3
 
     try:
-        bucket, _, key = dest.removeprefix("s3://").partition("/")
-        if not dest.startswith("s3://") or not bucket or not key:
-            raise ValueError(f"not an s3 object uri: {dest}")
+        bucket, key = split_object(dest)
         boto3.client("s3").upload_file(src, bucket, key)
         print(f"biffix-coordinator: uploaded events.jsonl to s3://{bucket}/{key}", file=sys.stderr)
     except Exception as e:  # never fail the run on the archival copy

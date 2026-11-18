@@ -4,6 +4,7 @@ pass every other test here and fail only in a real run."""
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
 from pathlib import Path
@@ -34,10 +35,30 @@ def _copied_to_the_image_lib() -> set[str]:
     return copied
 
 
+def _imports(helper: Path) -> set[str]:
+    """The top-level module of every import in `helper`, wherever it is (a function imports a
+    sibling lazily as often as the module does at the top)."""
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(helper.read_text())):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names.add(node.module.split(".")[0])
+    return names
+
+
 def _referenced() -> set[str]:
-    """Every `$LIB_DIR/<file>` the entrypoint and its libraries source or run."""
+    """Every `$LIB_DIR/<file>` the entrypoint and its libraries source or run, and every lib/
+    module a helper imports (a helper has lib/ first on its path)."""
     scripts = [COORDINATOR / "entrypoint.sh", *LIB.glob("*.sh")]
-    return {name for s in scripts for name in re.findall(r"\$LIB_DIR/([\w.-]+)", s.read_text())}
+    run = {name for s in scripts for name in re.findall(r"\$LIB_DIR/([\w.-]+)", s.read_text())}
+    imported = {
+        f"{name}.py"
+        for helper in LIB.glob("*.py")
+        for name in _imports(helper)
+        if (LIB / f"{name}.py").is_file()
+    }
+    return run | imported
 
 
 def test_the_image_carries_every_library_and_helper() -> None:
@@ -56,6 +77,21 @@ def test_the_entrypoint_is_still_the_coordinator_command() -> None:
     dockerfile = (COORDINATOR / "Dockerfile").read_text()
     assert "COPY docker/coordinator/entrypoint.sh /usr/local/bin/biffix-coordinator" in dockerfile
     assert "RUN chmod +x /usr/local/bin/biffix-coordinator" in dockerfile
+
+
+def test_apptainer_is_the_pinned_non_setuid_package() -> None:
+    # Single-job runs' tasks run through it: never the setuid-root build, never unpinned.
+    dockerfile = (COORDINATOR / "Dockerfile").read_text()
+    assert "apptainer_${APPTAINER_VERSION}-trixie%2B_amd64.deb" in dockerfile
+    assert "apptainer-suid" not in dockerfile.replace("(not apptainer-suid)", "")
+    assert re.search(r"ARG APPTAINER_AMD64_SHA256=[0-9a-f]{64}\n", dockerfile)
+    assert "| sha256sum -c -" in dockerfile
+    assert "sed -i 's/^allow setuid = yes$/allow setuid = no/' /etc/apptainer/apptainer.conf" in (
+        dockerfile
+    )
+    assert "grep -qx 'allow setuid = no' /etc/apptainer/apptainer.conf" in dockerfile
+    # Built for the base's Debian release (a base bump to a new release needs the matching .deb).
+    assert "Debian (trixie)" in dockerfile
 
 
 def test_no_helper_shadows_a_module_it_may_import() -> None:

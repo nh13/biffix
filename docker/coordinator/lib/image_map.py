@@ -9,13 +9,18 @@ Exits non-zero (with its reason on stderr) when the map cannot be read or is not
 import json
 import sys
 
+from s3_uri import split
+
 
 def fetch(uri: str, dest: str, what: str = "image map") -> None:
     import boto3
 
-    if not uri.startswith("s3://"):
-        sys.exit(f"not an s3 uri: {uri}")
-    bucket, _, key = uri[5:].partition("/")
+    try:
+        bucket, key = split(uri)
+    except ValueError as e:
+        sys.exit(str(e))
+    if not key:
+        sys.exit(f"not an s3 object uri: {uri}")
     boto3.client("s3").download_file(bucket, key, dest)
     with open(dest) as f:
         if not isinstance(json.load(f), dict):

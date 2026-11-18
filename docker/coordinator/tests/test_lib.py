@@ -5,14 +5,18 @@ drives the whole script; these pin down the edges it does not reach."""
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.error
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 from typing import ClassVar
@@ -48,9 +52,15 @@ def helper(name: str, *args: str, stdin: str = "", **env: str) -> subprocess.Com
 
 
 def module(name: str) -> ModuleType:
+    # As for a helper run as `python3 <lib>/<helper>.py`: lib/ is on the path, for the modules
+    # the helpers share (s3_uri).
+    if str(LIB) not in sys.path:
+        sys.path.insert(0, str(LIB))
     spec = importlib.util.spec_from_file_location(name, LIB / f"{name}.py")
     assert spec is not None and spec.loader is not None, name
     mod = importlib.util.module_from_spec(spec)
+    # Registered first, as an import does: a dataclass looks its module up while it is defined.
+    sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -1157,3 +1167,1169 @@ def test_layer_plugin_version_reads_the_one_plugin_dir(tmp_path: Path) -> None:
     got = version("nf-cloudcache")
     assert got.returncode == 78
     assert "must carry exactly one nf-cloudcache plugin" in got.stderr
+
+
+# ── single_job.sh / single_job.py ──
+
+
+@pytest.mark.parametrize(
+    ("image", "name"),
+    [
+        # Nextflow's SingularityCache.simpleName of docker://<image>.
+        ("quay.io/biocontainers/fastqc:0.12.1--h1", "quay.io-biocontainers-fastqc-0.12.1--h1.img"),
+        ("123.dkr.ecr.r.amazonaws.com/w@sha256:ab", "123.dkr.ecr.r.amazonaws.com-w@sha256-ab.img"),
+        ("ubuntu", "ubuntu.img"),
+        ("reg/x.sif", "reg-x.sif"),
+        ("reg/x.sif:1", "reg-x-1.sif"),
+    ],
+)
+def test_image_files_are_named_as_nextflow_looks_for_them(image: str, name: str) -> None:
+    assert module("single_job").image_file_name(image) == name
+
+
+def test_the_tenant_images_are_the_map_s_distinct_values_and_the_extras() -> None:
+    sj = module("single_job")
+    assert sj.tenant_images({"a": "x", "b": "x", "c": "y"}, ["z", "", "x"]) == ["x", "y", "z"]
+
+
+@pytest.mark.parametrize(
+    ("image", "registry"),
+    [
+        ("123.dkr.ecr.r.amazonaws.com/w:1", "123.dkr.ecr.r.amazonaws.com"),
+        ("localhost/w", "localhost"),
+        ("localhost:5000/w", "localhost:5000"),
+        ("biocontainers/fastqc:1", ""),
+        ("ubuntu:24.04", ""),
+    ],
+)
+def test_registry_of(image: str, registry: str) -> None:
+    assert module("single_job").registry_of(image) == registry
+
+
+def test_only_the_region_s_ecr_gets_the_login() -> None:
+    ecr = module("single_job").ecr_host("us-east-1")
+    assert ecr.match("123456789012.dkr.ecr.us-east-1.amazonaws.com")
+    assert not ecr.match("123456789012.dkr.ecr.us-west-2.amazonaws.com")
+    assert not ecr.match("123456789012.dkr.ecr.us-east-1.amazonaws.com.evil.example")
+    assert not ecr.match("quay.io")
+
+
+def test_each_rule_runs_the_image_its_batch_job_would() -> None:
+    sj = module("single_job")
+    rule = sj.RuleImage
+    image_map = {
+        "tool:1": "T",
+        "docker.io/library/other:2": "O",
+        "W": "W",
+        "$default": "W",
+    }
+    images, problems = sj.plan_rule_images(
+        [
+            rule("as_written", image="tool:1"),
+            # Looked up in its normalized spelling, as the AWS Batch executor does.
+            rule("normalized", image="docker.io/library/tool:1"),
+            rule("short", image="other:2"),
+            rule("default"),
+            rule("local", image="tool:1", local=True),
+            rule("unmapped", image="docker://quay.io/x:1"),
+            rule("reserved", image="$default"),
+            rule("dynamic", problem="set by a function"),
+        ],
+        image_map,
+        "W",
+    )
+    assert images == {
+        "as_written": "T",
+        "normalized": "T",
+        "short": "O",
+        "default": "W",
+        "local": None,
+    }
+    assert [p.split(":")[0] for p in problems] == [
+        "rule unmapped",
+        "rule reserved",
+        "rule dynamic",
+    ]
+    assert "not one the run's image map names" in problems[0]
+    # No default image: such a rule runs in the job itself, as its Batch job would run in the
+    # coordinator's own image.
+    images, problems = sj.plan_rule_images([rule("default")], {}, "")
+    assert images == {"default": None} and problems == []
+
+
+def test_a_grouped_rule_without_an_image_runs_in_its_group_s() -> None:
+    """On AWS Batch a group's rules run as one job, in the image its rules name (Snakemake merges
+    the resource across the group job), so a member that names none takes the group's image."""
+    sj = module("single_job")
+    rule = sj.RuleImage
+    planned, problems = sj.group_images(
+        [
+            rule("tool", image="tool:1"),
+            rule("bare"),
+            rule("alone"),
+            rule("other_group"),
+            rule("dynamic", problem="set by a function"),
+            rule("mixed_a", image="tool:1"),
+            rule("mixed_b", image="other:2"),
+            rule("mixed_bare"),
+        ],
+        {
+            "tool": "g",
+            "bare": "g",
+            "alone": None,
+            "other_group": "h",
+            "dynamic": "g",
+            "mixed_a": "m",
+            "mixed_b": "m",
+            "mixed_bare": "m",
+        },
+    )
+    assert {r.name: r.image for r in planned} == {
+        "tool": "tool:1",
+        "bare": "tool:1",
+        "alone": None,
+        "other_group": None,
+        "dynamic": None,
+        "mixed_a": "tool:1",
+        "mixed_b": "other:2",
+        "mixed_bare": None,
+    }
+    assert [r.name for r in planned if r.problem] == ["dynamic"]
+    # Snakemake refuses a group job whose rules name different images; so does a single-job run.
+    assert len(problems) == 1
+    assert problems[0].startswith("group m: its rules name different images (other:2, tool:1)")
+
+
+def test_a_rule_image_resource_must_be_a_plain_string() -> None:
+    sj = module("single_job")
+
+    class Resource:
+        def __init__(self, value: object, evaluable: bool = False):
+            self.value, self._evaluable = value, evaluable
+
+        def is_evaluable(self) -> bool:
+            return self._evaluable
+
+    assert sj.rule_image("a", None, False) == sj.RuleImage("a")
+    assert sj.rule_image("a", Resource(None), True) == sj.RuleImage("a", local=True)
+    assert sj.rule_image("a", Resource(None, True), True) == sj.RuleImage("a", local=True)
+    assert sj.rule_image("a", Resource(3), True) == sj.RuleImage("a", local=True)
+    assert sj.rule_image("a", Resource("t:1"), False) == sj.RuleImage("a", image="t:1")
+    assert "set by a function" in (sj.rule_image("a", Resource(None, True), False).problem or "")
+    assert "not a plain string (3)" in (sj.rule_image("a", Resource(3), False).problem or "")
+
+
+def test_the_snakefile_wrapper_includes_the_workflow_then_sets_every_rule_s_container(
+    tmp_path: Path,
+) -> None:
+    snakefile = tmp_path / "workflow/Snakefile"
+    snakefile.parent.mkdir()
+    wrapper = tmp_path / "workflow/.biffix-container.smk"
+    module("single_job").snakefile_wrapper(
+        str(snakefile), str(wrapper), "/w/images.json", "/s/images", 'reg/w"x:1', "/w/ti.json", True
+    )
+    text = wrapper.read_text()
+    calls = [node for node in ast.walk(ast.parse(text)) if isinstance(node, ast.Call)]
+    include = next(
+        node
+        for node in calls
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "include"
+    )
+    assert ast.literal_eval(include.args[0]) == str(snakefile)
+    # Parsed, not searched for in the text: a path with a non-ASCII character is written escaped.
+    spec = next(
+        node
+        for node in calls
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "spec_from_file_location"
+    )
+    assert ast.literal_eval(spec.args[1]) == str((LIB / "single_job.py").resolve())
+    containers = next(
+        node
+        for node in calls
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "set_rule_containers"
+    )
+    assert [ast.literal_eval(arg) for arg in containers.args[1:]] == [
+        "/w/images.json",
+        "/s/images",
+        'reg/w"x:1',
+        "/w/ti.json",
+        True,
+    ]
+    # Preserve the entrypoint's default target instead of restoring the wrapper's empty one.
+    assert text.index("workflow.include(") < text.index("_biffix.set_rule_containers(")
+
+
+# A fake apptainer for a real Snakemake run: it records the image each job runs in, then runs the
+# job's command itself.
+_RECORDING_APPTAINER = r"""#!/usr/bin/env bash
+case "${1:-}" in --version|version) echo "apptainer version 1.5.5"; exit 0 ;; esac
+shift  # exec
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --home|--bind|-B) shift 2 ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+image=$1
+shift
+printf '%s\t%s\n' "$image" "$*" >> "$FAKE_IMAGES"
+exec "$@"
+"""
+
+
+class RealSnakemake:
+    """A workflow run by the real Snakemake (the dev dependency) through a single-job run's wrapper
+    Snakefile, with a fake apptainer that records each job's image."""
+
+    def __init__(self, root: Path):
+        self.root, self.src, self.images = root, root / "src", root / "images"
+        self.src.mkdir()
+        (self.src / "mod").mkdir()
+        self.images.mkdir()
+        self.bin = root / "bin"
+        self.bin.mkdir()
+        exe = self.bin / "apptainer"
+        exe.write_text(_RECORDING_APPTAINER)
+        exe.chmod(0o755)
+        self.map_file = root / "images.json"
+        self.map_file.write_text(json.dumps(
+            {"tool:1": "reg.io/t@sha256:1", "docker.io/library/tool:1": "reg.io/t@sha256:1",
+             "reg.io/w@sha256:2": "reg.io/w@sha256:2", "$default": "reg.io/w@sha256:2"}
+        ))  # fmt: skip
+        self.task_images = root / "task-images.json"
+        self.recorded = root / "recorded"
+
+    def run(
+        self, snakefile: str, *args: str, convert: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        sj = module("single_job")
+        (self.src / "Snakefile").write_text(snakefile)
+        if convert:
+            for image in ("reg.io/t@sha256:1", "reg.io/w@sha256:2"):
+                (self.images / sj.image_file_name(image)).write_text("image file")
+        wrapper = sj.snakefile_wrapper(
+            str(self.src / "Snakefile"),
+            "",
+            str(self.map_file),
+            str(self.images),
+            "reg.io/w@sha256:2",
+            str(self.task_images),
+            True,
+        )
+        return subprocess.run(
+            [sys.executable, "-m", "snakemake", "--snakefile", str(wrapper), "--cores", "1",
+             "--sdm", "apptainer", "--apptainer-prefix", str(self.root / "prefix"), *args],
+            cwd=self.src,
+            env={"PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(self.root),
+                 "FAKE_IMAGES": str(self.recorded)},
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )  # fmt: skip
+
+
+_MODULE_SNAKEFILE = """\
+container: "docker://module-global:1"
+rule m:
+    output: "m.txt"
+    resources: aws_batch_container_image="tool:1"
+    shell: "echo m > {output}"
+rule mdef:
+    output: "mdef.txt"
+    shell: "echo mdef > {output}"
+"""
+
+_SNAKEFILE = """\
+container: "docker://global:1"
+localrules: loc, grouped
+module mm:
+    snakefile: "mod/Snakefile"
+use rule * from mm as mm_*
+rule all:
+    input: "a.txt", "b.txt", "c.txt", "l.txt", "m.txt", "mdef.txt", "g.txt"
+rule grouped:
+    input: "gt.txt"
+    output: "g.txt"
+    group: "g"
+    shell: "echo g > {output}"
+rule gtool:
+    output: "gt.txt"
+    group: "g"
+    resources: aws_batch_container_image="tool:1"
+    shell: "echo gt > {output}"
+rule a:
+    output: "a.txt"
+    resources: aws_batch_container_image="docker.io/library/tool:1"
+    shell: "echo a > {output}"
+rule b:
+    output: "b.txt"
+    shell: "echo b > {output}"
+rule c:
+    output: "c.txt"
+    container: "docker://ubuntu:24.04"
+    shell: "echo c > {output}"
+rule loc:
+    output: "l.txt"
+    resources: aws_batch_container_image=lambda wildcards: "ignored-local-image:1"
+    shell: "echo l > {output}"
+"""
+
+
+def test_a_real_snakemake_runs_every_rule_in_the_image_its_batch_job_would(tmp_path: Path) -> None:
+    pytest.importorskip("snakemake")
+    sm = RealSnakemake(tmp_path)
+    (sm.src / "mod/Snakefile").write_text(_MODULE_SNAKEFILE)
+    got = sm.run(_SNAKEFILE, "all")
+    assert got.returncode == 0, got.stderr
+    tool = str(sm.images / "reg.io-t@sha256-1.img")
+    worker = str(sm.images / "reg.io-w@sha256-2.img")
+    # One job per image: the rules with the resource (a module rule's included) run the mapped
+    # image; the rest the default image, whatever their own or the workflow's `container:`; the
+    # local rule runs no container, unless it is in a group, whose Batch job runs the image a rule
+    # of the group names (its own naming none). Nothing is pulled.
+    ran = {}
+    for line in sm.recorded.read_text().splitlines():
+        image, command = line.split("\t", 1)
+        (output,) = re.findall(r"> (\w+\.txt)", command)
+        ran[output] = image
+    assert ran == {
+        "a.txt": tool,
+        "m.txt": tool,
+        "b.txt": worker,
+        "c.txt": worker,
+        "g.txt": tool,
+        "gt.txt": tool,
+        "mdef.txt": worker,
+    }
+    assert json.loads(sm.task_images.read_text()) == {
+        "a": "reg.io/t@sha256:1",
+        "b": "reg.io/w@sha256:2",
+        "c": "reg.io/w@sha256:2",
+        "grouped": "reg.io/t@sha256:1",
+        "gtool": "reg.io/t@sha256:1",
+        "mm_m": "reg.io/t@sha256:1",
+        "mm_mdef": "reg.io/w@sha256:2",
+    }
+    assert "Pulling" not in got.stderr
+    assert not (tmp_path / "prefix").exists() or not any((tmp_path / "prefix").iterdir())
+
+
+def test_only_the_main_snakemake_process_writes_the_task_image_report(tmp_path: Path) -> None:
+    """A job Snakemake spawns (a `run:` job) reloads the wrapper Snakefile too: it sets its rules'
+    containers, but two such jobs both publishing the report through one temporary file race, and
+    the loser's rename fails its job. The main process alone writes it, before any job starts."""
+    pytest.importorskip("snakemake")
+    from types import SimpleNamespace
+
+    sj = module("single_job")
+    report = tmp_path / "task-images.json"
+    images = tmp_path / "images.json"
+    images.write_text("{}")
+    for main, written in [(False, False), (True, True)]:
+        workflow = SimpleNamespace(
+            rules=[],
+            _localrules=set(),
+            group_settings=SimpleNamespace(overwrite_groups={}),
+            is_main_process=main,
+        )
+        sj.set_rule_containers(workflow, str(images), str(tmp_path), "", str(report), False)
+        assert report.exists() == written
+    assert json.loads(report.read_text()) == {}
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["images.json", "task-images.json"]
+
+
+def test_native_run_block_does_not_claim_its_optional_shell_container(tmp_path: Path) -> None:
+    """Native Python executes in the engine even when shell calls have a configured image."""
+    pytest.importorskip("snakemake")
+    sm = RealSnakemake(tmp_path)
+    got = sm.run("""rule native:
+    output: "native.txt"
+    run:
+        import sys
+        with open(output[0], "w") as out:
+            out.write(sys.executable)
+""")
+    assert got.returncode == 0, got.stderr
+    assert Path((sm.src / "native.txt").read_text()).resolve() == Path(sys.executable).resolve()
+    assert not sm.recorded.exists()
+    assert json.loads(sm.task_images.read_text()) == {}
+
+
+def test_a_real_snakemake_refuses_a_rule_whose_image_the_run_cannot_have(tmp_path: Path) -> None:
+    pytest.importorskip("snakemake")
+    sm = RealSnakemake(tmp_path)
+    snakefile = """\
+rule all:
+    input: "u.txt", "f.txt", "p.txt"
+rule plain:
+    output: "p.txt"
+    shell: "echo p > {output}"
+rule unmapped:
+    output: "u.txt"
+    resources: aws_batch_container_image="docker://quay.io/evil:1"
+    shell: "echo u > {output}"
+rule function:
+    output: "f.txt"
+    resources: aws_batch_container_image=lambda wildcards: "tool:1"
+    shell: "echo f > {output}"
+"""
+    got = sm.run(snakefile, convert=False)
+    assert got.returncode != 0
+    assert "rule unmapped: its image 'docker://quay.io/evil:1'" in got.stderr
+    assert "rule function: its aws_batch_container_image is set by a function" in got.stderr
+    # The default image, which `plain` runs, was not converted either.
+    assert "the image file of reg.io/w@sha256:2" in got.stderr
+    assert "it was not converted" in got.stderr
+    # Before any job ran.
+    assert not sm.recorded.exists()
+    assert not (sm.src / "u.txt").exists() and not sm.task_images.exists()
+
+
+@pytest.mark.parametrize(
+    ("version", "resources"),
+    [
+        ("9.27.1", ["mem_mb=64424"]),
+        ("9.16.3", ["mem_mb=64424"]),
+        ("10.0.0", ["mem_mb=64424"]),
+        ("9.16.2", ["mem_mb=64424", "mem_mib=61440"]),
+        ("9.1.0", ["mem_mb=64424", "mem_mib=61440"]),
+        ("8.30.0", ["mem_mb=64424", "mem_mib=61440"]),
+    ],
+)
+def test_the_memory_resource_is_spelled_as_the_snakemake_release_reads_it(
+    version: str, resources: list[str]
+) -> None:
+    got = bash(f"snakemake_memory_resources {version} 61440", "snakemake")
+    assert got.returncode == 0, got.stderr
+    assert got.stdout.splitlines() == resources
+
+
+def test_snakemake_accepts_the_memory_resource_it_is_given() -> None:
+    pytest.importorskip("snakemake")
+    got = bash("snakemake_memory_resources 9.27.1 61440", "snakemake")
+    parse = subprocess.run(
+        [sys.executable, "-c", "import sys; from snakemake.cli import parse_args; "
+         "parse_args(sys.argv[1:])", "--cores", "1", "--resources", *got.stdout.split()],
+        capture_output=True, text=True, timeout=120,
+    )  # fmt: skip
+    assert parse.returncode == 0, parse.stderr
+    # Both spellings at once are refused (the reason it gives one from 9.16.3).
+    both = subprocess.run(
+        [sys.executable, "-c", "import sys; from snakemake.cli import parse_args; "
+         "parse_args(sys.argv[1:])", "--resources", "mem_mb=1", "mem_mib=1"],
+        capture_output=True, text=True, timeout=120,
+    )  # fmt: skip
+    assert both.returncode != 0 and "ResourceDuplicationError" in both.stderr
+
+
+def test_a_conversion_failure_names_two_images_that_would_share_a_file(tmp_path: Path) -> None:
+    map_file = tmp_path / "images.json"
+    map_file.write_text(json.dumps({"a": "reg/a:1", "b": "reg/a/1"}))
+    failure = tmp_path / "failure.txt"
+    got = helper(
+        "single_job",
+        "convert",
+        str(map_file),
+        str(tmp_path / "i"),
+        str(tmp_path / "l"),
+        str(failure),
+    )
+    assert got.returncode == 1
+    assert "would share the image file reg-a-1.img" in failure.read_text()
+
+
+def test_the_single_job_mode_and_its_scratch_root_are_checked(tmp_path: Path) -> None:
+    got = bash("select_execution", "single_job", ENGINE="snakemake", BIFFIX_EXECUTION="x")
+    assert got.returncode == 78
+    got = bash("select_execution; echo $EXECUTION", "single_job", ENGINE="snakemake")
+    assert got.returncode == 0 and got.stdout == "tasks\n"
+    # Not a directory: refused before anything is cleared.
+    scratch = tmp_path / "scratch"
+    scratch.write_text("a file")
+    got = bash(
+        "install_signal_traps; EXECUTION=single_job; prepare_scratch",
+        "signals",
+        "single_job",
+        SCRATCH=str(scratch),
+        WORK=str(scratch / "run"),
+    )
+    assert got.returncode == 78
+    assert "is not a writable directory" in got.stderr
+
+
+# The backend mirrors this split to size a run (runs/single_job.rs task_memory_mib), its test pinned
+# to the same values: change the two together.
+@pytest.mark.parametrize(
+    ("engine", "memory", "tasks", "heap"),
+    [
+        ("nextflow", "65536", "59392", "4096"),
+        ("nextflow", "524288", "499712", "8192"),
+        ("nextflow", "8192", "6144", "1024"),
+        # A c6id.8xlarge's whole-host job.
+        ("nextflow", "61184", "55448", "3824"),
+        ("snakemake", "61184", "57360", ""),
+        ("snakemake", "8192", "6144", ""),
+        ("snakemake", "65536", "61440", ""),
+        ("snakemake", "524288", "516096", ""),
+    ],
+)
+def test_the_engine_keeps_a_reserve_of_the_job_s_memory(
+    engine: str, memory: str, tasks: str, heap: str
+) -> None:
+    got = bash(
+        'single_job_memory; echo "$SJ_TASK_MEMORY_MIB ${SJ_JVM_HEAP_MIB:-}"',
+        "single_job",
+        ENGINE=engine,
+        SJ_MEMORY_MIB=memory,
+    )
+    assert got.returncode == 0, got.stderr
+    assert got.stdout == f"{tasks} {heap}\n"
+
+
+# ── run_logs.py ──
+
+
+def _task(work: Path, name: str, status: str, mtime: int) -> Path:
+    task = work / name[:2] / name[2:]
+    task.mkdir(parents=True)
+    (task / ".exitcode").write_text(status)
+    (task / ".command.err").write_text(f"{name} err")
+    os.utime(task / ".exitcode", (mtime, mtime))
+    return task
+
+
+def test_only_failed_tasks_files_are_collected_the_most_recent_first(tmp_path: Path) -> None:
+    rl = module("run_logs")
+    _task(tmp_path, "aa1111", "0", 100)
+    _task(tmp_path, "bb2222", "1", 200)
+    _task(tmp_path, "cc3333", "137\n", 300)
+    names = [u.name for u in rl.failed_tasks(tmp_path)]
+    assert names == ["tasks/cc/3333/.command.err", "tasks/bb/2222/.command.err"]
+    for i in range(rl.MAX_FAILED_TASKS + 5):
+        _task(tmp_path / "many", f"d{i:05d}", "1", 400 + i)
+    assert len(rl.failed_tasks(tmp_path / "many")) == rl.MAX_FAILED_TASKS
+
+
+def test_failure_txt_is_the_status_and_the_end_of_the_output(tmp_path: Path) -> None:
+    rl = module("run_logs")
+    out = tmp_path / "out"
+    out.write_text("".join(f"line {i}\n" for i in range(1000)))
+    text = rl.failure_text(out, "2")
+    assert text.startswith("The engine exited with status 2.")
+    assert "line 999" in text and "line 799\n" not in text and "line 800" in text
+    assert rl.failure_text(tmp_path / "none", "1") == "The engine exited with status 1.\n"
+
+
+def test_a_state_file_that_cannot_be_written_does_not_stop_the_uploads(tmp_path: Path) -> None:
+    a, b, s3 = tmp_path / "a.log", tmp_path / "b.log", tmp_path / "s3"
+    a.write_text("one")
+    b.write_text("two")
+    state = tmp_path / "no-such-dir" / "state.json"
+    got = helper(
+        "run_logs", "s3://b/logs/", str(state), "30", "--file", f"a.log={a}", "--file",
+        f"b.log={b}", FAKE_S3=str(s3),
+    )  # fmt: skip
+    assert got.returncode == 0, got.stderr
+    assert "could not record the logs sent" in got.stderr
+    assert "uploaded 2 log file(s)" in got.stderr
+    assert (s3 / "b/logs/a.log").read_text() == "one"
+    assert (s3 / "b/logs/b.log").read_text() == "two"
+
+
+class _Growing:
+    """A log whose writer appends while it is read: each read returns what was asked and more."""
+
+    def __init__(self, path: Path, extra: bytes) -> None:
+        self.fh = open(path, "rb")  # noqa: SIM115 - closed by __exit__
+        self.extra = extra
+
+    def __enter__(self) -> _Growing:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.fh.close()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.fh, name)
+
+    def read(self, size: int = -1) -> bytes:
+        got = self.fh.read(size)
+        return got if size >= 0 else got + self.extra
+
+
+def test_a_tail_never_reads_past_its_cap_while_the_log_grows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rl = module("run_logs")
+    log = tmp_path / "engine.log"
+    log.write_bytes(b"x" * 100)
+    opened: list[Path] = []
+
+    def growing(path: Path) -> _Growing:
+        opened.append(path)
+        return _Growing(path, b"y" * 1000)
+
+    monkeypatch.setattr(rl, "_open_regular", growing)
+    assert rl.tail_bytes(log, 40) == b"x" * 40
+    monkeypatch.setattr(rl, "FAILURE_BYTES", 40)
+    assert rl.failure_text(log, "1").endswith("x" * 40 + "\n")
+    assert opened == [log, log]
+
+
+def test_logs_are_uploaded_only_when_they_changed(tmp_path: Path) -> None:
+    log, state, s3 = tmp_path / "engine.log", tmp_path / "state.json", tmp_path / "s3"
+    log.write_text("one")
+
+    def upload() -> subprocess.CompletedProcess[str]:
+        return helper(
+            "run_logs", "s3://b/runs/r/logs/", str(state), "30", "--file", f"e.log={log}",
+            FAKE_S3=str(s3),
+        )  # fmt: skip
+
+    assert "uploaded 1 log file(s)" in upload().stderr
+    assert (s3 / "b/runs/r/logs/e.log").read_text() == "one"
+    assert "uploaded" not in upload().stderr
+    log.write_text("one two")
+    assert "uploaded 1 log file(s)" in upload().stderr
+    assert (s3 / "b/runs/r/logs/e.log").read_text() == "one two"
+
+
+def test_a_log_upload_never_fails_and_never_outlasts_its_deadline(tmp_path: Path) -> None:
+    log = tmp_path / "engine.log"
+    log.write_text("x")
+    args = ["s3://b/logs/", str(tmp_path / "state"), "1", "--file", f"e.log={log}"]
+    # S3 unreachable: logged, exit 0.
+    got = helper("run_logs", *args, FAKE_S3=str(tmp_path / "s3"), FAKE_S3_DENY_PUT="1")
+    assert got.returncode == 0
+    assert "log upload of e.log failed (skipped)" in got.stderr
+    # S3 hanging: abandoned at the deadline, exit 0.
+    got = helper("run_logs", *args, FAKE_S3=str(tmp_path / "s3"), FAKE_S3_SLOW_PUT="30")
+    assert got.returncode == 0
+    assert "still running after 1s; abandoning it" in got.stderr
+    # Not an s3 prefix: logged, exit 0.
+    got = helper("run_logs", "s3://b/no-slash", str(tmp_path / "state"), "5")
+    assert got.returncode == 0 and "not an s3 prefix" in got.stderr
+
+
+# ── review follow-ups: the scratch wipe, the conversion's failures, the logs' deadline ──
+
+
+def test_the_scratch_wipe_removes_everything_under_the_scratch_root(tmp_path: Path) -> None:
+    # An older run's lock file on the scratch root (the lock is now on the host's marker) goes too,
+    # whatever it is.
+    (tmp_path / ".biffix-lock").write_text("")
+    (tmp_path / "run/src").mkdir(parents=True)
+    (tmp_path / ".hidden").write_text("x")
+    got = bash("clear_scratch", "signals", "single_job", SCRATCH=str(tmp_path))
+    assert got.returncode == 0, got.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_conversion_never_passes_on_a_registry_login_the_caller_had() -> None:
+    sj = module("single_job")
+    caller = {
+        "PATH": "/bin",
+        "APPTAINER_DOCKER_USERNAME": "u",
+        "APPTAINER_DOCKER_PASSWORD": "p",
+        "SINGULARITY_DOCKER_USERNAME": "u",
+        "SINGULARITY_DOCKER_PASSWORD": "p",
+        "DOCKER_USERNAME": "u",
+        "DOCKER_PASSWORD": "p",
+    }
+    assert sj.pull_env(caller) == {"PATH": "/bin"}
+
+
+@pytest.mark.parametrize("failing", [1, 2], ids=["deletion", "verification"])
+def test_a_scratch_wipe_whose_find_fails_fails(tmp_path: Path, failing: int) -> None:
+    # A stand-in `find` that fails on one pass (after deleting, on the deletion pass): a failed
+    # check must not read as an empty scratch root.
+    (tmp_path / "run").mkdir()
+    stub = (
+        'n=0; find() { n=$((n + 1)); command find "$@" || return; '
+        f'[ "$n" -ne {failing} ] || return 1; }}; '
+    )
+    got = bash(
+        stub + "if clear_scratch; then echo wiped; else echo refused; fi",
+        "signals",
+        "single_job",
+        SCRATCH=str(tmp_path),
+    )
+    assert got.stdout.strip() == "refused", got.stderr
+
+
+def test_a_stopped_run_leaves_its_scratch_at_exit(tmp_path: Path) -> None:
+    (tmp_path / "run").mkdir()
+    got = bash("ENGINE_STOPPED_BY=143 clear_scratch_at_exit", "single_job", SCRATCH=str(tmp_path))
+    assert got.returncode == 0, got.stderr
+    assert (tmp_path / "run").exists()
+    got = bash("ENGINE_STOPPED_BY= clear_scratch_at_exit", "single_job", SCRATCH=str(tmp_path))
+    assert got.returncode == 0, got.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("content", "env", "why"),
+    [
+        ("[1, 2]", {}, "is not a JSON object"),
+        ("{not json", {}, "could not convert the task images: "),
+        ('{"a": "reg/a:1"}', {"BIFFIX_SIF_PARALLEL": "lots"}, "BIFFIX_SIF_PARALLEL must be"),
+        ('{"a": "reg/a:1"}', {"BIFFIX_SIF_PARALLEL": "0"}, "BIFFIX_SIF_PARALLEL must be"),
+    ],
+)
+def test_any_conversion_error_is_the_run_s_failure(
+    tmp_path: Path, content: str, env: dict[str, str], why: str
+) -> None:
+    map_file = tmp_path / "images.json"
+    map_file.write_text(content)
+    failure = tmp_path / "failure.txt"
+    args = [str(map_file), str(tmp_path / "i"), str(tmp_path / "l"), str(failure)]
+    got = helper("single_job", "convert", *args, **env)
+    assert got.returncode == 1, got.stderr
+    assert why in failure.read_text()
+    assert "Traceback" not in got.stderr
+
+
+def test_failure_txt_names_what_failed_when_it_is_not_the_engine(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.write_text("could not convert the task image x\n")
+    text = module("run_logs").failure_text(out, "1", "Converting the task images failed")
+    assert text.startswith("Converting the task images failed (exit status 1).")
+    assert "could not convert the task image x" in text
+
+
+def _final_deadline(**env: str) -> str:
+    # SECONDS is set here, not inherited: the shell's own count starts when it does, which a slow
+    # start would advance.
+    got = bash(
+        'unset SECONDS; SECONDS=0; logs_command final; echo "${LOGS_CMD[3]}"',
+        "logs",
+        WORK="/w",
+        SRC="/w/src",
+        BIFFIX_PROJECT_BUCKET="b",
+        BIFFIX_RUN_PREFIX="runs/r/",
+        **env,
+    )
+    assert got.returncode == 0, got.stderr
+    return got.stdout.strip()
+
+
+def test_the_final_logs_upload_fits_in_what_a_cancel_leaves() -> None:
+    # SECONDS starts at 0 in the test's shell: the signal came 20 s, or 29 s, ago.
+    assert _final_deadline() == "8"
+    assert _final_deadline(BIFFIX_LOGS_FINAL_SECS="5") == "5"
+    stopped = {"ENGINE_STOPPED_BY": "143", "rc": "143"}
+    # 30 s of Batch's stop timeout, less the 20 s gone, less 4 s for the replay.
+    assert _final_deadline(STOPPED_AT="-20", **stopped) == "6"
+    assert _final_deadline(STOPPED_AT="-29", **stopped) == "1"
+    # Never more than asked for.
+    assert _final_deadline(STOPPED_AT="0", **stopped) == "8"
+
+
+def test_the_engine_s_output_copy_has_its_last_line_when_run_engine_returns(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "engine-output.log"
+    got = bash(
+        "install_signal_traps\n"
+        "run_engine TERM sh -c 'i=0; while [ $i -lt 20000 ]; do echo line $i; i=$((i+1)); done; "
+        "echo last >&2; exit 3'\n"
+        'echo "rc=$rc"; tail -n 1 "$ENGINE_OUTPUT"',
+        "signals",
+        ENGINE_OUTPUT=str(out),
+    )
+    assert got.returncode == 0, got.stderr
+    assert got.stdout == "rc=3\nlast\n"
+    # And the job's log still has all of it.
+    assert "line 19999\nlast\n" in got.stderr
+
+
+def test_the_output_copy_keeps_only_its_end(tmp_path: Path) -> None:
+    ct = module("capped_tee")
+    out = tmp_path / "copy.log"
+    data = b"".join(b"line %d\n" % i for i in range(400_000))
+    got = subprocess.run(
+        [sys.executable, str(LIB / "capped_tee.py"), str(out)],
+        input=data,
+        capture_output=True,
+        timeout=60,
+    )
+    assert got.returncode == 0, got.stderr
+    # Everything passes through; the copy is its end, within the cap.
+    assert got.stdout == data
+    copy = out.read_bytes()
+    assert len(copy) <= ct.ROTATE_AT
+    assert data.endswith(copy) and len(copy) >= ct.KEEP
+
+
+def test_a_stdout_that_goes_away_stops_only_the_forwarding(tmp_path: Path) -> None:
+    ct = module("capped_tee")
+    out = tmp_path / "copy.log"
+    data = b"".join(b"line %d\n" % i for i in range(200_000))
+    proc = subprocess.Popen(
+        [sys.executable, str(LIB / "capped_tee.py"), str(out)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdin is not None and proc.stdout is not None
+    try:
+        # A probe the child must forward before the reader goes away, so the reader leaves only
+        # once the forwarding is under way.
+        proc.stdin.write(data[: ct.CHUNK])
+        proc.stdin.flush()
+        assert proc.stdout.read(1) == data[:1]
+        proc.stdout.close()  # the reader goes away
+        proc.stdout = None  # so communicate() reads only stderr
+        proc.communicate(input=data[ct.CHUNK :], timeout=60)
+        assert proc.returncode == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    # The copy still holds the end of everything.
+    assert data.endswith(out.read_bytes()) and len(out.read_bytes()) >= ct.KEEP
+
+
+def test_a_copy_that_cannot_be_written_stops_only_the_copy(tmp_path: Path) -> None:
+    data = b"".join(b"line %d\n" % i for i in range(10_000))
+    got = subprocess.run(
+        [sys.executable, str(LIB / "capped_tee.py"), str(tmp_path / "missing/copy.log")],
+        input=data,
+        capture_output=True,
+        timeout=60,
+    )
+    assert got.returncode == 0, got.stderr
+    assert got.stdout == data
+    assert b"no copy of the engine's output kept" in got.stderr
+
+
+def test_a_full_volume_ends_the_copy_without_an_error(tmp_path: Path) -> None:
+    ct = module("capped_tee")
+
+    class Full(io.BytesIO):
+        """A buffered file on a full volume: every write, flush and close fails."""
+
+        def write(self, _data: object) -> int:
+            raise OSError(28, "No space left on device")
+
+        def close(self) -> None:
+            raise OSError(28, "No space left on device")
+
+    copy = ct.CappedFile(str(tmp_path / "copy.log"), ct.KEEP, ct.ROTATE_AT)
+    copy.out = Full()
+    copy.write(b"x")  # no error: the copy is given up
+    assert copy.out is None
+    copy.write(b"y")
+    copy.close()
+    copy.out = Full()
+    copy.close()  # nor here
+    assert copy.out is None
+
+
+# ── s3_uri.py ──
+
+
+def test_an_s3_uri_is_split_into_its_bucket_and_key() -> None:
+    s3 = module("s3_uri")
+    assert s3.split("s3://b/k/x") == ("b", "k/x")
+    assert s3.split("s3://b") == ("b", "")
+    assert s3.split_object("s3://b/k") == ("b", "k")
+    assert s3.split_prefix("s3://b/p/") == ("b", "p/")
+    for bad, fn, why in [
+        ("https://b/k", "split", "not an s3 uri"),
+        ("s3:///k", "split", "not an s3 uri"),
+        ("s3://b", "split_object", "not an s3 object uri"),
+        ("s3://b/", "split_object", "not an s3 object uri"),
+        ("b/k", "split_object", "not an s3 object uri"),
+        ("s3://b/p", "split_prefix", "not an s3 prefix"),
+        ("s3://b", "split_prefix", "not an s3 prefix"),
+    ]:
+        with pytest.raises(ValueError, match=why):
+            getattr(s3, fn)(bad)
+
+
+def test_failure_txt_and_the_named_files_go_before_the_failed_tasks_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rl = module("run_logs")
+    log = tmp_path / "engine.log"
+    log.write_text("log")
+    out = tmp_path / "out"
+    out.write_text("boom\n")
+    for i in range(3):
+        _task(tmp_path / "work", f"a{i:05d}", "1", 100 + i)
+    sent: list[str] = []
+    scanned_after: list[int] = []
+
+    class S3:
+        def put_object(self, **kwargs: object) -> None:
+            sent.append(str(kwargs["Key"]))
+
+    class Recorder(rl.Uploader):  # type: ignore[name-defined]
+        def __init__(self, uri: str, state_file: str, max_bytes: int) -> None:
+            self.uri, self.state_file, self.max_bytes = uri, state_file, max_bytes
+            self.bucket, self.prefix = "b", "p/"
+            self.state: dict[str, str] = {}
+            self.s3, self.sent = S3(), 0
+
+    real_failed_tasks = rl.failed_tasks
+
+    def failed_tasks(work: Path, stop_at: float | None = None) -> object:
+        scanned_after.append(len(sent))
+        assert stop_at is not None
+        return real_failed_tasks(work, stop_at)
+
+    monkeypatch.setattr(rl, "Uploader", Recorder)
+    monkeypatch.setattr(rl, "failed_tasks", failed_tasks)
+    rl.main(
+        ["s3://b/p/", str(tmp_path / "state"), "30", "--file", f"engine.log={log}",
+         "--failed-tasks", str(tmp_path / "work"), "--failure", str(out), "1"]
+    )  # fmt: skip
+    assert sent[:2] == ["p/failure.txt", "p/engine.log"]
+    assert scanned_after == [2]
+    assert len(sent) == 2 + 3
+
+
+def test_the_failed_tasks_scan_stops_at_its_time_limit(tmp_path: Path) -> None:
+    rl = module("run_logs")
+    _task(tmp_path, "aa1111", "1", 100)
+    assert rl.failed_tasks(tmp_path, stop_at=0.0) == []
+    assert len(rl.failed_tasks(tmp_path, stop_at=None)) == 1
+
+
+def test_a_log_sent_only_in_part_is_sent_again_by_a_larger_cap(tmp_path: Path) -> None:
+    log, state, s3 = tmp_path / "engine.log", tmp_path / "state.json", tmp_path / "s3"
+    log.write_text("0123456789")
+
+    def upload(*extra: str) -> subprocess.CompletedProcess[str]:
+        return helper(
+            "run_logs", "s3://b/l/", str(state), "30", "--file", f"e.log={log}", *extra,
+            FAKE_S3=str(s3),
+        )  # fmt: skip
+
+    assert "uploaded 1" in upload("--max-bytes", "4").stderr
+    assert (s3 / "b/l/e.log").read_text() == "6789"
+    assert "uploaded" not in upload("--max-bytes", "4").stderr
+    # The final upload's cap is larger: the whole log goes, though it has not changed.
+    assert "uploaded 1" in upload().stderr
+    assert (s3 / "b/l/e.log").read_text() == "0123456789"
+    assert "uploaded" not in upload().stderr
+
+
+# ── single_job.sh: the scratch root's marker and lock, a setup step's failure ──
+
+
+def _prepare_scratch(tmp_path: Path, **env: str) -> subprocess.CompletedProcess[str]:
+    marker = tmp_path / "host/instance-store"
+    scratch = tmp_path / "scratch"
+    return bash(
+        "install_signal_traps; EXECUTION=single_job; prepare_scratch",
+        "signals",
+        "single_job",
+        **{
+            "SCRATCH": str(scratch),
+            "WORK": str(scratch / "run"),
+            "BIFFIX_INSTANCE_STORE_MARKER": str(marker),
+            "SJ_CPUS": "8",
+            "SJ_MEMORY_MIB": "65536",
+        }
+        | env,
+    )
+
+
+def test_a_scratch_root_without_the_host_s_marker_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "scratch").mkdir()
+    (tmp_path / "scratch/host-file").write_text("the host's own")
+    # A marker on the scratch root itself, which a run could write, does not count.
+    (tmp_path / "scratch/instance-store").write_text("")
+    got = _prepare_scratch(tmp_path)
+    assert got.returncode == 78, got.stderr
+    assert f"(no marker {tmp_path}/host/instance-store)" in got.stderr
+    assert (tmp_path / "scratch/host-file").exists()
+
+
+@pytest.fixture
+def scratch_host(tmp_path: Path) -> Iterator[Path]:
+    """A scratch root, and the host's instance-store marker read-only in a read-only directory, as
+    the single-job job definition mounts it. The marker's directory is made writable again
+    afterwards, so the test's directory can be removed."""
+    (tmp_path / "scratch").mkdir()
+    marker = tmp_path / "host/instance-store"
+    marker.parent.mkdir()
+    marker.write_text("")
+    marker.chmod(0o444)
+    marker.parent.chmod(0o555)
+    yield tmp_path / "scratch"
+    marker.parent.chmod(0o755)
+
+
+def test_a_scratch_root_another_run_holds_is_refused_and_left_alone(scratch_host: Path) -> None:
+    import fcntl
+
+    scratch = scratch_host
+    (scratch / "run").mkdir()
+    (scratch / "run/theirs.txt").write_text("another run's work")
+    # Something not a file where an older run kept its lock: nothing under the scratch root is
+    # removed before the lock on the host's marker is held, so it is still there.
+    (scratch / ".biffix-lock/x").mkdir(parents=True)
+    # The other run's lock: on the host's marker, opened read-only.
+    with open(scratch.parent / "host/instance-store") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        got = _prepare_scratch(scratch.parent)
+    assert got.returncode == 78, got.stderr
+    assert "another run holds the scratch root" in got.stderr
+    assert (scratch / "run/theirs.txt").read_text() == "another run's work"
+    assert (scratch / ".biffix-lock/x").is_dir()
+
+
+def test_the_lock_on_a_read_only_marker_is_held_for_the_life_of_the_job(
+    scratch_host: Path,
+) -> None:
+    import fcntl
+
+    scratch = scratch_host
+    marker = scratch.parent / "host/instance-store"
+    probe = (
+        'python3 -c "import fcntl, sys; fcntl.flock(open(sys.argv[1]).fileno(), '
+        'fcntl.LOCK_EX | fcntl.LOCK_NB)" "$BIFFIX_INSTANCE_STORE_MARKER" 2>/dev/null '
+        "&& echo free || echo held"
+    )
+    got = bash(
+        f"install_signal_traps; EXECUTION=single_job; prepare_scratch; {probe}",
+        "signals",
+        "single_job",
+        SCRATCH=str(scratch),
+        WORK=str(scratch / "run"),
+        BIFFIX_INSTANCE_STORE_MARKER=str(marker),
+        SJ_CPUS="8",
+        SJ_MEMORY_MIB="65536",
+    )
+    assert got.returncode == 0, got.stderr
+    # Held after prepare_scratch returns (on a descriptor the shell keeps), against any other
+    # opener of the marker...
+    assert got.stdout.strip() == "held"
+    # ...and released when the job ends.
+    with open(marker) as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_a_second_coordinator_never_wipes_the_first_s_scratch_root(
+    scratch_host: Path, tmp_path: Path
+) -> None:
+    """Two coordinators on one host, one paused at its first `rm` (its checks done, its wipe not
+    begun) until the other has had its chance at the scratch root: one of them gets it, and the
+    other never wipes that run. Under a lock file on the scratch root itself, the paused one went on
+    to remove the other's live lock file (a stale entry it had seen there), lock a new one, and wipe
+    the other's run."""
+    scratch = scratch_host
+    (scratch / ".biffix-lock/x").mkdir(parents=True)
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    paused, go, once = tmp_path / "paused", tmp_path / "go", tmp_path / "once"
+    real_rm = subprocess.run(
+        ["sh", "-c", "command -v rm"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    (shim / "rm").write_text(
+        "#!/bin/sh\n"
+        f'if [ ! -e "{once}" ]; then : > "{once}"; : > "{paused}"\n'
+        f'  while [ ! -e "{go}" ]; do sleep 0.05; done\nfi\n'
+        f'exec {real_rm} "$@"\n'
+    )
+    (shim / "rm").chmod(0o755)
+    env = {
+        "LIB_DIR": str(LIB),
+        "PYTHONPATH": str(FAKES),
+        "SCRATCH": str(scratch),
+        "WORK": str(scratch / "run"),
+        "BIFFIX_INSTANCE_STORE_MARKER": str(tmp_path / "host/instance-store"),
+        "SJ_CPUS": "8",
+        "SJ_MEMORY_MIB": "65536",
+    }
+    sources = "".join(f'. "$LIB_DIR/{lib}.sh"\n' for lib in ("common", "signals", "single_job"))
+    prologue = f"set -euo pipefail\n{sources}install_signal_traps; EXECUTION=single_job\n"
+    ready = tmp_path / "other-ready"
+    paused_one = subprocess.Popen(
+        ["bash", "-c", f"{prologue}prepare_scratch"],
+        env=env | {"PATH": f"{shim}:{os.environ['PATH']}"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    other: subprocess.Popen[str] | None = None
+    try:
+        deadline = time.monotonic() + 20
+        while not paused.exists():
+            assert paused_one.poll() is None, paused_one.communicate()
+            assert time.monotonic() < deadline, "the paused coordinator never reached an rm"
+            time.sleep(0.05)
+        other = subprocess.Popen(
+            [
+                "bash",
+                "-c",
+                f'{prologue}prepare_scratch\necho mine > "$WORK/mine.txt"\n: > "{ready}"\nsleep 60',
+            ],
+            env=env | {"PATH": os.environ["PATH"]},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 20
+        while not ready.exists() and other.poll() is None:
+            assert time.monotonic() < deadline, "the other coordinator neither ran nor stopped"
+            time.sleep(0.05)
+        go.write_text("")
+        _, paused_err = paused_one.communicate(timeout=30)
+        if ready.exists():
+            # The other got the scratch root: the paused one must be refused, its run left alone.
+            assert paused_one.returncode == 78, paused_err
+            assert (scratch / "run/mine.txt").read_text() == "mine\n"
+        else:
+            # The paused one held it already: the other was refused.
+            _, other_err = other.communicate(timeout=30)
+            assert other.returncode == 78, other_err
+            assert "another run holds the scratch root" in other_err
+            assert paused_one.returncode == 0, paused_err
+    finally:
+        go.write_text("")
+        for proc in (paused_one, other):
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+
+
+def test_a_failed_setup_step_ends_the_run_with_its_error_as_the_failure(tmp_path: Path) -> None:
+    got = bash(
+        'upload_run_logs() { printf "%s|%s|%s" "$FAILURE_LABEL" "$(cat "$FAILURE_FILE")" "$rc"; }\n'
+        "run_setup_step 'Linking failed' sh -c 'echo why it failed >&2; exit 3'\n"
+        "echo not reached",
+        "single_job",
+        WORK=str(tmp_path),
+    )
+    assert got.returncode == 1, got.stderr
+    assert got.stdout == "Linking failed|why it failed|1"
+    assert "why it failed" in got.stderr
+    # A step that succeeds goes on.
+    got = bash("run_setup_step 'X failed' true; echo went on", "single_job", WORK=str(tmp_path))
+    assert got.returncode == 0 and got.stdout == "went on\n"
+
+
+@pytest.mark.parametrize("left", ["link", "directory", "content"])
+def test_an_older_run_s_lock_file_on_the_scratch_root_is_cleared(
+    scratch_host: Path, tmp_path: Path, left: str
+) -> None:
+    scratch = scratch_host
+    lock = scratch / ".biffix-lock"
+    if left == "link":
+        (tmp_path / "elsewhere").write_text("not the run's")
+        lock.symlink_to(tmp_path / "elsewhere")
+    elif left == "directory":
+        (lock / "x").mkdir(parents=True)
+    else:
+        lock.write_text("a note for the next run")
+    got = _prepare_scratch(tmp_path)
+    assert got.returncode == 0, got.stderr
+    assert "another run holds" not in got.stderr, got.stderr
+    assert not lock.exists() and not lock.is_symlink()
+    if left == "link":
+        assert (tmp_path / "elsewhere").read_text() == "not the run's"

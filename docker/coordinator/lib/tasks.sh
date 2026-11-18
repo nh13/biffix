@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # biffix coordinator: what the engine's child (task) jobs run with: their images, queue and role.
 # Sourced by entrypoint.sh; defines functions only.
-#   Reads: WORK, LIB_DIR, ENGINE, BIFFIX_IMAGE_MAP_URI, BIFFIX_JOB_DEFINITION_MAP_URI,
+#   Reads: WORK, LIB_DIR, ENGINE, EXECUTION, BIFFIX_IMAGE_MAP_URI, BIFFIX_JOB_DEFINITION_MAP_URI,
 #          BIFFIX_QUEUE_CLASS, BIFFIX_QUEUE_CLASS_MAP, BIFFIX_QUEUE_ASSIGNMENT,
 #          SNAKEMAKE_AWS_BATCH_JOB_QUEUE, SNAKEMAKE_AWS_BATCH_JOB_ROLE.
 #   Sets:  SNAKEMAKE_AWS_BATCH_JOB_QUEUE, QUEUE_SELECTORS_FILE; with an image map,
@@ -26,8 +26,10 @@ fetch_image_map() {
 # job definition biffix registered for its image; the engines register none (IAM denies the
 # coordinator every job-definition write). The backend writes the two together, so it is read only
 # with an image map (without one, a local composition, the engine registers its own), and is
-# required with one: exit 78 without it, or when it cannot be read.
+# required with one: exit 78 without it, or when it cannot be read. A single-job run's tasks are no
+# Batch jobs, so it has none and reads none (lib/single_job.sh).
 fetch_job_definition_map() {
+  [ "${EXECUTION:-tasks}" != single_job ] || return 0
   [ -n "${BIFFIX_IMAGE_MAP_URI:-}" ] || return 0
   [ -n "${BIFFIX_JOB_DEFINITION_MAP_URI:-}" ] \
     || runtime_error "BIFFIX_IMAGE_MAP_URI is set without BIFFIX_JOB_DEFINITION_MAP_URI: tasks would have no job definitions (deploy the backend at the same release as this coordinator image)"
