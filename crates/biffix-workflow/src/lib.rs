@@ -9,7 +9,8 @@
 //! - [`images`] (references, content keys, registry media types) found by the [`scan`] of the
 //!   source, or built from a [`pixi`] or Dockerfile recipe;
 //! - the supported [`engines`] and the engine [`runtime`] pins and recipes;
-//! - the [`queues`] each task runs on (`queues:` in `biffix.yaml`).
+//! - the [`queues`] each task runs on (`queues:` in `biffix.yaml`);
+//! - [`single_job`] execution: a run as one Batch job, its spec and size.
 //!
 //! It builds on `biffix-core` (the RunEvent contract) and nothing else in the workspace. The
 //! backend, the API types, the CLI and `xtask` (the FormSchema schema and the shared test-case
@@ -27,6 +28,7 @@ pub mod queues;
 pub mod runtime;
 pub mod samples;
 pub mod scan;
+pub mod single_job;
 pub mod text;
 pub mod validate;
 pub mod version;
