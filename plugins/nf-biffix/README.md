@@ -21,7 +21,9 @@ The plugin has three extension points:
   through ingest when the run exits, so an event the live POST drops still arrives (ingest dedupes
   the repeats). For a task on AWS Batch it emits `task_submitted` with the Batch job id, and AWS
   EventBridge supplies the terminal state; for a task that never reached Batch (the `local`
-  executor, or a failed submit) it emits the terminal event itself.
+  executor, or a failed submit) it emits the terminal event itself. A task's image is on its
+  `task_submitted`, or, for a task the `local` executor runs in a container (every task of a
+  single-job run), on its `task_created`.
 - **`BiffixContainerResolver`** runs each task on the tenant's copy of its container. When
   `BIFFIX_IMAGE_MAP_FILE` is set, every process `container` is looked up in that run's image map,
   and a task whose image is not in the map fails instead of pulling from a public registry. The

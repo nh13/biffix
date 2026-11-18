@@ -28,6 +28,7 @@ async fn state_with_preparing_run() -> AppState {
                 content_key: "k5a".into(),
             }],
             experiment_id: None,
+            single_job: None,
         },
     ));
     app_state.store = Arc::new(store);

@@ -225,11 +225,15 @@ pub fn from_engine(source: EventSource, ev: &EngineEvent) -> RunEvent {
             (None, None, None, EventData::RunFailed { reason: None, stage: None })
         }
         EngineBody::RunDag { dag } => (None, None, None, EventData::RunDag { dag: dag.clone() }),
-        EngineBody::TaskCreated { task_key, group, deps } => (
+        EngineBody::TaskCreated { task_key, group, deps, image } => (
             Some(task_key.clone()),
             None,
             None,
-            EventData::TaskCreated { group: group.clone(), deps: deps.clone() },
+            EventData::TaskCreated {
+                group: group.clone(),
+                deps: deps.clone(),
+                image: image.clone(),
+            },
         ),
         EngineBody::TaskSubmitted { task_key, attempt, batch_job_id, image } => (
             Some(task_key.clone()),

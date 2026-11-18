@@ -472,6 +472,7 @@ async fn run_event_reads_by_kind() {
                 content_key: "k".into(),
             }],
             experiment_id: None,
+            single_job: None,
         },
     );
     biffix_db::log::append_and_advance(&pool, std::slice::from_ref(&preparing)).await.unwrap();

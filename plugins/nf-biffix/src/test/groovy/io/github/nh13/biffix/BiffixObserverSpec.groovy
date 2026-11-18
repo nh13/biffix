@@ -138,6 +138,7 @@ class BiffixObserverSpec extends Specification {
             isSuccess(_) >> { args -> args[0] in valid }
             getContainer() >> (opts.container as String)
             getContainerFingerprint() >> (opts.fingerprint as String)
+            isContainerEnabled() >> (opts.containerEnabled as boolean)
         }
         return Stub(TaskHandler) { getTask() >> run }
     }
@@ -572,18 +573,38 @@ class BiffixObserverSpec extends Specification {
         !ofKind('task_submitted')[2].containsKey('image')
     }
 
-    def "the image a task reports is its container's identity, not the local file an engine runs"() {
-        given: 'with Apptainer the task runs a local image file, its fingerprint is the tenant reference'
+    def "a local task names its container's identity on task_created, not the image file Apptainer runs"() {
+        given: 'a single-job run: the local executor runs the task in the tenant copy\'s image file, its fingerprint the reference'
         final mapped = '123456789012.dkr.ecr.us-east-1.amazonaws.com/biffix/wf/align@sha256:' + 'a' * 64
         final sif = '/scratch/apptainer/images/' + mapped.replace(':', '-').replace('/', '-') + '.img'
         observer.imagesMapped = true
 
         when:
-        observer.onTaskSubmit(event(trace([name: 'a (1)', process: 'a', attempt: 1, native_id: 'j1', container: sif]),
-            task(name: 'a (1)', index: 1, process: 'a', executor: 'awsbatch', container: sif, fingerprint: mapped)))
+        observer.onTaskSubmit(event(trace([name: 'a (1)', process: 'a', attempt: 1, container: sif]),
+            task(name: 'a (1)', index: 1, process: 'a', executor: 'local', container: sif, fingerprint: mapped,
+                containerEnabled: true)))
+        observer.onTaskSubmit(event(trace([name: 'b (1)', process: 'b', attempt: 1]),
+            task(name: 'b (1)', index: 1, process: 'b', executor: 'local')))
+
+        then: 'no binding (it has no Batch job); a task with no container names none'
+        ofKind('task_submitted').isEmpty()
+        ofKind('task_created').collect { it.image } == [mapped, null]
+        !ofKind('task_created')[1].containsKey('image')
+    }
+
+    def "a Batch task names its image on task_submitted only"() {
+        given:
+        final mapped = '123456789012.dkr.ecr.us-east-1.amazonaws.com/biffix/wf/align@sha256:' + 'a' * 64
+        observer.imagesMapped = true
+
+        when:
+        observer.onTaskSubmit(event(trace([name: 'a (1)', process: 'a', attempt: 1, native_id: 'j1', container: mapped]),
+            task(name: 'a (1)', index: 1, process: 'a', executor: 'awsbatch', container: mapped, fingerprint: mapped,
+                containerEnabled: true)))
 
         then:
         ofKind('task_submitted').collect { it.image } == [mapped]
+        !ofKind('task_created')[0].containsKey('image')
     }
 
     def "without an image map a task reports its container, not another resolver's fingerprint"() {

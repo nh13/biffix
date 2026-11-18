@@ -42,7 +42,7 @@ mod tests;
 pub(crate) use anchor::submitter_user;
 pub use anchor::{
     user_submitter, InputTable, ReferenceUse, Retention, RunPreparing, RunSubmitted, RuntimeUse,
-    SubmitImage, USER_SUBMITTER_PREFIX,
+    SingleJobUse, SubmitImage, USER_SUBMITTER_PREFIX,
 };
 pub use control_plane::{
     build_requested, cancel_requested, coordinator_submitted, experiment_set, run_cancelled,

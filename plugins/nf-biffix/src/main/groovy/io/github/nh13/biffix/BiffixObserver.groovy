@@ -316,6 +316,24 @@ class BiffixObserver implements TraceObserverV2 {
         }
     }
 
+    /**
+     * The image a task the local executor runs (in a single-job run, every task) runs in, as
+     * {@link #imageOf} gives it: the tenant reference, not the local image file Apptainer runs. Null
+     * for a task that runs without a container.
+     */
+    @CompileDynamic
+    private static String localImageOf(TraceRecord trace, TaskHandler handler, boolean mapped) {
+        try {
+            if (!handler?.task?.isContainerEnabled()) {
+                return null
+            }
+        } catch (Throwable e) {
+            log.debug("nf-biffix: could not tell whether the task runs in a container: ${e.message}")
+            return null
+        }
+        return imageOf(trace, handler, mapped)
+    }
+
     /** Exceptions Nextflow raises for an infrastructure failure it re-runs at the same attempt. */
     private static final Set<String> RETRYABLE_ERRORS = ['ProcessRetryableException', 'CloudSpotTerminationException'] as Set<String>
 
@@ -700,7 +718,9 @@ class BiffixObserver implements TraceObserverV2 {
             // local. The group is what rolls task states up onto the graph node; task_submitted
             // carries no group, so a Batch task would otherwise never appear under its process.
             // Mirrors the Snakemake plugin, which emits task_created (with the rule) for every job.
-            emit(BiffixEvents.taskCreated(tkey, processGroup(trace, handler), taskDeps(handler, tkey)))
+            // A local task has no task_submitted, so this names the image it runs in.
+            final image = isBatchTask(handler) ? null : localImageOf(trace, handler, imagesMapped)
+            emit(BiffixEvents.taskCreated(tkey, processGroup(trace, handler), taskDeps(handler, tkey), image))
             // A retry (attempt > 1) is a distinct lifecycle event, for any executor. Usually already
             // announced when the failed attempt completed (onTaskComplete); this repeats it (it
             // dedupes on next_attempt) for a retry that announcement missed.

@@ -13,7 +13,13 @@ from snakemake_logger_plugin_biffix.poster import IngestPoster
 from snakemake_logger_plugin_biffix.settings import LogHandlerSettings
 from snakemake_logger_plugin_biffix.writer import EventWriter
 
-BIFFIX_ENV = ("BIFFIX_RUN_ID", "BIFFIX_INGEST_URL", "BIFFIX_INGEST_TOKEN", "BIFFIX_EVENT_FILE")
+BIFFIX_ENV = (
+    "BIFFIX_RUN_ID",
+    "BIFFIX_INGEST_URL",
+    "BIFFIX_INGEST_TOKEN",
+    "BIFFIX_EVENT_FILE",
+    "BIFFIX_TASK_IMAGES_FILE",
+)
 
 
 def log_record(**fields: object) -> logging.LogRecord:

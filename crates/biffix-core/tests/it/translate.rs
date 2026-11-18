@@ -396,6 +396,7 @@ fn task_created_carries_its_deps_and_defaults_to_none() {
         EventData::TaskCreated {
             group: Some("merge".into()),
             deps: vec!["align:A".into(), "align:B".into()],
+            image: None,
         }
     );
     let without: EngineEvent = serde_json::from_value(serde_json::json!({
@@ -404,7 +405,25 @@ fn task_created_carries_its_deps_and_defaults_to_none() {
     .unwrap();
     assert_eq!(
         translate::from_engine(EventSource::Snakemake, &without).data,
-        EventData::TaskCreated { group: None, deps: vec![] }
+        EventData::TaskCreated { group: None, deps: vec![], image: None }
+    );
+}
+
+#[test]
+fn task_created_carries_the_image_a_local_task_runs() {
+    let ev: EngineEvent = serde_json::from_value(serde_json::json!({
+        "schema_version": 1, "ts": 1.0, "run_id": "r1",
+        "kind": "task_created", "task_key": "align", "group": "align",
+        "image": "123.dkr.ecr.us-east-1.amazonaws.com/biffix/wf/align@sha256:a"
+    }))
+    .unwrap();
+    assert_eq!(
+        translate::from_engine(EventSource::Nextflow, &ev).data,
+        EventData::TaskCreated {
+            group: Some("align".into()),
+            deps: vec![],
+            image: Some("123.dkr.ecr.us-east-1.amazonaws.com/biffix/wf/align@sha256:a".into()),
+        }
     );
 }
 
