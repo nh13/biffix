@@ -1119,7 +1119,6 @@ def test_the_nextflow_layer_smoke_requires_nf_biffix_s_awsbatch_executor(
     assert "process.executor = 'awsbatch'" in config
     env = (smoke / "seen.env").read_text().splitlines()
     assert "NXF_OFFLINE=true" in env and f"NXF_PLUGINS_DIR={nf}/plugins" in env
-    assert "BIFFIX_PROJECT=smoke" in env
     if workflow_plugins:
         # As the coordinator runs a layer with workflow plugins: biffix's are Nextflow's defaults,
         # merged with the pipeline's own `plugins {}` (its nextflow.config), none in the -c config.

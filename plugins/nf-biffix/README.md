@@ -26,9 +26,17 @@ The plugin has three extension points:
   `BIFFIX_IMAGE_MAP_FILE` is set, every process `container` is looked up in that run's image map,
   and a task whose image is not in the map fails instead of pulling from a public registry.
 - **`BiffixAwsBatchExecutor`** is nf-amazon's AWS Batch executor under the same `awsbatch` name
-  (it wins the name whichever plugin loads first). It registers every job definition tagged with
-  the run's project (`biffix:project`), which biffix's IAM policies use to keep one project's
-  coordinator from running another project's job definitions.
+  (it wins the name whichever plugin loads first). In a biffix run it registers no job
+  definitions: each task is submitted to the task job definition the biffix backend registered
+  for its image at launch, read from the run's job definition map, and biffix's IAM policies let
+  the coordinator submit to those definitions only. A task whose image has no definition fails, as
+  does a task that asks for a setting nf-amazon would put in a definition it registered, since a
+  pre-registered definition cannot carry it: a `containerOptions` directive that nf-amazon maps
+  onto the definition (`--privileged`, `-e`/`--env`, `-u`/`--user`, `--read-only`, `--ulimit`,
+  `--shm-size`, `--tmpfs`, `--memory-swap`, `--memory-swappiness`, `--init`), `aws.batch.volumes`,
+  Fusion, Fargate, `aws.batch.executionRole`, or the `awsbatch/consumableResources` hint. Options
+  nf-amazon ignores on AWS Batch (such as `--gpus`), and Docker's `docker.runOptions`, are
+  unaffected.
 
 Outside a biffix run (none of the variables below set) the plugin changes nothing: the observer
 is inert, the resolver defers to Nextflow's, and the executor behaves exactly as nf-amazon's.
@@ -62,7 +70,7 @@ The plugin reads environment variables, which the biffix coordinator sets for ea
 | `BIFFIX_INGEST_TOKEN` | observer | The run's capability token (a secret). |
 | `BIFFIX_EVENT_FILE` | observer | Name of the durable events file, relative to the launch directory (default `.biffix_events.jsonl`). |
 | `BIFFIX_IMAGE_MAP_FILE` | container resolver | Path of the run's image map: a JSON object from each declared image reference to the image to run. |
-| `BIFFIX_PROJECT` | executor | The run's project, set as the `biffix:project` tag on each job definition. |
+| `BIFFIX_JOB_DEFINITION_MAP_FILE` | executor | Path of the run's job definition map: a JSON object from each tenant image (as the image map names it) to the ARN, with revision, of the task job definition the backend registered for it. Read once, when the executor starts; a missing or malformed file stops the run. |
 
 The observer needs all three of `BIFFIX_RUN_ID`, `BIFFIX_INGEST_URL` and `BIFFIX_INGEST_TOKEN`;
 with only some of them it warns and names the missing ones.

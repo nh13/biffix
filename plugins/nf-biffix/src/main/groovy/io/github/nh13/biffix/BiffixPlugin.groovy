@@ -16,9 +16,10 @@ import org.pf4j.PluginWrapper
  *       {@code BIFFIX_IMAGE_MAP_FILE} is set: each task runs the tenant's copy of its image from the
  *       run's image map, and a task whose image is not in the map fails; and</li>
  *   <li>{@link BiffixAwsBatchExecutor}, nf-amazon's AWS Batch executor under the same `awsbatch`
- *       name, whose job definitions are registered tagged with the run's project
- *       ({@code BIFFIX_PROJECT}), so IAM can refuse a coordinator another project's. It needs
- *       nf-amazon (build.gradle {@code requirePlugins}).</li>
+ *       name, which runs each task on the job definition the biffix backend registered for its
+ *       image, named in the run's job definition map ({@code BIFFIX_JOB_DEFINITION_MAP_FILE}),
+ *       and registers none; without the map it behaves as stock nf-amazon. It needs nf-amazon
+ *       (build.gradle {@code requirePlugins}).</li>
  * </ul>
  */
 @CompileStatic

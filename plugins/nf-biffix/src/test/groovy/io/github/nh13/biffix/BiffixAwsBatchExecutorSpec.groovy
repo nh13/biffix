@@ -1,68 +1,73 @@
 package io.github.nh13.biffix
 
+import java.nio.file.Files
+import java.nio.file.Path
 import java.nio.file.Paths
-import java.time.Instant
 
-import nextflow.BuildInfo
 import nextflow.SysEnv
 import nextflow.cloud.aws.batch.AwsBatchExecutor
 import nextflow.cloud.aws.batch.AwsBatchTaskHandler
 import nextflow.cloud.aws.batch.AwsOptions
-import nextflow.cloud.aws.batch.model.RegisterJobDefinitionModel
 import nextflow.cloud.aws.config.AwsConfig
-import nextflow.exception.ProcessSubmitException
+import nextflow.exception.AbortOperationException
+import nextflow.exception.ProcessUnrecoverableException
 import nextflow.executor.Executor
 import nextflow.executor.ExecutorFactory
 import nextflow.executor.TaskArrayExecutor
 import nextflow.processor.TaskArrayRun
 import nextflow.processor.TaskConfig
 import nextflow.processor.TaskRun
+import nextflow.util.CmdLineHelper
 import nextflow.util.ServiceName
 import org.pf4j.PluginManager
-import software.amazon.awssdk.awscore.exception.AwsErrorDetails
-import software.amazon.awssdk.http.SdkHttpResponse
 import software.amazon.awssdk.services.batch.BatchClient
-import software.amazon.awssdk.services.batch.model.BatchException
-import software.amazon.awssdk.services.batch.model.DescribeJobDefinitionsRequest
-import software.amazon.awssdk.services.batch.model.DescribeJobDefinitionsResponse
-import software.amazon.awssdk.services.batch.model.JobDefinition
-import software.amazon.awssdk.services.batch.model.RegisterJobDefinitionRequest
-import software.amazon.awssdk.services.batch.model.RegisterJobDefinitionResponse
 import spock.lang.Specification
+import spock.lang.TempDir
 
 /**
- * The biffix AWS Batch executor is nf-amazon's under the `awsbatch` name, except that every job
- * definition it registers is tagged with the run's project, and is reused only by that project.
- * Mirrors nf-amazon's own AwsBatchTaskHandlerTest (a Spy handler over a mocked BatchClient).
+ * The biffix AWS Batch executor is nf-amazon's under the `awsbatch` name, except that in a biffix
+ * run every task is submitted to the job definition the backend registered for its image, and the
+ * coordinator registers and describes none. Mirrors nf-amazon's own AwsBatchTaskHandlerTest (a Spy
+ * handler over a mocked BatchClient).
  */
 class BiffixAwsBatchExecutorSpec extends Specification {
 
-    static final String ROLE_A = 'arn:aws:iam::123456789012:role/biffix-run-a'
-    static final String LOGS_A = '/biffix/project-a/tasks'
+    static final String IMAGE = '123456789012.dkr.ecr.us-east-1.amazonaws.com/workers@sha256:abc'
+    static final String DEFINITION = 'arn:aws:batch:us-east-1:123456789012:job-definition/biffix-t_task-nf-0123abcd:1'
+    static final String LATEST = '123456789012.dkr.ecr.us-east-1.amazonaws.com/tools:latest'
+    static final String LATEST_DEFINITION = 'arn:aws:batch:us-east-1:123456789012:job-definition/biffix-t_task-nf-4567ef01:3'
 
-    /** The aws.batch options the coordinator writes (a job role, a log group, the host AWS CLI). */
-    static AwsOptions options(String role = ROLE_A, String logs = LOGS_A) {
+    static final ImageMap MAP = new ImageMap([(IMAGE): DEFINITION, (LATEST): LATEST_DEFINITION])
+
+    @TempDir
+    Path tmp
+
+    /** The aws.batch options the coordinator writes (a job role, a log group, the host AWS CLI), plus `batch`. */
+    static AwsOptions options(Map batch = [:]) {
         new AwsOptions(awsConfig: new AwsConfig(
             region: 'us-east-1',
-            batch: [jobRole: role, logsGroup: logs, cliPath: '/opt/biffix/aws-cli/bin/aws']))
+            batch: [jobRole: 'arn:aws:iam::123456789012:role/biffix-run-a', logsGroup: '/biffix/project-a/tasks',
+                    cliPath: '/opt/biffix/aws-cli/bin/aws'] + batch))
     }
 
-    /** A task running `image`. */
-    TaskRun task(String image) {
+    /** A task running `image`, with `containerOptions` if given. */
+    TaskRun task(String image, String containerOptions = null) {
+        final config = Mock(TaskConfig) {
+            getContainerOptionsMap() >> (containerOptions ? CmdLineHelper.parseGnuArgs(containerOptions) : CmdLineHelper.parseGnuArgs(''))
+        }
         Mock(TaskRun) {
             getContainer() >> image
-            getConfig() >> Mock(TaskConfig)
+            getConfig() >> config
             getWorkDir() >> Paths.get('/work/ab/cdef')
             getName() >> 'ALIGN (1)'
+            lazyName() >> 'ALIGN (1)'
         }
     }
 
-    /** A handler (biffix's for a project, nf-amazon's for null) for `task`, over `client`. */
-    AwsBatchTaskHandler handler(String project, TaskRun task, BatchClient client, AwsOptions opts = options()) {
+    /** A biffix handler with `map` (null: none) for `task`, over `client`. */
+    AwsBatchTaskHandler handler(ImageMap map, TaskRun task, BatchClient client, AwsOptions opts = options(), boolean fusion = false) {
         final executor = Mock(AwsBatchExecutor) { getAwsOptions() >> opts }
-        final h = project == null
-            ? Spy(AwsBatchTaskHandler, constructorArgs: [task, executor]) { fusionEnabled() >> false }
-            : Spy(BiffixAwsBatchTaskHandler, constructorArgs: [task, executor, project]) { fusionEnabled() >> false }
+        final h = Spy(BiffixAwsBatchTaskHandler, constructorArgs: [task, executor, map]) { fusionEnabled() >> fusion }
         // nf-amazon's tests set the (private) client the same way; it is declared on AwsBatchTaskHandler.
         final field = AwsBatchTaskHandler.getDeclaredField('client')
         field.accessible = true
@@ -70,208 +75,275 @@ class BiffixAwsBatchExecutorSpec extends Specification {
         return h
     }
 
-    static String token(AwsBatchTaskHandler h, TaskRun task) {
-        h.makeJobDefRequest(task).parameters['nf-token']
-    }
+    // (1) a mapped image runs on its definition, and nothing is registered or described
 
-    static RegisterJobDefinitionResponse registered(RegisterJobDefinitionRequest req, int revision) {
-        RegisterJobDefinitionResponse.builder().jobDefinitionName(req.jobDefinitionName()).revision(revision).build()
-    }
-
-    // (1) the definition is born tagged
-
-    def 'a registered definition carries the project tag next to nextflow.io/*'() {
+    def 'a mapped image runs on the backend\'s definition, with no Batch call'() {
         given:
         def client = Mock(BatchClient)
-        def h = handler('project-a', task('ubuntu:24.04'), client)
-        def model = new RegisterJobDefinitionModel().jobDefinitionName('nf-ubuntu-24-04')
-        RegisterJobDefinitionRequest sent = null
+        def t = task(IMAGE)
+        def h = handler(MAP, t, client)
 
         when:
-        def name = h.createJobDef(model)
+        def definition = h.getJobDefinition(t)
 
         then:
-        1 * client.registerJobDefinition(_ as RegisterJobDefinitionRequest) >> { RegisterJobDefinitionRequest r -> sent = r; registered(r, 4) }
-        name == 'nf-ubuntu-24-04:4'
-        sent.tags()['biffix:project'] == 'project-a'
-        sent.tags()['nextflow.io/version'] == BuildInfo.version
-        Instant.parse(sent.tags()['nextflow.io/createdAt'])
-        // Never the run: a definition is reused by every later run of the project.
-        !sent.tags().keySet().any { it == 'biffix:run' }
+        definition == DEFINITION
+        0 * h.resolveJobDefinition(_)
+        0 * h.createJobDef(_)
+        0 * client._
     }
 
-    def 'with no project the definition is registered as nf-amazon registers it'() {
+    def 'the submit request nf-amazon builds names the backend\'s definition, with no Batch call'() {
         given:
         def client = Mock(BatchClient)
-        def h = handler('', task('ubuntu:24.04'), client)
-        RegisterJobDefinitionRequest sent = null
+        def t = Mock(TaskRun) {
+            getName() >> 'ALIGN (1)'
+            lazyName() >> 'ALIGN (1)'
+            getContainer() >> IMAGE
+            getWorkDir() >> Paths.get('/work/ab/cdef')
+            getConfig() >> new TaskConfig(memory: '8GB', cpus: 4)
+        }
+        def h = handler(MAP, t, client)
 
         when:
-        h.createJobDef(new RegisterJobDefinitionModel().jobDefinitionName('nf-ubuntu-24-04'))
+        def req = h.newSubmitRequest(t)
 
         then:
-        1 * client.registerJobDefinition(_) >> { RegisterJobDefinitionRequest r -> sent = r; registered(r, 1) }
-        sent.tags().keySet() == ['nextflow.io/createdAt', 'nextflow.io/version'] as Set
+        1 * h.getSubmitCommand() >> ['bash', '-c', 'something']
+        1 * h.maxSpotAttempts() >> 0
+        1 * h.getJobQueue(t) >> 'queue1'
+        1 * h.getEnvironmentVars() >> []
+        0 * h.resolveJobDefinition(_)
+        0 * h.createJobDef(_)
+        0 * client._
+        req.jobDefinition() == DEFINITION
+        req.jobQueue() == 'queue1'
+        req.containerOverrides().command() == ['bash', '-c', 'something']
     }
 
-    // (2) the nf-token is per project and stable
-
-    def 'the nf-token differs between projects, is stable for one, and is nf-amazon\'s without a project'() {
+    def 'the image is looked up normalized too'() {
         given:
-        def t = task('quay.io/biocontainers/bwa:0.7.18')
         def client = Mock(BatchClient)
+        // No tag is `:latest`, and a registry host is case-insensitive.
+        def t = task('123456789012.DKR.ECR.us-east-1.amazonaws.com/tools')
+        def h = handler(MAP, t, client)
 
         expect:
-        // Two handlers (two runs) of one project agree.
-        token(handler('project-a', t, client), t) == token(handler('project-a', t, client), t)
-        // Two projects never share a definition, even with the same role and log group.
-        token(handler('project-a', t, client), t) != token(handler('project-b', t, client), t)
-        // A project's token is not the one nf-amazon gave its definitions before (untagged ones).
-        token(handler('project-a', t, client), t) != token(handler(null, t, client), t)
-        // No project: exactly nf-amazon's token.
-        token(handler('', t, client), t) == token(handler(null, t, client), t)
+        h.getJobDefinition(t) == LATEST_DEFINITION
+        MAP.resolve('ubuntu:24.04') == null
     }
 
-    def 'the request is otherwise nf-amazon\'s: role, log group, the host CLI mount'() {
+    def 'an image with no definition fails the task, unrecoverably'() {
         given:
-        def t = task('ubuntu:24.04')
-        def ours = handler('project-a', t, Mock(BatchClient)).makeJobDefRequest(t)
-        def theirs = handler(null, t, Mock(BatchClient)).makeJobDefRequest(t)
+        def client = Mock(BatchClient)
+        def t = task('123456789012.dkr.ecr.us-east-1.amazonaws.com/workers@sha256:def')
+        def h = handler(MAP, t, client)
+
+        when:
+        h.getJobDefinition(t)
+
+        then:
+        def e = thrown(ProcessUnrecoverableException)
+        e.message.contains('workers@sha256:def')
+        e.message.contains('no biffix task job definition')
+        0 * h.resolveJobDefinition(_)
+        0 * client._
+    }
+
+    def 'a job-definition:// container fails the task, unrecoverably'() {
+        given:
+        def client = Mock(BatchClient)
+        def t = task('job-definition://x')
+        def h = handler(new ImageMap(['job-definition://x': DEFINITION]), t, client)
+
+        when:
+        h.getJobDefinition(t)
+
+        then:
+        def e = thrown(ProcessUnrecoverableException)
+        e.message.contains('job-definition://x')
+        0 * client._
+    }
+
+    // (2) a setting nf-amazon would put in the definition fails the task rather than being dropped
+
+    def 'containerOptions a definition would carry fail the task, naming them: #opts'() {
+        given:
+        def client = Mock(BatchClient)
+        def t = task(IMAGE, opts)
+        def h = handler(MAP, t, client)
+
+        when:
+        h.getJobDefinition(t)
+
+        then:
+        def e = thrown(ProcessUnrecoverableException)
+        e.message.contains('containerOptions')
+        names.every { e.message.contains(it) }
+        0 * client._
+
+        where:
+        opts                                | names
+        '--privileged'                      | ['--privileged']
+        '--shm-size 1g'                     | ['--shm-size']
+        '--ulimit nofile=1:2'               | ['--ulimit']
+        '-e FOO=bar --user 1000 --init'     | ['-e', '--user', '--init']
+        '--read-only --gpus all'            | ['--read-only']
+    }
+
+    def 'containerOptions nf-amazon ignores on Batch do not fail the task: #opts'() {
+        given:
+        def t = task(IMAGE, opts)
+        def h = handler(MAP, t, Mock(BatchClient))
 
         expect:
-        ours.jobDefinitionName == theirs.jobDefinitionName
-        ours.jobDefinitionName.startsWith('nf-')
-        ours.containerProperties.toString() == theirs.containerProperties.toString()
-        ours.containerProperties.jobRoleArn == ROLE_A
-        // (getLogConfiguration is @Memoized in nf-amazon: it must work on the subclass.)
-        ours.containerProperties.logConfiguration.options()['awslogs-group'] == LOGS_A
-        ours.containerProperties.mountPoints[0].sourceVolume() == 'aws-cli'
-        // Tags are added at registration, not in the request the token is computed from.
-        ours.tags == null
+        h.getJobDefinition(t) == DEFINITION
+
+        where:
+        opts << ['--gpus all', '--cpus 2 --network host', '']
     }
 
-    // (3) findJobDef reuse, end to end through nf-amazon's resolveJobDefinition
-
-    def 'a project reuses its own tagged definition and registers none'() {
+    def 'aws.batch.volumes fail the task'() {
         given:
-        def image = 'quay.io/biocontainers/samtools:1.20'
-        def t = task(image)
-        def client = Mock(BatchClient)
-        def h = handler('project-a', t, client)
-        def req = h.makeJobDefRequest(t)
-        def own = JobDefinition.builder()
-            .jobDefinitionName(req.jobDefinitionName).status('ACTIVE').revision(7)
-            .parameters(['nf-token': req.parameters['nf-token']])
-            .tags(['biffix:project': 'project-a']).build()
+        def t = task(IMAGE)
+        def h = handler(MAP, t, Mock(BatchClient), options(volumes: '/data:/data:ro'))
 
         when:
-        def name = h.resolveJobDefinition(t)
+        h.getJobDefinition(t)
 
         then:
-        1 * client.describeJobDefinitions(_ as DescribeJobDefinitionsRequest) >> DescribeJobDefinitionsResponse.builder().jobDefinitions(own).build()
-        0 * client.registerJobDefinition(_)
-        name == "${req.jobDefinitionName}:7"
+        def e = thrown(ProcessUnrecoverableException)
+        e.message.contains('aws.batch.volumes')
+        e.message.contains('/data:/data:ro')
     }
 
-    def 'an untagged definition from before, or another project\'s, is not reused: a tagged one is registered'() {
+    def 'Fusion, Fargate and an execution role fail the task'() {
         given:
-        def image = 'quay.io/biocontainers/fastp:0.23.4'
-        def t = task(image)
-        def client = Mock(BatchClient)
-        def h = handler('project-a', t, client)
-        def name = h.makeJobDefRequest(t).jobDefinitionName
-        def before = JobDefinition.builder().jobDefinitionName(name).status('ACTIVE').revision(1)
-            .parameters(['nf-token': token(handler(null, t, client), t)]).build()
-        def other = JobDefinition.builder().jobDefinitionName(name).status('ACTIVE').revision(2)
-            .parameters(['nf-token': token(handler('project-b', t, client), t)])
-            .tags(['biffix:project': 'project-b']).build()
-        RegisterJobDefinitionRequest sent = null
+        def t = task(IMAGE)
+        def h = handler(MAP, t, Mock(BatchClient), options(batch), fusion)
 
         when:
-        def resolved = h.resolveJobDefinition(t)
+        h.getJobDefinition(t)
 
         then:
-        1 * client.describeJobDefinitions(_) >> DescribeJobDefinitionsResponse.builder().jobDefinitions(before, other).build()
-        1 * client.registerJobDefinition(_) >> { RegisterJobDefinitionRequest r -> sent = r; registered(r, 3) }
-        resolved == "$name:3"
-        sent.tags()['biffix:project'] == 'project-a'
-        sent.parameters()['nf-token'] == token(h, t)
+        def e = thrown(ProcessUnrecoverableException)
+        e.message.contains(setting)
 
-        when: 'a later task of the project, in the same run'
-        def again = handler('project-a', t, client).resolveJobDefinition(t)
-
-        then: 'nf-amazon\'s per-JVM cache answers'
-        0 * client.describeJobDefinitions(_)
-        0 * client.registerJobDefinition(_)
-        again == "$name:3"
+        where:
+        batch                                          | fusion | setting
+        [:]                                            | true   | 'Fusion'
+        [platformType: 'fargate']                      | false  | 'Fargate'
+        [executionRole: 'arn:aws:iam::1:role/exec']    | false  | 'aws.batch.executionRole'
     }
 
-    def 'a definition copying our nf-token is reused only if tagged with our project'() {
+    def 'a consumable-resources hint (nf-amazon 3.9+) fails the task: #key'() {
         given:
-        def t = task('quay.io/biocontainers/multiqc:1.25')
-        def client = Mock(BatchClient)
-        def h = handler('project-a', t, client)
-        def req = h.makeJobDefRequest(t)
-        def ours = req.parameters['nf-token']
-        def poisoned = JobDefinition.builder().jobDefinitionName(req.jobDefinitionName).status('ACTIVE').revision(5)
-            .parameters(['nf-token': ours]).tags(['biffix:project': 'project-b']).build()
-        def untagged = JobDefinition.builder().jobDefinitionName(req.jobDefinitionName).status('ACTIVE').revision(6)
-            .parameters(['nf-token': ours]).build()
-        def inactive = JobDefinition.builder().jobDefinitionName(req.jobDefinitionName).status('INACTIVE').revision(7)
-            .parameters(['nf-token': ours]).tags(['biffix:project': 'project-a']).build()
-        def own = JobDefinition.builder().jobDefinitionName(req.jobDefinitionName).status('ACTIVE').revision(8)
-            .parameters(['nf-token': ours]).tags(['biffix:project': 'project-a']).build()
-
-        when: 'only revisions another project (or no one) tagged carry our token'
-        def found = h.findJobDef(req.jobDefinitionName, ours)
-
-        then: 'none is reused, so resolveJobDefinition registers a tagged one'
-        1 * client.describeJobDefinitions(_) >> DescribeJobDefinitionsResponse.builder().jobDefinitions(poisoned, untagged, inactive).build()
-        found == null
-
-        when: 'our own tagged revision is among them'
-        found = h.findJobDef(req.jobDefinitionName, ours)
-
-        then: 'it is the one reused'
-        1 * client.describeJobDefinitions(_) >> DescribeJobDefinitionsResponse.builder().jobDefinitions(poisoned, untagged, own).build()
-        found == "${req.jobDefinitionName}:8"
-    }
-
-    def 'with no project a definition is found as nf-amazon finds it, tags or not'() {
-        given:
-        def t = task('ubuntu:24.04')
-        def client = Mock(BatchClient)
-        def h = handler('', t, client)
-        def req = h.makeJobDefRequest(t)
-        def untagged = JobDefinition.builder().jobDefinitionName(req.jobDefinitionName).status('ACTIVE').revision(2)
-            .parameters(['nf-token': req.parameters['nf-token']]).build()
+        def config = Mock(TaskConfig) {
+            getContainerOptionsMap() >> CmdLineHelper.parseGnuArgs('')
+            get('hints') >> [(key): [licenses: 1]]
+        }
+        def t = Mock(TaskRun) {
+            getContainer() >> IMAGE
+            getConfig() >> config
+            getWorkDir() >> Paths.get('/work/ab/cdef')
+            lazyName() >> 'ALIGN (1)'
+        }
+        def h = handler(MAP, t, Mock(BatchClient))
 
         when:
-        def found = h.findJobDef(req.jobDefinitionName, req.parameters['nf-token'])
+        h.getJobDefinition(t)
 
         then:
-        1 * client.describeJobDefinitions(_) >> DescribeJobDefinitionsResponse.builder().jobDefinitions(untagged).build()
-        found == "${req.jobDefinitionName}:2"
+        def e = thrown(ProcessUnrecoverableException)
+        e.message.contains('consumableResources')
+
+        where:
+        key << ['awsbatch/consumableResources', 'consumableResources']
     }
 
-    def 'a Batch 5xx while finding a definition is a submit failure Nextflow retries'() {
+    // (3) outside biffix, nf-amazon's handler
+
+    def 'with no map the definition is nf-amazon\'s to resolve'() {
         given:
-        def client = Mock(BatchClient)
-        def h = handler('project-a', task('ubuntu:24.04'), client)
-        def error = BatchException.builder().statusCode(503)
-            .awsErrorDetails(AwsErrorDetails.builder().errorCode('ServiceUnavailable')
-                .sdkHttpResponse(SdkHttpResponse.builder().statusCode(503).build()).build())
-            .build()
+        def t = task(IMAGE, '--privileged')
+        def h = handler(null, t, Mock(BatchClient), options(volumes: '/data'))
 
         when:
-        h.findJobDef('nf-ubuntu-24-04', 'tok')
+        def definition = h.getJobDefinition(t)
 
         then:
-        1 * client.describeJobDefinitions(_) >> { throw error }
-        thrown(ProcessSubmitException)
+        1 * h.resolveJobDefinition(t) >> 'nf-workers:1'
+        definition == 'nf-workers:1'
     }
 
-    // (4) selectable as `awsbatch`, and still nf-amazon's executor everywhere Nextflow looks
+    // (4) the map file
+
+    def 'the executor reads the map from BIFFIX_JOB_DEFINITION_MAP_FILE once and hands it to its handlers'() {
+        given:
+        def file = tmp.resolve('job-definitions.json')
+        Files.writeString(file, """{"$IMAGE": "$DEFINITION"}""")
+        def executor = withEnv([BIFFIX_JOB_DEFINITION_MAP_FILE: file.toString()]) { new BiffixAwsBatchExecutor() }
+        def t = new TaskRun(name: 'ALIGN (1)', workDir: Paths.get('/work/ab/cdef'))
+
+        when:
+        def h = executor.createTaskHandler(t)
+
+        then:
+        h instanceof BiffixAwsBatchTaskHandler
+        (h as BiffixAwsBatchTaskHandler).jobDefinitions.entries == [(IMAGE): DEFINITION]
+        executor.mapFile == file.toString()
+
+        when: 'the file changes under a running executor'
+        Files.writeString(file, '{}')
+
+        then: 'the map read first stands'
+        executor.jobDefinitions().is((executor.createTaskHandler(t) as BiffixAwsBatchTaskHandler).jobDefinitions)
+        executor.jobDefinitions().size() == 1
+
+        when: 'no variable'
+        def none = withEnv([:]) { new BiffixAwsBatchExecutor() }
+
+        then: 'no map, so nf-amazon\'s handler'
+        none.jobDefinitions() == null
+        (none.createTaskHandler(t) as BiffixAwsBatchTaskHandler).jobDefinitions == null
+    }
+
+    def 'an unreadable or malformed map stops the run: #why'() {
+        given:
+        def file = tmp.resolve('job-definitions.json')
+        if( content != null )
+            Files.writeString(file, content)
+        def executor = new BiffixAwsBatchExecutor(file.toString())
+
+        when:
+        executor.jobDefinitions()
+
+        then:
+        def e = thrown(AbortOperationException)
+        e.message.contains('BIFFIX_JOB_DEFINITION_MAP_FILE')
+        e.message.contains(reason)
+
+        where:
+        why               | content                         | reason
+        'missing'         | null                            | 'job-definitions.json'
+        'not JSON'        | 'nope'                          | 'JsonException'
+        'not an object'   | '["arn"]'                       | 'the map is not a JSON object'
+        'not a string'    | """{"$IMAGE": 1}"""             | "entry `$IMAGE` is not a non-empty string"
+        'empty value'     | """{"$IMAGE": ""}"""            | "entry `$IMAGE` is not a non-empty string"
+        'empty key'       | """{"": "$DEFINITION"}"""       | 'an entry has an empty key'
+    }
+
+    /** {@code body} run with {@code env} as the whole environment Nextflow reads (SysEnv). */
+    private static <T> T withEnv(Map<String, String> env, Closure<T> body) {
+        SysEnv.push(env)
+        try {
+            return body.call()
+        } finally {
+            SysEnv.pop()
+        }
+    }
+
+    // (5) selectable as `awsbatch`, and still nf-amazon's executor everywhere Nextflow looks
 
     def 'the executor takes the awsbatch name over nf-amazon\'s in either discovery order'() {
         given:
@@ -288,7 +360,7 @@ class BiffixAwsBatchExecutorSpec extends Specification {
 
     def 'it is an AwsBatchExecutor and a TaskArrayExecutor, as Nextflow and nf-amazon check'() {
         given:
-        def executor = new BiffixAwsBatchExecutor('project-a')
+        def executor = new BiffixAwsBatchExecutor(null as String)
 
         expect:
         executor instanceof AwsBatchExecutor
@@ -298,45 +370,24 @@ class BiffixAwsBatchExecutorSpec extends Specification {
         executor.getArrayIndexName() == 'AWS_BATCH_JOB_ARRAY_INDEX'
     }
 
-    def 'its handlers are biffix\'s, with the project from BIFFIX_PROJECT'() {
+    def 'a job array\'s children are biffix handlers nf-amazon can update, and the array runs on the image\'s definition'() {
         given:
-        SysEnv.push([BIFFIX_PROJECT: 'project-a'])
-        def executor = new BiffixAwsBatchExecutor()
-        SysEnv.pop()
-        def t = new TaskRun(name: 'ALIGN (1)', workDir: Paths.get('/work/ab/cdef'))
-
-        when:
-        def h = executor.createTaskHandler(t)
-
-        then:
-        h instanceof BiffixAwsBatchTaskHandler
-        (h as BiffixAwsBatchTaskHandler).project == 'project-a'
-        executor.project == 'project-a'
-        withEnv([:]) { new BiffixAwsBatchExecutor().project } == null
-    }
-
-    /** {@code body} run with {@code env} as the whole environment Nextflow reads (SysEnv). */
-    private static <T> T withEnv(Map<String, String> env, Closure<T> body) {
-        SysEnv.push(env)
-        try {
-            return body.call()
-        } finally {
-            SysEnv.pop()
+        def executor = Mock(AwsBatchExecutor) {
+            getArrayTaskId(_, _) >> { String id, int i -> "$id:$i".toString() }
+            getAwsOptions() >> options()
         }
-    }
-
-    def 'a job array\'s children are biffix handlers nf-amazon can update'() {
-        given:
-        def executor = Mock(AwsBatchExecutor) { getArrayTaskId(_, _) >> { String id, int i -> "$id:$i".toString() } }
-        def children = (0..1).collect { new BiffixAwsBatchTaskHandler(task('ubuntu:24.04'), executor, 'project-a') }
-        def array = new TaskArrayRun(name: 'ALIGN (array)', workDir: Paths.get('/work/ar/ray'), children: children)
-        def parent = new BiffixAwsBatchTaskHandler(array, executor, 'project-a')
+        def children = (0..1).collect { new BiffixAwsBatchTaskHandler(task(IMAGE), executor, MAP) }
+        def array = Spy(new TaskArrayRun(name: 'ALIGN (array)', workDir: Paths.get('/work/ar/ray'), children: children, config: new TaskConfig())) {
+            getContainer() >> IMAGE
+        }
+        def parent = Spy(BiffixAwsBatchTaskHandler, constructorArgs: [array, executor, MAP]) { fusionEnabled() >> false }
 
         when:
         parent.updateStatus('job-1', 'queue-a')
 
         then:
         children*.getJobId() == ['job-1:0', 'job-1:1']
+        parent.getJobDefinition(array) == DEFINITION
     }
 
     def 'the plugin registers the executor as an extension'() {
