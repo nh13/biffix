@@ -29,6 +29,7 @@ import {
   runNameFrom,
   secretsToReenter,
   sectionsOf,
+  singleJobNote,
   uploadingProblems,
   validateForm,
   valuesFromExample,
@@ -279,6 +280,18 @@ describe('prefill', () => {
     expect(prefillFromRun(unnamed, secretSchema, false).runName).toBe('');
     expect(prefillFromRun({ ...run, run_name: '  ' }, secretSchema, true).runName).toBe('');
   });
+  it('carries a single-job run’s queue-class and instance type, whether it resumes or not', () => {
+    expect(prefillFromRun(run, secretSchema, false).singleJob).toBeNull();
+    const single = {
+      ...run,
+      single_job: { queue_class: 'single', instance_type: 'c6id.8xlarge', vcpus: 32 },
+    };
+    for (const resume of [false, true])
+      expect(prefillFromRun(single, secretSchema, resume).singleJob).toEqual({
+        queue_class: 'single',
+        instance: 'c6id.8xlarge',
+      });
+  });
   it('tries a run again in the experiment it is in', () => {
     expect(prefillFromRun(run, secretSchema, false).experiment).toBeNull();
     expect(prefillFromRun({ ...run, experiment_id: 'exp_1' }, secretSchema, true).experiment).toBe(
@@ -380,7 +393,7 @@ describe('launch', () => {
   };
   const request = (over: Partial<LaunchRequestInputs> = {}) =>
     launchRequest({ ...inputs, ...over });
-  const resume = { runId: 'run-1', resume: true, images: [] };
+  const resume = { runId: 'run-1', resume: true, images: [], singleJob: null };
   it('builds the request, leaving out empty sheets and default choices', () => {
     expect(request()).toEqual({
       workflow_version_id: 'abc:def:0',
@@ -427,6 +440,28 @@ describe('launch', () => {
     expect(resumed.resume_from).toBe('run-1');
     expect(resumed).not.toHaveProperty('retry_of');
     expect(request()).not.toHaveProperty('retry_of');
+  });
+  it('re-runs a single-job run as one job again, and resumes it one job per task', () => {
+    const singleJob = { queue_class: 'single', instance: 'c6id.8xlarge' };
+    expect(request({ from: { ...resume, resume: false, singleJob } }).single_job).toEqual(
+      singleJob,
+    );
+    // The server refuses `single_job` with `resume_from`.
+    const resumed = request({ from: { ...resume, singleJob } });
+    expect(resumed.resume_from).toBe('run-1');
+    expect(resumed).not.toHaveProperty('single_job');
+    expect(request({ from: { ...resume, resume: false } })).not.toHaveProperty('single_job');
+    expect(request()).not.toHaveProperty('single_job');
+  });
+  it('says what trying a single-job run again does', () => {
+    const singleJob = { queue_class: 'single', instance: 'c6id.8xlarge' };
+    expect(singleJobNote(null, false)).toBeNull();
+    expect(singleJobNote(singleJob, false)).toBe(
+      'It runs as one job on a whole c6id.8xlarge host again (queue-class single).',
+    );
+    expect(singleJobNote(singleJob, true)).toBe(
+      'That run ran as one job on a whole host; a resume runs each step as its own job instead.',
+    );
   });
   it('launches into an experiment only when one is chosen', () => {
     expect(request({ experiment: 'exp_1' }).experiment).toBe('exp_1');

@@ -17,6 +17,8 @@ export const RNASEQ_FORM = {
     },
   },
   run_name: 'rnaseq · {date}',
+  // Runs may execute as one Batch job on one host (`single_job:`), by default a c6id.8xlarge.
+  single_job: { instance: 'c6id.8xlarge' },
   curated: true,
   warnings: [],
   sections: [
