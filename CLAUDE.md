@@ -89,13 +89,18 @@ deployer's own ECR, both through the two-architecture build in `coordinator-imag
 (`docker/coordinator/wheels.env` holds the repo and commit; the branch, `biffix-pin/<date>`, never
 force-pushed, is named in `crates/biffix-workflow/src/runtime/mod.rs`): upstream plus three open
 upstream PRs, #55 (remote job-state events), #60 (strict container image map) and #61 (task log
-group), plus small log-noise fixes to upstream's own code. Per-rule queues (#40) and spot
-reclaim retries (#62) are already upstream. Re-pin to
-upstream once they merge. `lib/snakemake.sh` always passes the spot-attempts, log-group and
-image-map settings, so a re-pin must keep an executor that has all three. `plugins/nf-biffix` also provides
-the `awsbatch` executor (a subclass of nf-amazon's) that tags every `nf-*` job definition with
-`biffix:project`, which the coordinator IAM requires; bumping nf-biffix's version means bumping
-`nf_biffix_version` in `crates/biffix-workflow/src/runtime/pins.rs` too.
+group), a fourth change not yet proposed upstream (`--aws-batch-job-definition-map`, which runs
+each job on a pre-registered job definition and registers none, refusing a job role, log group,
+privileged setting or per-rule job definition beside it, and `--aws-batch-privileged`, which
+makes privileged containers opt-in), plus small log-noise fixes to upstream's own code.
+Per-rule queues (#40) and spot reclaim retries (#62) are already upstream. Re-pin to upstream once
+they merge. `lib/snakemake.sh` always passes the spot-attempts and image-map settings, and the
+job-definition map (or, without one, the log group), so a re-pin must keep an executor that has
+all of them. Task job definitions are registered by the backend at launch, never by workflow
+code (`crates/biffix-backend/src/aws/task_definitions.rs`; the coordinator IAM denies every
+job-definition write). `plugins/nf-biffix` also provides the `awsbatch` executor (a subclass of
+nf-amazon's) that runs each task on the backend's definition for its image; bumping nf-biffix's
+version means bumping `nf_biffix_version` in `crates/biffix-workflow/src/runtime/pins.rs` too.
 
 **UI** (`ui/`): SvelteKit (Svelte 5 runes) + static adapter, served from S3/CloudFront. API types in
 `src/lib/generated/` are **generated** from the backend's OpenAPI doc (`npm run generate:api` runs

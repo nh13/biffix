@@ -244,8 +244,11 @@ image is picked up by the backend sweep within a few minutes, which rebuilds the
 registered versions use; runs keep launching on the previous image until then.
 
 Upgrading can change the engine pins (the Snakemake or Nextflow releases and plugin versions
-biffix builds runtimes from). Existing versions keep the runtime they recorded. To move them to
-the new pins, re-register them:
+biffix builds runtimes from). Existing versions keep the runtime they recorded, except across the
+upgrade to the release where the backend registers task job definitions (below): a runtime from
+before it has an engine that registers its own, which coordinators may no longer do, so its
+versions are refused at submit and launch until they are re-registered. To move versions to the
+new pins, re-register them:
 
 ```sh
 biffix workflows reregister --all --dry-run    # see what would change
@@ -254,6 +257,19 @@ biffix workflows reregister --all
 
 Re-register workflow versions after deploying a backend that adds launch-form features, too: a
 version registered against an older backend lacks the newer form fields.
+
+From the release where the backend registers task job definitions (rather than the coordinators),
+re-registering is a required step of the upgrade: run `biffix workflows reregister --all` once the
+deploy finishes. Every version registered before it pins an executor or nf-biffix that registers
+its own job definitions, which IAM now denies coordinators, so such a version reads `failed` and is
+refused at submit and launch ("this version's engine runtime predates the task job definitions
+biffix registers…") rather than launching runs whose every task would fail. `--all` moves each
+workflow's newest version; re-register an older version you still run by its id
+(`biffix workflows reregister <version id>`). A run in flight across the upgrade fails at its next
+task submit too, because its coordinator can no longer use the job definitions its engine
+registered: upgrade while no runs are active, or resubmit those runs afterwards. The full deploy
+then deregisters the old engine-registered job definitions
+([infra/README.md](../infra/README.md#task-job-definitions)).
 
 Deploy an upgrade whole (`deploy.sh` with no `--stack`), never only the api stack
 with `--stack biffix-<tenant>-api`. Some features change the backend and the build projects
