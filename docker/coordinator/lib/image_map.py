@@ -1,6 +1,7 @@
-"""Download the run's image map (declared image -> the tenant copy to run) and check its shape.
+"""Download one of the run's maps and check its shape: the image map (declared image -> the tenant
+copy to run) or the job definition map (tenant image -> the task job definition it runs on).
 
-Usage: image_map.py <s3 uri> <dest file>
+Usage: image_map.py <s3 uri> <dest file> [<what the map is called in errors, default "image map">]
 
 Exits non-zero (with its reason on stderr) when the map cannot be read or is not a JSON object.
 """
@@ -9,7 +10,7 @@ import json
 import sys
 
 
-def fetch(uri: str, dest: str) -> None:
+def fetch(uri: str, dest: str, what: str = "image map") -> None:
     import boto3
 
     if not uri.startswith("s3://"):
@@ -18,8 +19,8 @@ def fetch(uri: str, dest: str) -> None:
     boto3.client("s3").download_file(bucket, key, dest)
     with open(dest) as f:
         if not isinstance(json.load(f), dict):
-            sys.exit("the image map is not a JSON object")
+            sys.exit(f"the {what} is not a JSON object")
 
 
 if __name__ == "__main__":
-    fetch(sys.argv[1], sys.argv[2])
+    fetch(*sys.argv[1:4])

@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # biffix coordinator: the Nextflow engine. Sourced by entrypoint.sh; defines functions only.
 #   Reads: WORK, SRC, STORE, PARAMS_JSON, RUNTIME_ROOT, NXF_HOME, NXF_PLUGINS_DIR, the run's BIFFIX_*
-#          env and the resolved SNAKEMAKE_AWS_BATCH_JOB_QUEUE / _ROLE.
+#          env, the resolved SNAKEMAKE_AWS_BATCH_JOB_QUEUE / _ROLE and BIFFIX_JOB_DEFINITION_MAP_FILE.
 #   Sets:  rc (Nextflow's exit status); NXF_PLUGINS_DEFAULT, and NXF_UUID or
 #          NXF_IGNORE_RESUME_HISTORY.
 
@@ -34,9 +34,9 @@ layer_plugin_version() {
   printf '%s' "$version"
 }
 
-# Run Nextflow with the AWS Batch executor (nf-amazon's, as nf-biffix's project-tagging `awsbatch`;
-# see "Project isolation" in entrypoint.sh) + the nf-biffix TraceObserver plugin, both from the
-# runtime layer.
+# Run Nextflow with the AWS Batch executor (nf-amazon's, as nf-biffix's `awsbatch`, which runs each
+# task on the job definition biffix registered for its image; see "Project isolation" in
+# entrypoint.sh) + the nf-biffix TraceObserver plugin, both from the runtime layer.
 # nf-amazon stages each task's I/O to/from the S3 workDir with the host's AWS CLI, bind-mounted into
 # the task container (aws.batch.cliPath below), so task images need no `aws` of their own. The
 # plugin reports the same RunEvents to the same ingest route as the Snakemake logger;
@@ -89,7 +89,10 @@ run_nextflow() {
   run_id=$(groovy_str "$BIFFIX_RUN_ID" "BIFFIX_RUN_ID")
   project=$(groovy_str "$BIFFIX_PROJECT" "BIFFIX_PROJECT")
   region=$(groovy_str "$BIFFIX_REGION" "the region")
-  role=$(groovy_str "$SNAKEMAKE_AWS_BATCH_JOB_ROLE" "the job role")
+  # The job role goes into the job definitions nf-amazon registers, which it does only without
+  # the run's job definition map (a local run): biffix's own definitions carry the role.
+  role=""
+  [ -n "${BIFFIX_JOB_DEFINITION_MAP_FILE:-}" ] || role=$(groovy_str "$SNAKEMAKE_AWS_BATCH_JOB_ROLE" "the job role")
   workdir=$(groovy_str "${STORE}work" "the output prefix")
   # A dry run writes nothing to S3: -preview still opens the work dir as the session starts (on S3,
   # a PutObject of its directory marker), and the AWS Batch executor requires an S3 one. So it
@@ -120,17 +123,20 @@ run_nextflow() {
     # SNAKEMAKE_AWS_BATCH_JOB_TAGS.
     echo "process.resourceLabels = ['biffix:run': ${run_id}, 'biffix:project': ${project}]"
     echo "aws.region = ${region}"
-    echo "aws.batch.jobRole = ${role}"
+    [ -z "$role" ] || echo "aws.batch.jobRole = ${role}"
     # Spot reclaims retry in Batch, on the same job id (see "Spot reclaims" in entrypoint.sh); 0
     # turns that off and leaves a reclaim to the errorStrategy.
     echo "aws.batch.maxSpotAttempts = ${SPOT_ATTEMPTS}"
     # Task jobs log to the project's own group, not the shared /aws/batch/job (see "Project
-    # isolation" in entrypoint.sh). nf-amazon writes it into each job definition's awslogs-group.
+    # isolation" in entrypoint.sh): biffix's job definitions name it, and nf-amazon reads a failed
+    # task's log from it (and, without a job definition map, writes it into the definitions it
+    # registers).
     echo "aws.batch.logsGroup = ${logs_group}"
     # Every Batch host installs the pinned AWS CLI here at boot (the compute stack's launch template;
-    # infra/biffix_infra/host/install_aws_cli.sh). Nextflow bind-mounts /opt/biffix/aws-cli read-only
-    # into each task and stages the task's S3 I/O with it, so task images need no AWS CLI of their
-    # own. A path the image also has would be shadowed by the mount, hence a biffix-only path.
+    # infra/biffix_infra/host/install_aws_cli.sh). Each task's job definition bind-mounts
+    # /opt/biffix/aws-cli read-only (crates/biffix-backend/src/aws/task_definitions.rs), and
+    # Nextflow stages the task's S3 I/O with it, so task images need no AWS CLI of their own. A path
+    # the image also has would be shadowed by the mount, hence a biffix-only path.
     echo "aws.batch.cliPath = '/opt/biffix/aws-cli/bin/aws'"
     echo "workDir = ${workdir}"
     # The resume cache, next to the work dir it indexes. Written per task as the run goes (so a

@@ -137,6 +137,7 @@ impl ProjectContext {
             id: self.id.clone(),
             bucket: self.bucket.clone(),
             run_role_arn: self.run_role_arn.clone(),
+            task_log_group: self.task_log_group.clone(),
         }
     }
 }

@@ -130,6 +130,10 @@ pub(crate) struct ProviderConfig {
     /// The name prefix of variant job definitions (IAM allows registering only these;
     /// `BIFFIX_VARIANT_JOB_DEFINITION_PREFIX`).
     pub(crate) variant_job_definition_prefix: Option<String>,
+    /// The name prefix of the task job definitions the backend registers for runs' tasks (IAM
+    /// allows registering only these, and coordinators submitting only these;
+    /// `BIFFIX_TASK_JOB_DEFINITION_PREFIX`).
+    pub(crate) task_job_definition_prefix: Option<String>,
     /// The tenant ECR repository URI (no tag) that holds workflow worker images
     /// (`BIFFIX_WORKER_IMAGE_REPO`): the repository of a run's worker image
     /// (`<repo>@<version.image_digest>`) when its version recorded none
@@ -166,6 +170,7 @@ impl BackendConfig {
                 .filter_map(|arch| Some((arch, env.string(&image_build_project_var(arch))?)))
                 .collect(),
             variant_job_definition_prefix: env.string("BIFFIX_VARIANT_JOB_DEFINITION_PREFIX"),
+            task_job_definition_prefix: env.string("BIFFIX_TASK_JOB_DEFINITION_PREFIX"),
             worker_image_repo: worker_image_repo.clone(),
             ingest_url: errors.take(env.present("BIFFIX_INGEST_URL")),
             alert_topic_arn: env.string("BIFFIX_ALERT_TOPIC_ARN"),

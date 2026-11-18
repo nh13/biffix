@@ -44,18 +44,29 @@
 #                             task (Snakemake: the executor's container image map; Nextflow:
 #                             nf-biffix's container resolver). A runtime whose engine cannot
 #                             resolve through it fails the run (78) rather than run unmapped.
+#   BIFFIX_JOB_DEFINITION_MAP_URI - s3:// uri of the run's job-definitions.json (tenant image -> the
+#                             task job definition the backend registered for it;
+#                             crates/biffix-backend/src/aws/task_definitions.rs), sent with the
+#                             image map and required with it (78 without). Every task runs on the
+#                             definition of its image and the engines register none (Snakemake:
+#                             the executor's job definition map; Nextflow: nf-biffix's handler);
+#                             see "Project isolation" below.
 # Baked into the job definition (infra/biffix_infra/constructs/coordinator.py):
 #   BIFFIX_QUEUE_CLASS_MAP  - JSON {queue_class_name: job_queue_arn}, the WORKER queue-classes only
 #                             (the coordinator's is not in it), in deploy-config order
 #   BIFFIX_REGION           - required: the deploy's region (Snakemake: --aws-batch-region, as
 #                             the executor reads no env var for it; Nextflow: aws.region)
-#   BIFFIX_TASK_LOG_GROUP   - required: the project's own CloudWatch log group for task jobs
-#                             (Nextflow: aws.batch.logsGroup; Snakemake: --aws-batch-log-group; see
+#   BIFFIX_TASK_LOG_GROUP   - required: the project's own CloudWatch log group for task jobs, which
+#                             the backend's task job definitions name (Nextflow reads a failed
+#                             task's log from it, aws.batch.logsGroup; without a job definition map
+#                             the engines name it in their own: Snakemake --aws-batch-log-group; see
 #                             "Project isolation" below)
 # Optional, from the backend: BIFFIX_QUEUE_CLASS (worker queue-class to submit child jobs to;
-#   default: the map's first), SNAKEMAKE_AWS_BATCH_JOB_ROLE (the job role child jobs assume; the
-#   project run base role; the Nextflow path reads it too, as it does the worker queue resolved
-#   into the Snakemake executor's variable: the executor's names serve both engines),
+#   default: the map's first), SNAKEMAKE_AWS_BATCH_JOB_ROLE (the project run base role, which child
+#   jobs assume; required, and handed to the engine, only without a job definition map, where the
+#   engine registers its own job definitions: the backend's carry it; the Nextflow path reads it
+#   too, as it does the worker queue resolved into the Snakemake executor's variable: the
+#   executor's names serve both engines),
 #   SNAKEMAKE_AWS_BATCH_JOB_TAGS (`biffix:run=<run id>`: the Snakemake
 #   executor tags every child job with it, and this script adds the run and project tags below
 #   when missing; the Nextflow path tags them via process.resourceLabels).
@@ -72,7 +83,7 @@
 #   source staging, config materialization, and queue resolution WITHOUT submitting child jobs,
 #   and writes nothing to S3 (no metadata sync, no events.jsonl upload; Nextflow previews with the
 #   local executor and a local work dir, no cloud cache or remote bin dir); it still reads the
-#   source, the image map and any metadata to restore.
+#   source, the image map, the job definition map and any metadata to restore.
 #   This is the fast local check: `docker run` this image with the real env and BIFFIX_DRY_RUN=1.
 #
 # The process exit code is the run's outcome: AWS Batch reports it via EventBridge, which the
@@ -143,23 +154,22 @@ ENGINE="${BIFFIX_ENGINE:-snakemake}"
 #     resource overrides it.
 
 # Project isolation. Each project's coordinator role reaches only its own project's jobs, bucket and
-# run role, and submits only child job definitions tagged with its own project
-# (infra/biffix_infra/stacks/compute_stack.py grant_coordinator):
-#   - Job definitions. Snakemake's executor registers each child job definition with the job's tags
-#     (biffix:run, biffix:project). Nextflow's are registered by nf-biffix's `awsbatch` executor
-#     (nf-amazon's, under the same name), which tags each `nf-…` definition
-#     biffix:project=$BIFFIX_PROJECT next to nf-amazon's own nextflow.io/* tags, hashes the project
-#     into its nf-token, and reuses only a definition tagged with the project. The project only,
-#     never biffix:run: a definition is reused by every later run of the project, so a run tag
-#     would name whichever run first registered it. IAM requires that tag to register
-#     an `nf-*` definition, and to submit either engine's (a `name:revision` tagged with this
-#     project; both engines submit by revision), so a coordinator cannot run as another
-#     project's run role through its definitions.
-#   - Task logs. Task jobs log to the project's own group (BIFFIX_TASK_LOG_GROUP): Nextflow's as
-#     aws.batch.logsGroup, Snakemake's as --aws-batch-log-group (upstream PR #61, in the pinned
-#     fork). Only that project's coordinator (and the backend) may read it, and a coordinator may
-#     register a job definition that logs only there or to /aws/batch/job, which no coordinator may
-#     read.
+# run role, and submits child jobs only on the task job definitions biffix registered for its own
+# project (infra/biffix_infra/constructs/batch_access.py):
+#   - Job definitions. The coordinator runs the workflow's own code, so it never registers a job
+#     definition (IAM denies it every job-definition write): a definition decides whether a
+#     container is privileged and which host paths it sees, on hosts every project shares. The
+#     backend registers one per image the run may use, at launch (never privileged; no volumes but
+#     the Nextflow tasks' read-only host AWS CLI; the project's run role and task log group), tagged
+#     biffix:project, and hands the coordinator their map (BIFFIX_JOB_DEFINITION_MAP_URI). The
+#     Snakemake executor runs each job on its image's definition (--aws-batch-job-definition-map, in
+#     the pinned fork) and so does nf-biffix's `awsbatch` executor (nf-amazon's, under the same
+#     name); an image with no definition fails its task. IAM lets the coordinator submit only a
+#     `name:revision` of those definitions tagged with its own project, so it cannot run as
+#     another project's run role, nor on a definition of anyone else's making.
+#   - Task logs. Task jobs log to the project's own group (BIFFIX_TASK_LOG_GROUP), which their job
+#     definitions name. Only that project's coordinator (and the backend) may read it; no
+#     coordinator may read /aws/batch/job, which holds every project's coordinator logs.
 
 RUNTIME_ROOT="${BIFFIX_RUNTIME_ROOT:-/opt/biffix}"
 select_runtime
@@ -174,6 +184,7 @@ echo "biffix-coordinator: run=$BIFFIX_RUN_ID engine=$ENGINE" >&2
 stage_workflow_source
 materialize_params
 fetch_image_map
+fetch_job_definition_map
 
 # The workflow's default storage prefix. Default: the isolated per-run path, so two runs never
 # collide. A submit may override it (BIFFIX_OUTPUT_PREFIX, validated backend-side to be within the

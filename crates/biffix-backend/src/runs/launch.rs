@@ -9,8 +9,9 @@
 //! - [`ensure_submit_images`]: move a run's submit-time imports and derives forward.
 //! - [`readiness`]: whether a run's submit-time images let it launch now, wait, or never.
 //! - [`runnable_default`]: the digest tasks run for the version's default image.
-//! - [`launch_run`]: write the image map, run the submit pipeline, and record the anchor and the
-//!   coordinator binding (stopping the coordinator if they cannot be recorded).
+//! - [`launch_run`]: write the image map, register the run's task job definitions and write their
+//!   map, run the submit pipeline, and record the anchor and the coordinator binding (stopping the
+//!   coordinator if they cannot be recorded).
 //! - [`sweep`]: move each parked run's images forward and launch the run once they are runnable
 //!   (stopping first any coordinator a launch whose answer was lost left running), or fail it with
 //!   why they never will be (or once it has waited [`IMAGE_PREPARE_TIMEOUT`], whatever it waited
@@ -262,6 +263,14 @@ pub(crate) enum LaunchError {
     /// Writing the run's image map failed.
     #[error("writing the run's image map failed: {0}")]
     ImageMap(#[source] AwsError),
+    /// Registering one of the run's task job definitions (`what` names its image and definition),
+    /// or writing their map (`what` names it), failed.
+    #[error("preparing the run's task job definitions failed: {what}: {source}")]
+    JobDefinitions {
+        what: String,
+        #[source]
+        source: AwsError,
+    },
     /// The submit pipeline refused or failed (nothing launched).
     #[error(transparent)]
     Submit(SubmitError),
@@ -290,9 +299,9 @@ impl LaunchError {
     /// neither record nor stop is never retried.
     pub(crate) fn is_transient(&self) -> bool {
         match self {
-            LaunchError::ImageMap(e) | LaunchError::Submit(SubmitError::Aws(e)) => {
-                matches!(e, AwsError::Unavailable(_))
-            }
+            LaunchError::ImageMap(e)
+            | LaunchError::JobDefinitions { source: e, .. }
+            | LaunchError::Submit(SubmitError::Aws(e)) => matches!(e, AwsError::Unavailable(_)),
             LaunchError::Submit(SubmitError::LaunchUncertain(_)) => true,
             LaunchError::Submit(_) => false,
             LaunchError::Record { error, stop_error, .. } => {
@@ -303,8 +312,9 @@ impl LaunchError {
 }
 
 /// Launch `run_id` from `plan`: write its image map (the version's images, with the submit-time
-/// ones winning every spelling they have), run the submit pipeline (mint session → anchor → launch
-/// coordinator), and record the anchor and the coordinator binding.
+/// ones winning every spelling they have), register a task job definition for each image in it
+/// and write their map ([`write_job_definitions`]), run the submit pipeline (mint session → anchor
+/// → launch coordinator), and record the anchor and the coordinator binding.
 pub(crate) async fn launch_run(
     state: &AppState,
     run_id: &RunId,
@@ -343,7 +353,11 @@ pub(crate) async fn launch_run(
             .put_object(&uri, body, "application/json")
             .await
             .map_err(LaunchError::ImageMap)?;
-        Some((uri, map))
+        // Every task runs on a job definition biffix registered (never one the workflow's code
+        // chose), so the run's definitions exist before its coordinator does.
+        let job_definitions =
+            write_job_definitions(state, run_id, &project.launch_project(), &version, &map).await?;
+        Some((crate::aws::batch::RunMapUris { image_map: uri, job_definitions }, map))
     };
     let sreq = SubmitRequest {
         run_id: run_id.clone(),
@@ -391,6 +405,44 @@ pub(crate) async fn launch_run(
         return Err(LaunchError::Record { error, job_id: job.clone(), stop_error });
     }
     Ok(outcome)
+}
+
+/// How many task job definitions one launch looks up (or registers) at once: enough that a
+/// version with many images launches promptly, few enough to stay well inside Batch's API rate.
+const TASK_DEFINITION_CONCURRENCY: usize = 8;
+
+/// Register (or find) the task job definition of each image in the run's `image_map`
+/// (`crate::aws::task_definitions`) and write the map of image to definition beside it; returns
+/// where.
+async fn write_job_definitions(
+    state: &AppState,
+    run_id: &RunId,
+    project: &crate::aws::batch::LaunchProject,
+    version: &WorkflowVersion,
+    image_map: &BTreeMap<String, String>,
+) -> Result<String, LaunchError> {
+    use futures::{StreamExt, TryStreamExt};
+    let definitions =
+        crate::aws::task_definitions::for_image_map(image_map, version.engine, project);
+    let registered: BTreeMap<String, String> = futures::stream::iter(definitions)
+        .map(|definition| async move {
+            match state.cloud.task_job_definition(&definition).await {
+                Ok(arn) => Ok((definition.image, arn)),
+                Err(source) => Err(LaunchError::JobDefinitions {
+                    what: format!("the definition of image `{}`", definition.image),
+                    source,
+                }),
+            }
+        })
+        .buffer_unordered(TASK_DEFINITION_CONCURRENCY)
+        .try_collect()
+        .await?;
+    let uri = crate::aws::task_definitions::uri_for(&project.bucket, run_id.as_str());
+    let body = serde_json::to_vec_pretty(&registered).expect("a map of strings always serializes");
+    state.cloud.put_object(&uri, body, "application/json").await.map_err(|source| {
+        LaunchError::JobDefinitions { what: format!("writing their map {uri}"), source }
+    })?;
+    Ok(uri)
 }
 
 /// What one sweep of the parked launches did.
@@ -886,14 +938,24 @@ async fn drop_row(state: &AppState, run_id: &RunId) -> Result<(), BuildError> {
     Ok(state.store.delete_pending_launch(run_id).await?)
 }
 
-/// A launch that did not happen: writing the image map is AWS's fault (upstream), a refused submit
-/// is [`SubmitError`]'s, and a run that could not be recorded its store failure's kind, saying what
-/// became of its coordinator.
+/// A launch that did not happen: writing the image map is AWS's fault (upstream); preparing the
+/// task job definitions is too, unless AWS is only unavailable (retry) or the deploy does not let
+/// the backend register them (a denied or unset grant: a misconfigured deploy, ours); a refused
+/// submit is [`SubmitError`]'s, and a run that could not be recorded its store failure's kind,
+/// saying what became of its coordinator.
 impl From<LaunchError> for crate::error::ServiceError {
     fn from(err: LaunchError) -> Self {
+        use crate::error::ServiceError;
         let message = err.to_string();
         match err {
-            LaunchError::ImageMap(_) => crate::error::ServiceError::Upstream(message),
+            LaunchError::ImageMap(_) => ServiceError::Upstream(message),
+            LaunchError::JobDefinitions { source, .. } => match source {
+                AwsError::Unavailable(_) => ServiceError::Unavailable(message),
+                AwsError::Forbidden(_) | AwsError::Misconfigured(_) | AwsError::Unsupported(_) => {
+                    ServiceError::Internal(message)
+                }
+                _ => ServiceError::Upstream(message),
+            },
             LaunchError::Submit(e) => e.into(),
             LaunchError::Record { error, .. } => {
                 crate::error::ServiceError::from(error).with_message(message)
@@ -969,6 +1031,27 @@ mod tests {
     }
 
     #[test]
+    fn a_task_job_definition_failure_says_which_and_whose_fault_it_is() {
+        use crate::error::ServiceError;
+        let failed = |source| {
+            ServiceError::from(LaunchError::JobDefinitions {
+                what: "the definition of image `repo@sha256:a`".into(),
+                source,
+            })
+        };
+        let denied = failed(AwsError::Forbidden("RegisterJobDefinition".into()));
+        assert!(matches!(denied, ServiceError::Internal(_)), "{denied:?}");
+        assert!(denied.to_string().contains("the definition of image `repo@sha256:a`"), "{denied}");
+        let unset =
+            failed(AwsError::Unsupported("BIFFIX_TASK_JOB_DEFINITION_PREFIX is unset".into()));
+        assert!(matches!(unset, ServiceError::Internal(_)), "{unset:?}");
+        let throttled = failed(AwsError::Unavailable("throttled".into()));
+        assert!(matches!(throttled, ServiceError::Unavailable(_)), "{throttled:?}");
+        let other = failed(AwsError::Batch("ClientException".into()));
+        assert!(matches!(other, ServiceError::Upstream(_)), "{other:?}");
+    }
+
+    #[test]
     fn only_a_launch_that_left_nothing_running_is_retried() {
         let unavailable = || StoreError::Unavailable("down".into());
         let record = |error: StoreError, terminated: bool| LaunchError::Record {
@@ -982,6 +1065,12 @@ mod tests {
         assert!(!record(StoreError::NotFound, false).is_transient());
         assert!(LaunchError::ImageMap(AwsError::Unavailable("s3".into())).is_transient());
         assert!(!LaunchError::ImageMap(AwsError::Invalid("s3".into())).is_transient());
+        let definitions = |source| LaunchError::JobDefinitions {
+            what: "the definition of image `i`".into(),
+            source,
+        };
+        assert!(definitions(AwsError::Unavailable("batch".into())).is_transient());
+        assert!(!definitions(AwsError::Forbidden("batch".into())).is_transient());
         assert!(LaunchError::Submit(SubmitError::Aws(AwsError::Unavailable("batch".into())))
             .is_transient());
         assert!(!LaunchError::Submit(SubmitError::Aws(AwsError::Invalid("batch".into())))

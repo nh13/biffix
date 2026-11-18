@@ -1,5 +1,6 @@
-//! Batch: the run's coordinator job — its session, launch and variant job definitions, cancel, and
-//! what Batch says about the jobs a run's coordinator submits ([`BatchJobs`]).
+//! Batch: the run's coordinator job — its session, launch and variant job definitions, its tasks'
+//! job definitions, cancel, and what Batch says about the jobs a run's coordinator submits
+//! ([`BatchJobs`]).
 
 use std::collections::BTreeMap;
 
@@ -27,9 +28,11 @@ pub struct LaunchProject {
     pub id: String,
     /// The project bucket (`BIFFIX_PROJECT_BUCKET`), hosting the run's default output prefix.
     pub bucket: String,
-    /// The project's run base role: the engine's executor registers child job definitions with
-    /// it (`SNAKEMAKE_AWS_BATCH_JOB_ROLE`), and it is recorded on the run.
+    /// The project's run base role: the run's task job definitions run as it
+    /// ([`crate::aws::task_definitions`]), and it is recorded on the run.
     pub run_role_arn: String,
+    /// The project's task log group: the run's task job definitions log there.
+    pub task_log_group: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -92,9 +95,23 @@ pub struct CoordinatorLaunch {
     /// base coordinator image. Batch cannot override a job's image, so each variant has its own
     /// job definition.
     pub variant: LaunchVariant,
-    /// The run's image map (`images.json`, `s3://…`; see `crate::images::map`), handed to the
-    /// coordinator as `BIFFIX_IMAGE_MAP_URI`. `None`: task images are not resolved through one.
-    pub image_map_uri: Option<String>,
+    /// Where the run's image map and its map of image to task job definition were written.
+    /// `None` (a local composition with no project bucket): task images are not resolved through
+    /// a map, and the engine registers its own task job definitions.
+    pub maps: Option<RunMapUris>,
+}
+
+/// Where a run's image map and its map of image to task job definition were written. A launch
+/// writes both (`crate::runs::launch`), so a run has both or neither.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunMapUris {
+    /// The image map (`images.json`, `s3://…`; see `crate::images::map`), handed to the
+    /// coordinator as `BIFFIX_IMAGE_MAP_URI`.
+    pub image_map: String,
+    /// The map of image to task job definition (`job-definitions.json`, `s3://…`; see
+    /// [`crate::aws::task_definitions`]), handed to the coordinator as
+    /// `BIFFIX_JOB_DEFINITION_MAP_URI`.
+    pub job_definitions: String,
 }
 
 /// The image a run's tasks default to (`BIFFIX_WORKER_IMAGE`): the version's default image,
@@ -214,6 +231,16 @@ pub trait BatchJobs: Send + Sync {
         job_definition_arn: &str,
         template_arn: &str,
     ) -> bool;
+
+    /// The task job definition `definition` describes, as its revisioned ARN
+    /// (`arn:…:job-definition/<name>:<revision>`, the form whose tags IAM evaluates on `SubmitJob`):
+    /// an ACTIVE revision of [`crate::aws::task_definitions::TaskJobDefinition::name`] that carries
+    /// it, else one registered now. Concurrent launches may each register a revision; any of them
+    /// serves, since the name fixes what they carry.
+    async fn task_job_definition(
+        &self,
+        definition: &crate::aws::task_definitions::TaskJobDefinition,
+    ) -> Result<String, AwsError>;
 
     /// Terminate a Batch job (a run's coordinator, on cancel) with a human-readable `reason` that
     /// Batch records as the job's status reason. Terminating a job that already finished is a no-op

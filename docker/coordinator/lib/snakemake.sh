@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # biffix coordinator: the Snakemake engine. Sourced by entrypoint.sh; defines functions only.
 #   Reads: WORK, SRC, CONFIG, STORE, LIB_DIR, SM_META_URI, SM_META_FINGERPRINT, the run's BIFFIX_*
-#          env and the resolved SNAKEMAKE_AWS_BATCH_JOB_QUEUE / _ROLE.
+#          env, the resolved SNAKEMAKE_AWS_BATCH_JOB_QUEUE / _ROLE and BIFFIX_JOB_DEFINITION_MAP_FILE.
 #   Sets:  rc (Snakemake's exit status), SNAKEMAKE_AWS_BATCH_JOB_TAGS, SNAKEMAKE_OUTPUT_CACHE,
 #          SM_META_RESTORE_FAILED.
 
@@ -133,15 +133,29 @@ run_snakemake() {
     --executor aws-batch
     --aws-batch-region "$BIFFIX_REGION"
     --aws-batch-job-queue "$SNAKEMAKE_AWS_BATCH_JOB_QUEUE"
-    --aws-batch-job-role "$SNAKEMAKE_AWS_BATCH_JOB_ROLE"
   )
+  # Task job definitions (see "Project isolation" in entrypoint.sh). With the run's job definition
+  # map (SNAKEMAKE_AWS_BATCH_JOB_DEFINITION_MAP, from fetch_job_definition_map), every job runs on
+  # the definition biffix registered for its image, which carries the job role and the project's
+  # task log group, and is never privileged: the executor registers none, and refuses a job role,
+  # log group or --aws-batch-privileged beside the map (and fails a job whose rule sets the
+  # aws_batch_job_definition or aws_batch_privileged resource), so none is passed, and the job
+  # role's env var (which the executor also reads) is cleared. Without a map (a local run), the
+  # executor registers its own, with the role and log group, never privileged.
+  if [ -n "${BIFFIX_JOB_DEFINITION_MAP_FILE:-}" ]; then
+    unset SNAKEMAKE_AWS_BATCH_JOB_ROLE
+  else
+    ARGS+=(
+      --aws-batch-job-role "$SNAKEMAKE_AWS_BATCH_JOB_ROLE"
+      --aws-batch-log-group "$BIFFIX_TASK_LOG_GROUP"
+    )
+  fi
   [ -z "${BIFFIX_WORKER_IMAGE:-}" ] || ARGS+=(--container-image "$BIFFIX_WORKER_IMAGE")
-  # Spot reclaims and task logs (see "Spot reclaims" and "Project isolation" in entrypoint.sh).
+  # Spot reclaims (see "Spot reclaims" in entrypoint.sh).
   local SPOT_ATTEMPTS="${BIFFIX_SPOT_ATTEMPTS:-5}"
   require_count BIFFIX_SPOT_ATTEMPTS "$SPOT_ATTEMPTS"
   ARGS+=(
     --aws-batch-spot-attempts "$SPOT_ATTEMPTS"
-    --aws-batch-log-group "$BIFFIX_TASK_LOG_GROUP"
     --default-storage-provider s3
     --default-storage-prefix "$STORE"
     --logger biffix
