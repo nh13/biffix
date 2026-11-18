@@ -2,8 +2,9 @@
 # Deploy the biffix control plane end-to-end: guard the target account, build the frontend and the
 # four Rust Lambdas (backend, sweep, ingest, reconcile), stage the pinned host AWS CLI in the
 # reference bucket, run `cdk deploy`, protect the deployed coordinator image and prune old build
-# tags (image retention), build the coordinator variants the deployed base image needs, and verify
-# the result with `biffix health`.
+# tags (image retention), deregister the task job definitions whose image is gone and the job
+# definitions coordinators registered before the backend took that over, build the coordinator
+# variants the deployed base image needs, and verify the result with `biffix health`.
 #
 # This automates the manual steps in infra/README.md ("Deploying the control plane"). Built from
 # source, it does NOT build/push the coordinator image or bump the image tag in the deploy config
@@ -33,7 +34,8 @@
 #       --assume-role <arn> Act as this role (e.g. an org member account's
 #                           OrganizationAccountAccessRole), then apply the guard. Its session is
 #                           renewed as it nears expiry, so a deploy may outlast the hour.
-#   -s, --stack <name>      Deploy only this stack (cdk --exclusively), and skip image retention.
+#   -s, --stack <name>      Deploy only this stack (cdk --exclusively), and skip image retention,
+#                           task job-definition retention and the engine job-definition cleanup.
 #                           Default: --all.
 #       --url <api-base>    Verify against this API base instead of deriving it from the deploy.
 #       --skip-ui           Do not rebuild the frontend (reuse ui/build, which must be a real
@@ -173,7 +175,7 @@ fi
 CONFIG="$(resolve_config "$CONFIG")"
 load_config "$CONFIG" tenant region account google_secret_name app_domain app_certificate_arn \
   coordinator_image_tag stack_names data_stack edge_stack api_stack host_aws_cli_version \
-  host_aws_cli_zips
+  host_aws_cli_zips projects_path task_job_definition_prefix
 TENANT="$(cfg tenant)"
 REGION="$(cfg region)"
 CONFIG_ACCOUNT="$(cfg account)"
@@ -187,6 +189,8 @@ EDGE_STACK="$(cfg edge_stack)"
 API_STACK="$(cfg api_stack)"
 HOST_AWS_CLI_VERSION="$(cfg host_aws_cli_version)"
 HOST_AWS_CLI_ZIPS="$(cfg host_aws_cli_zips)"
+PROJECTS_PATH="$(cfg projects_path)"
+TASK_PREFIX="$(cfg task_job_definition_prefix)"
 { [ -n "$TENANT" ] && [ -n "$REGION" ]; } || die "$CONFIG: tenant and region must be set"
 # Every region-scoped call below (and the aws subprocesses of image_retention) targets the config's
 # region, whatever the shell's default is. The ACM calls pass us-east-1 explicitly (CloudFront).
@@ -510,6 +514,41 @@ if [ -z "$STACK" ]; then
   retain_images
 else
   log "image retention: skipped (--stack deploys one stack; a full deploy runs it)"
+fi
+
+# ── Task job definitions ─────────────────────────────────────────────────────────
+# Deregister the task job definitions the backend registered (named with the tenant's task prefix)
+# whose image is gone from the tenant's ECR (biffix_infra.task_job_definitions): no task can run on
+# them, and nothing else removes them. Idempotent; best-effort like retention: a failure warns.
+retain_task_job_definitions() {
+  ( cd "$INFRA_DIR" && uv run python -m biffix_infra.task_job_definitions \
+      --prefix "$TASK_PREFIX" --registry "${CALLER_ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com" ) \
+    || warn "task job-definition retention failed (the deploy itself is fine; re-run it by hand, see infra/README.md)"
+}
+if [ -z "$STACK" ]; then
+  log "task job definitions: deregistering the ones whose image is gone"
+  retain_task_job_definitions
+else
+  log "task job definitions: skipped (--stack deploys one stack; a full deploy runs it)"
+fi
+
+# ── Engine job definitions ───────────────────────────────────────────────────────
+# Deregister the job definitions coordinators registered before the backend registered every task
+# job definition (biffix_infra.legacy_job_definitions): `nf-*` and `snakejob-def-*` ones tagged by
+# biffix and running as one of this tenant's run roles. Coordinators can no longer submit them, so
+# they are only clutter. Idempotent; best-effort like retention: a failure warns. A one-time
+# migration kept in every full deploy because operators may skip releases: remove this step (and
+# the module) after the next minor release.
+cleanup_job_definitions() {
+  ( cd "$INFRA_DIR" && uv run python -m biffix_infra.legacy_job_definitions \
+      --projects-path "$PROJECTS_PATH" ) \
+    || warn "engine job-definition cleanup failed (the deploy itself is fine; re-run it by hand, see infra/README.md)"
+}
+if [ -z "$STACK" ]; then
+  log "engine job definitions: deregistering the ones coordinators registered"
+  cleanup_job_definitions
+else
+  log "engine job definitions: skipped (--stack deploys one stack; a full deploy runs it)"
 fi
 
 # ── Coordinator variants ─────────────────────────────────────────────────────────

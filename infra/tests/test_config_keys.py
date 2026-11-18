@@ -532,6 +532,19 @@ def test_the_alarm_prefix_is_the_tenant_s_alone(tmp_path: Path) -> None:
     assert not sibling.startswith(_load(tmp_path).alarm_prefix), sibling
 
 
+def test_the_task_job_definition_prefix_is_the_tenant_s_alone(tmp_path: Path) -> None:
+    """Coordinators may submit, and the backend register, only job definitions named with this
+    prefix: a sibling tenant `<tenant>-task`'s task definitions (and its coordinator definitions)
+    must not start with it (a `biffix-<tenant>-task-` would)."""
+    prefix = _load(tmp_path).task_job_definition_prefix
+    assert prefix == "biffix-x_task-"
+    sibling = _load(tmp_path, tenant="x-task")
+    assert not sibling.task_job_definition_prefix.startswith(prefix)
+    assert not f"{sibling.stack_name('coordinator')}-p".startswith(prefix)
+    # Nor does it match this tenant's own coordinator definitions.
+    assert not "biffix-x-coordinator-p".startswith(prefix)
+
+
 @pytest.mark.parametrize(
     ("projects", "match"),
     [

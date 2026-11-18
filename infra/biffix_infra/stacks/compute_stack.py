@@ -1,18 +1,21 @@
 """AWS Batch EC2 queue classes.
 
 The compute stack owns the Batch fleet: one `BatchQueueClass` (compute environment + job queue) per
-queue-class. Worker jobs need no job definition of ours: the engines' AWS Batch executors register
-their own. It does NOT own the coordinator role or the coordinator job definition — those live
-in the `api` stack next to the backend that submits them, so the coordinator's churning revisioned
-job-def ARN never crosses a stack boundary. The Batch IAM knowledge the coordinator role
-needs is exposed here as `grant_coordinator(role)` (`constructs.batch_access`), called by the api
-stack; because the role lives downstream of this stack, the grant references queue TOKENS directly
-and CDK infers the edge — no string-constructed ARNs.
+queue-class. Worker jobs need no job definition of this stack's: the backend registers a task job
+definition per (project, tenant image, engine) at launch (named with
+`DeployNames.task_job_definition_prefix`), and the engines' AWS Batch executors submit those.
+It does NOT own the coordinator role or the coordinator job definition — those live in the `api`
+stack next to the backend that submits them, so the coordinator's churning revisioned job-def ARN
+never crosses a stack boundary. The Batch IAM knowledge the coordinator role needs is exposed here
+as `grant_coordinator(role)` (`constructs.batch_access`), called by the api stack; because the
+role lives downstream of this stack, the grant references queue TOKENS directly and CDK infers the
+edge — no string-constructed ARNs.
 
-Every compute environment boots its hosts from a launch template whose user data installs the
-pinned host AWS CLI (`biffix_infra/host/install_aws_cli.sh`) from the reference bucket's `host/`
-prefix; Nextflow bind-mounts it into each task (`aws.batch.cliPath`), so task images need none. The
-template also encrypts every host's root volume and requires IMDSv2.
+Every compute environment boots its hosts from a launch template whose user data turns off
+privileged containers in the ECS agent and installs the pinned host AWS CLI
+(`biffix_infra/host/install_aws_cli.sh`) from the reference bucket's `host/` prefix; Nextflow
+bind-mounts the CLI into each task (`aws.batch.cliPath`), so task images need none. The template
+also encrypts every host's root volume and requires IMDSv2.
 """
 
 from __future__ import annotations
@@ -35,6 +38,10 @@ from biffix_infra.paths import HOST_DIR
 from biffix_infra.wiring import LOG_RETENTION
 
 _INSTALL_AWS_CLI = HOST_DIR / "install_aws_cli.sh"
+# The ECS agent setting that makes it refuse to start a privileged container, appended to its config
+# before the agent starts (on the ECS-optimized AMI the agent starts after cloud-init has run the
+# user data).
+DISABLE_PRIVILEGED = "ECS_DISABLE_PRIVILEGED=true"
 
 
 def host_install_header(
@@ -70,6 +77,7 @@ class ComputeStack(Stack):
         **kwargs: Any,
     ) -> None:
         super().__init__(scope, cid, **kwargs)
+        self._task_prefix = config.task_job_definition_prefix
 
         host_user_data = self._host_user_data(config, host_bucket)
         self.queue_classes: dict[str, BatchQueueClass] = {
@@ -103,9 +111,7 @@ class ComputeStack(Stack):
             retention=LOG_RETENTION,
         )
 
-    def grant_coordinator(
-        self, role: iam.IRole, *, run_role: iam.IRole, project_id: str, task_log_group: str
-    ) -> None:
+    def grant_coordinator(self, role: iam.IRole, *, project_id: str, task_log_group: str) -> None:
         """Grant a project's coordinator role every Batch permission the engine head job needs on
         this fleet's worker queues (`grant_coordinator_batch`): never the coordinator queue, where
         child jobs never go, so a workflow cannot spend its on-demand capacity or fill it and hold
@@ -119,7 +125,7 @@ class ComputeStack(Stack):
                 for queue in self.queues.values()
                 if queue is not self.coordinator_queue
             ],
-            run_role=run_role,
+            task_prefix=self._task_prefix,
             project_id=project_id,
             task_log_group=task_log_group,
         )
@@ -127,8 +133,17 @@ class ComputeStack(Stack):
     @staticmethod
     def _host_user_data(config: DeployConfig, host_bucket: s3.IBucket) -> ec2.MultipartUserData:
         """The boot script every host runs, as the MIME multipart user data Batch requires (Batch
-        merges its own ECS agent part in). One part today, the host AWS CLI install; the read-only
-        reference mount (Mountpoint for S3) is added as a further part."""
+        merges its own ECS agent part in). Two parts today: turning off privileged containers, then
+        the host AWS CLI install; the read-only reference mount (Mountpoint for S3) is added as a
+        further part."""
+        # Nothing biffix runs on Batch is privileged: the coordinator job definition is not
+        # (constructs/coordinator.py), the backend never registers a privileged task definition
+        # (and IAM refuses one, ControlPlaneGrants.launch), and the image builds that need a
+        # privileged Docker daemon run in CodeBuild, not on Batch. So every host, coordinator and
+        # worker alike, refuses one: a job definition registered outside biffix's control still
+        # cannot get a privileged container on hosts every project shares.
+        harden = ec2.UserData.for_linux()
+        harden.add_commands(f"echo {DISABLE_PRIVILEGED} >> /etc/ecs/ecs.config")
         install = ec2.UserData.for_linux()
         install.add_commands(
             *host_install_header(
@@ -137,5 +152,6 @@ class ComputeStack(Stack):
             _INSTALL_AWS_CLI.read_text(),
         )
         user_data = ec2.MultipartUserData()
+        user_data.add_part(ec2.MultipartBody.from_user_data(harden))
         user_data.add_part(ec2.MultipartBody.from_user_data(install))
         return user_data

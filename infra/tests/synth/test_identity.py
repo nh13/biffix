@@ -23,7 +23,6 @@ from tests.synth.synth_helpers import (
     _grants,
     _logical_id,
     _render,
-    _resources,
     _statements_for,
 )
 
@@ -41,11 +40,9 @@ def test_identity_has_user_pool_and_boundary() -> None:
     ]
     # The ALLOW ceiling, exactly: `iam:*`, `kms:*` or `*:*` would each widen it.
     assert {a for st in allows for a in _actions(st)} == _EXPECTED_BOUNDARY_ALLOW
-    # PassRole is its only IAM action, and only on biffix's own roles: a bounded role can never
-    # pass an arbitrary (e.g. admin) role to a service.
-    (pass_role,) = [st for st in allows if any(a.startswith("iam:") for a in _actions(st))]
-    assert _actions(pass_role) == {"iam:PassRole"}
-    assert _resources(pass_role) == ["arn:aws:iam::{Ref:AWS::AccountId}:role/biffix-*"], pass_role
+    # It allows no IAM action, PassRole included: no bounded role passes a role (a coordinator
+    # registers no job definition), so none can ever hand one to a service.
+    assert not any(_grants(st, "iam:PassRole") for st in allows), allows
 
 
 # The boundary's ALLOW ceiling (identity_stack.py).
@@ -65,7 +62,6 @@ _EXPECTED_BOUNDARY_ALLOW = {
     "ecs:*",
     "ec2:Describe*",
     "ec2:CreateTags",
-    "iam:PassRole",
 }
 
 

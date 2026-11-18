@@ -31,6 +31,7 @@ from tests.synth.synth_helpers import (
     _grants,
     _lambda_env,
     _logical_id,
+    _not_resources,
     _project_context,
     _resources,
     _statements_for,
@@ -53,12 +54,13 @@ def test_each_project_s_coordinator_reaches_only_its_own_project(
         named = " ".join(r for st in statements for r in _resources(st))
         for other_id in projects:
             # Cross-stack references carry the exporting stack's name (`project-<id>`).
+            # Its own project's are its bucket and key, which an imported project (legacy) names
+            # by literal ARN instead.
             mentioned = f"Import:project-{other_id}:" in named
-            assert mentioned == (other_id == pid), (pid, other_id)
-        # Its only PassRole is its own project's run role.
-        passes = [st for st in statements if _grants(st, "iam:PassRole")]
-        (only,) = [r for st in passes for r in _resources(st)]
-        assert f"project-{pid}:" in only and "RunBaseRole" in only, only
+            assert mentioned == (other_id == pid != "legacy"), (pid, other_id)
+        # It passes no role at all: its child jobs run on the backend's task job definitions,
+        # which already name the run role.
+        assert not any(_grants(st, "iam:PassRole") for st in statements), pid
         # An imported bucket or key is a literal ARN: only legacy's coordinator names them.
         assert ("legacy-bucket" in named) == (pid == "legacy"), (pid, named)
         assert ("key/legacy-1" in named) == (pid == "legacy"), (pid, named)
@@ -279,31 +281,31 @@ def test_image_builds_read_workflow_sources_in_every_project_bucket(
         assert LEGACY.key_arn in decrypts, (arch, decrypts)
 
 
-# A role's statements on Batch, by (effect, action): their (resources, condition) pairs.
+# A role's statements on Batch, by (effect, action): their (resources, condition) pairs. A
+# `NotResource` statement's entries are listed as `NOT <resource>`.
 BatchPolicy = dict[tuple[str, str], list[tuple[list[str], Json | None]]]
 
 
 def _coordinator_batch_policy(statements: list[Json]) -> BatchPolicy:
-    """A coordinator role's statements on Batch jobs, by (effect, action): their (resources,
-    condition) pairs."""
+    """A coordinator role's statements on Batch jobs and job definitions, by (effect, action):
+    their (resources, condition) pairs."""
     policy: BatchPolicy = {}
     job_actions = ("batch:SubmitJob", "batch:TerminateJob", "batch:TagResource")
     definition_actions = ("batch:RegisterJobDefinition", "batch:DeregisterJobDefinition")
     for st in statements:
+        resources = sorted(_resources(st)) + sorted(f"NOT {r}" for r in _not_resources(st))
         for action in _actions(st):
             if action in (*job_actions, *definition_actions, "batch:UntagResource"):
                 policy.setdefault((st["Effect"], action), []).append(
-                    (sorted(_resources(st)), st.get("Condition"))
+                    (resources, st.get("Condition"))
                 )
     return {k: sorted(v, key=json.dumps) for k, v in policy.items()}
 
 
 def _expected_coordinator_batch_policy(project: str, queues: list[str]) -> BatchPolicy:
     job_definitions = f"{_BATCH}:job-definition/*"
-    snakemake = f"{_BATCH}:job-definition/snakejob-def-*"
-    nextflow = f"{_BATCH}:job-definition/nf-*"
-    snakemake_revisions = f"{_BATCH}:job-definition/snakejob-def-*:*"
-    nextflow_revisions = f"{_BATCH}:job-definition/nf-*:*"
+    tasks = f"{_BATCH}:job-definition/biffix-acme_task-*"
+    task_revisions = f"{_BATCH}:job-definition/biffix-acme_task-*:*"
     own = {"aws:RequestTag/biffix:project": project}
     own_resource = {"aws:ResourceTag/biffix:project": project}
     tags_the_project = {"ForAnyValue:StringEquals": {"aws:TagKeys": ["biffix:project"]}}
@@ -313,8 +315,8 @@ def _expected_coordinator_batch_policy(project: str, queues: list[str]) -> Batch
         "StringNotEquals": own_resource,
     }
     return {
-        # A child job is submitted only tagged with this project, from a Snakemake or Nextflow
-        # definition revision tagged with this project; no other definition at all.
+        # A child job is submitted only tagged with this project, from a task definition revision
+        # tagged with this project; no other definition at all.
         ("Allow", "batch:SubmitJob"): sorted(
             [
                 (
@@ -322,68 +324,54 @@ def _expected_coordinator_batch_policy(project: str, queues: list[str]) -> Batch
                     {"StringEquals": own, **tags_the_project},
                 ),
                 (
-                    sorted([snakemake_revisions, nextflow_revisions]),
+                    [task_revisions],
                     {"StringEquals": {**own, **own_resource}, **tags_the_project},
                 ),
             ],
             key=json.dumps,
         ),
-        # Never a coordinator job definition (another project's coordinator role), nor a child
-        # job definition tagged with another project (its run role), nor an engine's definition
-        # not tagged with this project (untagged, or submitted by its bare name).
+        # Never any job definition but a task definition (not a coordinator's, which runs as a
+        # coordinator role, nor the engines' old `nf-*`/`snakejob-def-*`, nor anything else),
+        # whatever allow is added; nor a task definition not tagged with this project (another
+        # project's, which runs as its run role, or one submitted by its bare name).
         ("Deny", "batch:SubmitJob"): sorted(
             [
-                ([f"{_BATCH}:job-definition/biffix-*"], None),
-                ([job_definitions], another),
-                (sorted([snakemake, nextflow]), {"StringNotEquals": own_resource}),
+                (sorted([f"NOT {r}" for r in (tasks, BATCH_JOBS, f"{_BATCH}:job-queue/*")]), None),
+                ([tasks], {"StringNotEquals": own_resource}),
             ],
             key=json.dumps,
         ),
         # Only this project's jobs are terminated.
         ("Allow", "batch:TerminateJob"): [([BATCH_JOBS], {"StringEquals": own_resource})],
-        # Both engines' definitions are born tagged with this project; Snakemake's (only) are
-        # deregistered; both log to this project's own group (or Batch's default).
-        ("Allow", "batch:RegisterJobDefinition"): sorted(
-            [
-                (
-                    [engine],
-                    {
-                        "StringEquals": own,
-                        "StringEqualsIfExists": {
-                            "batch:AWSLogsGroup": f"/biffix/project-{project}/batch"
-                        },
-                    },
-                )
-                for engine in (snakemake, nextflow)
-            ],
-            key=json.dumps,
-        ),
-        ("Allow", "batch:DeregisterJobDefinition"): [([snakemake], {"StringEquals": own_resource})],
-        # Snakemake's job definitions (it tags its own); Nextflow's, jobs, and the queues a tagged
-        # submit names (Batch authorizes that tag-on-create on the queue too), only with this
-        # project's tag.
-        ("Allow", "batch:TagResource"): sorted(
-            [
-                ([snakemake], None),
-                (sorted([BATCH_JOBS, *queues, nextflow]), {"StringEquals": own}),
-            ],
-            key=json.dumps,
-        ),
+        # No job definition is ever registered or deregistered: the backend registers them.
+        ("Deny", "batch:RegisterJobDefinition"): [(["*"], None)],
+        ("Deny", "batch:DeregisterJobDefinition"): [(["*"], None)],
+        # Jobs, and the queues a tagged submit names (Batch authorizes that tag-on-create on the
+        # queue too), only with this project's tag.
+        ("Allow", "batch:TagResource"): [
+            (sorted([BATCH_JOBS, *queues]), {"StringEquals": own}),
+        ],
         ("Deny", "batch:TagResource"): sorted(
             [
                 # The run tag is write-once: no job that carries one is re-tagged.
                 ([BATCH_JOBS], {"Null": {"aws:ResourceTag/biffix:run": "false"}}),
-                # No other project's job or job definition is tagged at all.
-                (sorted([BATCH_JOBS, job_definitions]), another),
+                # No other project's job is tagged at all.
+                ([BATCH_JOBS], another),
+                # No job definition is tagged, so none is made this project's.
+                ([job_definitions], None),
             ],
             key=json.dumps,
         ),
-        ("Deny", "batch:UntagResource"): [
-            (
-                sorted([BATCH_JOBS, job_definitions]),
-                {"ForAnyValue:StringEquals": {"aws:TagKeys": ["biffix:run", "biffix:project"]}},
-            )
-        ],
+        ("Deny", "batch:UntagResource"): sorted(
+            [
+                (
+                    [BATCH_JOBS],
+                    {"ForAnyValue:StringEquals": {"aws:TagKeys": ["biffix:run", "biffix:project"]}},
+                ),
+                ([job_definitions], None),
+            ],
+            key=json.dumps,
+        ),
     }
 
 

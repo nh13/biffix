@@ -62,10 +62,11 @@ class Coordinator(Construct):
         )
         Tags.of(self.role).add(PROJECT_TAG, pid)
         # Grants attach to the role directly — no string ARNs, no per-project inline policy —
-        # and name this project's resources only: its bucket, key and data sources, its run role.
+        # and name this project's resources only: its bucket, key, data sources and task log
+        # group. It passes no role: its child jobs run on the backend's task job definitions,
+        # which already name the project's run role.
         compute.grant_coordinator(
             self.role,
-            run_role=project.run_base_role,
             project_id=pid,
             task_log_group=project.task_log_group_name,
         )
@@ -85,7 +86,7 @@ class Coordinator(Construct):
                 "Container",
                 image=image,
                 # The image carries no ENTRYPOINT on purpose (see docker/coordinator/Dockerfile):
-                # child job definitions registered by the engine run their own command, so the
+                # the task job definitions the backend registers run their own command, so the
                 # coordinator command is expressed here.
                 command=["biffix-coordinator"],
                 cpu=2,

@@ -80,6 +80,7 @@ def test_sweep_can_launch_parked_runs(default_stacks: Stacks) -> None:
         "BIFFIX_PROJECTS_PATH",
         "BIFFIX_DEFAULT_PROJECT",
         "BIFFIX_WORKER_IMAGE_REPO",
+        "BIFFIX_TASK_JOB_DEFINITION_PREFIX",
         "BIFFIX_COORDINATOR_QUEUE",
         "BIFFIX_INGEST_URL",
     ):

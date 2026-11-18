@@ -1,6 +1,7 @@
 """What the control plane's Lambdas (the backend API and the sweep) are granted to serve projects,
-build coordinator variants and launch runs. Both Lambdas need exactly the same environment and
-scope for each, so both are wired by these one set of methods instead of each hand-copying it.
+build coordinator variants, and launch runs (registering the task job definitions their child jobs
+run on). Both Lambdas need exactly the same environment and scope for each, so both are wired by
+these one set of methods instead of each hand-copying it.
 
 Creates no resources: each method adds environment variables and policy statements to a Lambda.
 """
@@ -14,7 +15,11 @@ from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_secretsmanager as secretsmanager
 
-from biffix_infra.constructs.batch_access import PROJECT_TAG, RUN_TAG, batch_arn
+from biffix_infra.constructs.batch_access import (
+    PROJECT_TAG,
+    RUN_TAG,
+    batch_arn,
+)
 from biffix_infra.constructs.coordinator import Coordinator
 from biffix_infra.wiring import any_ecr_repository_arn, grant_secret_read
 
@@ -38,6 +43,7 @@ class ControlPlaneGrants:
         projects: list[ProjectStack],
         coordinators: dict[str, Coordinator],
         projects_path: str,
+        task_prefix: str,
         default_project_id: str,
         compute: ComputeStack,
         build: BuildStack,
@@ -63,6 +69,11 @@ class ControlPlaneGrants:
         self._variant_job_definitions = batch_arn(
             stack, "job-definition", f"{self._variant_prefix}*"
         )
+        # Every task job definition (`<prefix><sm|nf>-<32 hex>`, one per project, tenant image and
+        # engine; `DeployNames.task_job_definition_prefix`) is registered by a launch; coordinators
+        # may submit only these.
+        self._task_prefix = task_prefix
+        self._task_job_definitions = batch_arn(stack, "job-definition", f"{self._task_prefix}*")
 
     def read_projects(self, fn: lambda_.Function) -> None:
         """Let `fn` read every project's context: where the parameters are, which project is the
@@ -98,8 +109,9 @@ class ControlPlaneGrants:
         # Where the image builds push: a built image is trusted only from there.
         fn.add_environment("BIFFIX_BUILDS_IMAGE_REPO", self._build.builds_repo.repository_uri)
         self._build.grant_start_builds(fn)
-        # Describe has no resource-level permissions; registering (and tagging) is limited to the
-        # variant names.
+        # Describe (to find a variant registered before) has no resource-level permissions;
+        # registering (and tagging) is limited to the variant names, and to what
+        # `_deny_unsafe_registrations` lets through.
         fn.add_to_role_policy(
             iam.PolicyStatement(actions=["batch:DescribeJobDefinitions"], resources=["*"])
         )
@@ -109,6 +121,7 @@ class ControlPlaneGrants:
                 resources=[self._variant_job_definitions],
             )
         )
+        self._deny_unsafe_registrations(fn)
         # A clone passes the template's roles. Only the templates' own (each project's coordinator
         # role, never a run role), so a variant runs as exactly the project whose template it was
         # cloned from.
@@ -117,7 +130,8 @@ class ControlPlaneGrants:
 
     def launch(self, fn: lambda_.Function, ingest_url: str) -> None:
         """Let `fn` launch a run's coordinator in any project — the API Lambda from a live submit,
-        the sweep Lambda for a run parked in `preparing_images` once its images are ready. The
+        the sweep Lambda for a run parked in `preparing_images` once its images are ready — and
+        register the task job definitions the run's child jobs run on (`_register_tasks`). The
         coordinator reports to `ingest_url`."""
         compute = self._compute
         # The run's project context (its role, which Batch delivers to the run's child jobs; where
@@ -126,6 +140,8 @@ class ControlPlaneGrants:
         # child job's image is `{repo}@{version.image_digest}`), the queue the coordinator runs on
         # and the URL it reports to.
         fn.add_environment("BIFFIX_WORKER_IMAGE_REPO", self._worker_image_repo_uri)
+        fn.add_environment("BIFFIX_TASK_JOB_DEFINITION_PREFIX", self._task_prefix)
+        self._register_tasks(fn)
         fn.add_environment("BIFFIX_COORDINATOR_QUEUE", compute.coordinator_queue.job_queue_arn)
         fn.add_environment("BIFFIX_INGEST_URL", ingest_url)
         # The samplesheets/`images.json` a launch writes under the run's own `inputs/` folder, in
@@ -193,3 +209,76 @@ class ControlPlaneGrants:
         # `ingest-disabled` tokens, so a launcher refuses to start a run that cannot report.
         fn.add_environment("BIFFIX_CAPABILITY_SECRET_ARN", self._capability_secret.secret_arn)
         grant_secret_read(fn, self._capability_secret)
+
+    def _register_tasks(self, fn: lambda_.Function) -> None:
+        """Let `fn` register the task job definitions a launch needs: one per (project, tenant
+        image, engine), reused across runs. A coordinator runs the workflow's own code, so it may
+        not register any job definition (batch_access); the backend registers them within what
+        IAM enforces here: named with the task prefix, tagged with one of this deploy's projects
+        and nothing else, logging to a project's task log group, never privileged, pulling only
+        from the tenant's registry, and running as a project's run role."""
+        # Describe (to find a definition a launch registered before) has no resource-level
+        # permissions.
+        fn.add_to_role_policy(
+            iam.PolicyStatement(actions=["batch:DescribeJobDefinitions"], resources=["*"])
+        )
+        # Registering creates the definition with its project tag (a tag-on-create, which Batch
+        # authorizes as TagResource on the new definition too), so both are allowed only for a
+        # project of this deploy, with no tag but the project: a coordinator submits a task
+        # definition only when it carries its own project's tag (batch_access). Its tasks log to
+        # a project's own group, or, naming none, Batch's default; never elsewhere (the key is
+        # absent from a TagResource, hence IfExists).
+        fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["batch:RegisterJobDefinition", "batch:TagResource"],
+                resources=[self._task_job_definitions],
+                conditions={
+                    "StringEquals": {
+                        f"aws:RequestTag/{PROJECT_TAG}": [p.project_id for p in self._projects]
+                    },
+                    "ForAllValues:StringEquals": {"aws:TagKeys": [PROJECT_TAG]},
+                    "StringEqualsIfExists": {
+                        "batch:AWSLogsGroup": [p.task_log_group_name for p in self._projects]
+                    },
+                },
+            )
+        )
+        self._deny_unsafe_registrations(fn)
+        # A task definition runs as its project's run base role, which registering it passes: so
+        # this passes each project's run base role (`build_variants` passes the coordinator
+        # template roles a variant clones).
+        for project in self._projects:
+            project.run_base_role.grant_pass_role(fn.grant_principal)
+
+    def _deny_unsafe_registrations(self, fn: lambda_.Function) -> None:
+        """Deny `fn` registering any job definition that is privileged or names an image outside
+        the tenant's registry, whichever allow (`build_variants`, `launch`) lets it register.
+        Called by both, so each is complete on its own (IAM merges the repeated denies)."""
+        # The compute environments are shared by every project (and their hosts refuse privileged
+        # containers anyway, ComputeStack._host_user_data): no definition `fn` registers, task or
+        # coordinator variant, is privileged.
+        job_definitions = batch_arn(self._stack, "job-definition", "*")
+        fn.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.DENY,
+                actions=["batch:RegisterJobDefinition"],
+                resources=[job_definitions],
+                conditions={"Bool": {"batch:Privileged": "true"}},
+            )
+        )
+        # Every image a definition it registers names is in this account's registry, in the
+        # deploy's region: tasks run workflow images imported or built into the workflow and
+        # builds repositories (a run's image map is strict, so no task pulls from elsewhere), and
+        # the generic worker and the coordinator variants are the coordinator repository's. A
+        # definition naming no image (the key absent) matches the negated condition, so it is
+        # refused too.
+        stack = self._stack
+        registry = f"{stack.account}.dkr.ecr.{stack.region}.{stack.url_suffix}/*"
+        fn.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.DENY,
+                actions=["batch:RegisterJobDefinition"],
+                resources=[job_definitions],
+                conditions={"StringNotLike": {"batch:Image": registry}},
+            )
+        )
