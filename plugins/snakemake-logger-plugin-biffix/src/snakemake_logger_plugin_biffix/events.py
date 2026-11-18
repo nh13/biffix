@@ -56,6 +56,7 @@ def task_created(
     tkey: str,
     group: str | None = None,
     deps: list[str] | None = None,
+    image: str | None = None,
 ) -> dict[str, object]:
     body: dict[str, object] = {"kind": "task_created", "task_key": tkey}
     if group is not None:
@@ -64,6 +65,10 @@ def task_created(
     if deps:
         # The in-run tasks that produced this task's inputs (its upstream), sorted for stability.
         body["deps"] = sorted(set(deps))
+    if image:
+        # The container a task the engine runs itself (a single-job run's) runs in, as the run's
+        # image map names it; a Batch job's is on its task_submitted instead.
+        body["image"] = image
     return _envelope(ts, run_id, body)
 
 

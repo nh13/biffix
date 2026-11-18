@@ -53,6 +53,11 @@ pub struct TaskProjection {
     /// The in-run tasks this one depends on (produced its inputs), from `task_created.deps`. Folded
     /// as a set-union, so a redelivered or reordered `task_created` changes nothing.
     pub deps: std::collections::BTreeSet<String>,
+    /// The image the engine said the task runs in, from `task_created.image` (a task the engine
+    /// runs itself, which has no `task_submitted` to name one). Set-once; the lexicographic min on
+    /// a conflict, so it is order-independent. Read through [`TaskProjection::image`], where an
+    /// attempt's image wins over it.
+    created_image: Option<String>,
     /// The engine's `failed` verdicts on this task's attempts (`engine_task_verdict`), as a set.
     /// Evaluated against the attempts when the task is read ([`TaskProjection::rejection`]), never
     /// applied to them as they fold, so the outcome is a pure function of the observed event set
@@ -109,6 +114,7 @@ impl TaskProjection {
             cached: false,
             group: None,
             deps: std::collections::BTreeSet::new(),
+            created_image: None,
             verdicts: Vec::new(),
         }
     }
@@ -148,11 +154,19 @@ impl TaskProjection {
     }
 
     /// The container image the task ran in: its display attempt's, else the least any attempt
-    /// recorded. `None` when no `task_submitted` named one.
+    /// recorded (a Batch job's image, from its `task_submitted`), else the one its `task_created`
+    /// named (a task the engine ran itself). `None` when none named one.
     pub fn image(&self) -> Option<&str> {
         self.display_attempt()
             .and_then(|a| a.image.as_deref())
             .or_else(|| self.attempts.values().filter_map(|a| a.image.as_deref()).min())
+            .or(self.created_image.as_deref())
+    }
+
+    /// Record the image `task_created` named (see `created_image`). Deterministic under any
+    /// order: the lexicographic min when one is already set.
+    pub(super) fn set_created_image(&mut self, image: &str) {
+        keep_min(&mut self.created_image, Some(image));
     }
 
     /// Latch the cache-hit flag on (a `task_cached` event). Monotonic — never clears — so the

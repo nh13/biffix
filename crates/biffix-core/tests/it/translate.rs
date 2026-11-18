@@ -396,6 +396,7 @@ fn task_created_carries_its_deps_and_defaults_to_none() {
         EventData::TaskCreated {
             group: Some("merge".into()),
             deps: vec!["align:A".into(), "align:B".into()],
+            image: None,
         }
     );
     let without: EngineEvent = serde_json::from_value(serde_json::json!({
@@ -404,8 +405,69 @@ fn task_created_carries_its_deps_and_defaults_to_none() {
     .unwrap();
     assert_eq!(
         translate::from_engine(EventSource::Snakemake, &without).data,
-        EventData::TaskCreated { group: None, deps: vec![] }
+        EventData::TaskCreated { group: None, deps: vec![], image: None }
     );
+}
+
+#[test]
+fn task_created_carries_the_image_a_local_task_runs() {
+    let ev: EngineEvent = serde_json::from_value(serde_json::json!({
+        "schema_version": 1, "ts": 1.0, "run_id": "r1",
+        "kind": "task_created", "task_key": "align", "group": "align",
+        "image": "123.dkr.ecr.us-east-1.amazonaws.com/biffix/wf/align@sha256:a"
+    }))
+    .unwrap();
+    assert_eq!(
+        translate::from_engine(EventSource::Nextflow, &ev).data,
+        EventData::TaskCreated {
+            group: Some("align".into()),
+            deps: vec![],
+            image: Some("123.dkr.ecr.us-east-1.amazonaws.com/biffix/wf/align@sha256:a".into()),
+        }
+    );
+}
+
+#[test]
+fn task_created_distinct_images_survive_dedup_and_fold_identically_in_any_arrival_order() {
+    use biffix_core::reducer::Projection;
+    use std::collections::BTreeSet;
+
+    for source in [EventSource::Nextflow, EventSource::Snakemake] {
+        let fact = |image: Option<&str>, ts: f64| {
+            let mut value = serde_json::json!({
+                "schema_version": 1, "ts": ts, "run_id": "r1",
+                "kind": "task_created", "task_key": "align", "group": "align"
+            });
+            if let Some(image) = image {
+                value["image"] = image.into();
+            }
+            translate::from_engine(source.clone(), &serde_json::from_value(value).unwrap())
+        };
+        let bare = fact(None, 1.0);
+        // Preserve the pre-image key for old plugins and image-less Batch registrations.
+        assert_eq!(bare.dedup_key, format!("{}:r1:align::task_created", source.as_str()));
+        let a = fact(Some("repo/a:1"), 3.0);
+        let b = fact(Some("repo/b:2"), 2.0);
+        assert_ne!(a.dedup_key, b.dedup_key);
+        assert_ne!(bare.dedup_key, a.dedup_key);
+        let redelivery = fact(Some("repo/a:1"), 4.0);
+        assert_eq!(a.dedup_key, redelivery.dedup_key);
+        let log = vec![bare, b, a, redelivery];
+        for arrival in crate::common::permutations(&log) {
+            // Model the log writer's uniqueness gate before applying the real translator's facts.
+            let mut seen = BTreeSet::new();
+            let retained: Vec<_> =
+                arrival.into_iter().filter(|event| seen.insert(event.dedup_key.clone())).collect();
+            assert_eq!(retained.len(), 3);
+            let mut incremental = Projection::new();
+            for event in &retained {
+                incremental.apply(event);
+            }
+            let replay = Projection::replay(&retained);
+            assert_eq!(incremental.runs, replay.runs);
+            assert_eq!(incremental.runs["r1"].tasks["align"].image(), Some("repo/a:1"));
+        }
+    }
 }
 
 // ── status → kind tables (every status, both roles) ──

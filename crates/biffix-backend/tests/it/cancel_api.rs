@@ -101,6 +101,7 @@ async fn record_preparing(events: &MemEventSink) {
             resumed_from: None,
             images: vec![],
             experiment_id: None,
+            single_job: None,
         },
     );
     events.record_all(&[preparing]).await.unwrap();

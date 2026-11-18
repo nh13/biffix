@@ -411,10 +411,13 @@ impl Projection {
         // Task-scoped engine events that carry their own task_key.
         if let Some(task) = e.task_key.clone() {
             match &e.data {
-                EventData::TaskCreated { group, deps } => {
+                EventData::TaskCreated { group, deps, image } => {
                     let tp = self.ensure_task(run, &task);
                     if let Some(g) = group {
                         tp.set_group(g);
+                    }
+                    if let Some(i) = image {
+                        tp.set_created_image(i);
                     }
                     // A task never depends on itself (a plugin mapping slip), so drop a self-edge.
                     tp.deps.extend(deps.iter().filter(|d| d.as_str() != task.as_str()).cloned());
@@ -535,6 +538,7 @@ impl Projection {
                     samples,
                     retention,
                     experiment_id,
+                    single_job,
                     ..
                 } = &**anchor;
                 // The anchor carries provenance/timing for the monitor's Runs columns. There is one
@@ -561,6 +565,7 @@ impl Projection {
                     rp.samples.clone_from(samples);
                     rp.retention.clone_from(retention);
                     rp.anchor_experiment_id.clone_from(experiment_id);
+                    rp.single_job.clone_from(single_job);
                     // Resolved params, already secret-redacted at submit (the backend's
                     // runs/submit/redaction.rs runs before the event is built), so this is safe to
                     // project and surface.
@@ -587,6 +592,7 @@ impl Projection {
                         resumed_from,
                         images: _,
                         experiment_id: _,
+                        single_job,
                     } = &**p;
                     rp.workflow_version_id = Some(workflow_version_id.clone());
                     rp.submitter = submitter.clone();
@@ -596,6 +602,7 @@ impl Projection {
                     rp.input_uris = input_uris.clone();
                     rp.output_prefix = output_prefix.clone();
                     rp.resumed_from = resumed_from.clone();
+                    rp.single_job.clone_from(single_job);
                     // Redacted at submit, like the anchor's.
                     rp.params = params.clone();
                 }

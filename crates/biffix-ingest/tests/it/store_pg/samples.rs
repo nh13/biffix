@@ -12,7 +12,7 @@ async fn each_task_s_sample_and_the_run_s_sample_counts_are_persisted() {
         1.0,
         EventSource::Snakemake,
         "dk-trim-a",
-        EventData::TaskCreated { group: Some("trim".into()), deps: vec![] },
+        EventData::TaskCreated { group: Some("trim".into()), deps: vec![], image: None },
     )
     .with_run("r1")
     .with_task("trim:lib=P07,read=R1");
@@ -35,7 +35,7 @@ async fn each_task_s_sample_and_the_run_s_sample_counts_are_persisted() {
         3.0,
         EventSource::Snakemake,
         "dk-multiqc",
-        EventData::TaskCreated { group: Some("multiqc".into()), deps: vec![] },
+        EventData::TaskCreated { group: Some("multiqc".into()), deps: vec![], image: None },
     )
     .with_run("r1")
     .with_task("multiqc");
@@ -119,7 +119,7 @@ async fn a_failed_run_counts_done_and_failed_samples_apart_and_stops_the_rest() 
             EventSource::Snakemake,
             &format!("dk-c{i}"),
             "r1",
-            EventData::TaskCreated { group: Some(group.into()), deps: vec![] },
+            EventData::TaskCreated { group: Some(group.into()), deps: vec![], image: None },
         )
         .with_task(key);
         let sub = task_submitted(ts + 0.1, &format!("dk-s{i}"), "r1", key, &job);
@@ -149,7 +149,7 @@ async fn a_failed_run_counts_done_and_failed_samples_apart_and_stops_the_rest() 
         EventSource::Snakemake,
         "dk-r2",
         "r2",
-        EventData::TaskCreated { group: Some("multiqc".into()), deps: vec![] },
+        EventData::TaskCreated { group: Some("multiqc".into()), deps: vec![], image: None },
     )
     .with_task("multiqc");
     log.push(study);

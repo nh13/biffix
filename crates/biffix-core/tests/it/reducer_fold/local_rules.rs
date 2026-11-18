@@ -88,7 +88,7 @@ fn run_dag_and_group_fold_as_sets() {
         run_level(
             3.0,
             "r1",
-            EventData::TaskCreated { group: Some(group.to_string()), deps: vec![] },
+            EventData::TaskCreated { group: Some(group.to_string()), deps: vec![], image: None },
         )
         .with_task(task)
     };
@@ -219,4 +219,62 @@ fn a_local_failure_numbered_at_or_past_the_retry_reads_failed() {
         );
         assert_incremental_equals_replay(&log);
     }
+}
+
+fn created_with_image(ts: f64, task: &str, image: Option<&str>) -> RunEvent {
+    let mut e = run_level(
+        ts,
+        "r1",
+        EventData::TaskCreated { group: None, deps: vec![], image: image.map(str::to_string) },
+    )
+    .with_task(task);
+    e.dedup_key = format!("created-{task}-{ts}");
+    e
+}
+
+#[test]
+fn a_local_task_s_image_is_the_one_its_task_created_names_in_any_order() {
+    // A single-job run's task: the engine runs it itself, so only `task_created` names its image.
+    let log = vec![
+        run_anchor(1.0, "r1"),
+        created_with_image(2.0, "align", Some("repo/a@sha256:1")),
+        engine_succeeded(3.0, "r1", "align"),
+    ];
+    assert_incremental_equals_replay(&log);
+    let p = Projection::replay(&log);
+    assert_eq!(p.runs["r1"].tasks["align"].image(), Some("repo/a@sha256:1"));
+    // A task with no container names none.
+    let bare = Projection::replay(&[
+        created_with_image(2.0, "align", None),
+        engine_succeeded(3.0, "r1", "align"),
+    ]);
+    assert_eq!(bare.runs["r1"].tasks["align"].image(), None);
+    // Two that disagree (a plugin slip) settle on the least, whichever folds first.
+    let conflict = vec![
+        created_with_image(2.0, "align", Some("repo/b@sha256:2")),
+        created_with_image(2.5, "align", Some("repo/a@sha256:1")),
+    ];
+    assert_incremental_equals_replay(&conflict);
+    assert_eq!(
+        Projection::replay(&conflict).runs["r1"].tasks["align"].image(),
+        Some("repo/a@sha256:1")
+    );
+}
+
+#[test]
+fn a_batch_attempt_s_image_wins_over_the_one_task_created_names() {
+    let mut submitted = task_submitted(3.0, "r1", "align", 1, "job-1");
+    submitted.data = EventData::TaskSubmitted { image: Some("repo/batch@sha256:1".into()) };
+    let log = vec![created_with_image(2.0, "align", Some("repo/created@sha256:2")), submitted];
+    assert_incremental_equals_replay(&log);
+    let p = Projection::replay(&log);
+    assert_eq!(p.runs["r1"].tasks["align"].image(), Some("repo/batch@sha256:1"));
+    // An attempt that names none falls back to it.
+    let log = vec![
+        created_with_image(2.0, "align", Some("repo/created@sha256:2")),
+        task_submitted(3.0, "r1", "align", 1, "job-1"),
+    ];
+    assert_incremental_equals_replay(&log);
+    let p = Projection::replay(&log);
+    assert_eq!(p.runs["r1"].tasks["align"].image(), Some("repo/created@sha256:2"));
 }
