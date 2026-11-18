@@ -48,17 +48,22 @@ class BiffixEvents {
 
     /**
      * A logical task registered; {@code group} is its DAG node (process), {@code deps} the task keys
-     * of the in-run tasks that produced its inputs. {@code group} is omitted when null (matching the
-     * Snakemake producer's shape for the same wire kind rather than emitting {@code group: null}),
-     * {@code deps} when empty; deps are sorted and de-duplicated.
+     * of the in-run tasks that produced its inputs, {@code image} the container a task Nextflow runs
+     * itself (the local executor, not Batch) runs in, as the run's image map names it. {@code group}
+     * is omitted when null (matching the Snakemake producer's shape for the same wire kind rather
+     * than emitting {@code group: null}), {@code deps} when empty, {@code image} when null; deps are
+     * sorted and de-duplicated.
      */
-    static Map<String, Object> taskCreated(String taskKey, String group, Collection<String> deps) {
+    static Map<String, Object> taskCreated(String taskKey, String group, Collection<String> deps, String image = null) {
         final Map<String, Object> body = [kind: 'task_created', task_key: taskKey] as Map<String, Object>
         if (group != null) {
             body.group = group
         }
         if (deps) {
             body.deps = new TreeSet<String>(deps) as List<String>
+        }
+        if (image != null) {
+            body.image = image
         }
         return body
     }

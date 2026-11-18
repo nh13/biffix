@@ -173,6 +173,7 @@ async fn task_deps_are_persisted_on_the_task_row() {
         EventData::TaskCreated {
             group: Some("merge".into()),
             deps: vec!["align:B".into(), "align:A".into()],
+            image: None,
         },
     )
     .with_run("r1")
@@ -268,6 +269,7 @@ async fn a_run_with_many_tasks_upserts_every_task_row_and_its_detail() {
             EventData::TaskCreated {
                 group: Some("align".into()),
                 deps: if i == 0 { vec![] } else { vec![format!("t{}", i - 1)] },
+                image: None,
             },
         )
         .with_run("r-many")

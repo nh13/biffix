@@ -12,7 +12,7 @@ classes, against each pinned 26.x release and its nf-amazon (3.9 and 3.12).
 
 ## What it does
 
-The plugin has three extension points:
+The plugin has four extension points:
 
 - **`BiffixObserver`** (a `TraceObserverV2`, registered by `BiffixObserverFactory`) reports the
   run and task lifecycle as biffix engine events. It POSTs them in batches to the biffix ingest
@@ -21,7 +21,9 @@ The plugin has three extension points:
   through ingest when the run exits, so an event the live POST drops still arrives (ingest dedupes
   the repeats). For a task on AWS Batch it emits `task_submitted` with the Batch job id, and AWS
   EventBridge supplies the terminal state; for a task that never reached Batch (the `local`
-  executor, or a failed submit) it emits the terminal event itself.
+  executor, or a failed submit) it emits the terminal event itself. A task's image is on its
+  `task_submitted`, or, for a task the `local` executor runs in a container (every task of a
+  single-job run), on its `task_created`.
 - **`BiffixContainerResolver`** runs each task on the tenant's copy of its container. When
   `BIFFIX_IMAGE_MAP_FILE` is set, every process `container` is looked up in that run's image map,
   and a task whose image is not in the map fails instead of pulling from a public registry. The
@@ -41,9 +43,17 @@ The plugin has three extension points:
   Fusion, Fargate, `aws.batch.executionRole`, or the `awsbatch/consumableResources` hint. Options
   nf-amazon ignores on AWS Batch (such as `--gpus`), and Docker's `docker.runOptions`, are
   unaffected.
+- **`BiffixLocalExecutor`** is Nextflow's `local` executor under the same name. It launches each
+  script task without `BIFFIX_INGEST_TOKEN` in its environment: Nextflow starts a local task's
+  `.command.run` with the whole coordinator environment, and a `beforeScript` (or the task's own
+  shell, outside any container) could print the token into `.command.log`, which the coordinator
+  uploads when a task fails. The observer keeps the token it read at startup, and a native `exec:`
+  task, which runs in the Nextflow process, is unchanged. This is not isolation from workflow code
+  sharing the coordinator's process and user.
 
 Outside a biffix run (none of the variables below set) the plugin changes nothing: the observer
-is inert, the resolver defers to Nextflow's, and the executor behaves exactly as nf-amazon's.
+is inert, the resolver defers to Nextflow's, the AWS Batch executor behaves exactly as
+nf-amazon's, and the local executor as Nextflow's (there is no token to keep out).
 
 ## How biffix loads it
 
@@ -75,6 +85,10 @@ The plugin reads environment variables, which the biffix coordinator sets for ea
 | `BIFFIX_EVENT_FILE` | observer | Name of the durable events file, relative to the launch directory (default `.biffix_events.jsonl`). |
 | `BIFFIX_IMAGE_MAP_FILE` | container resolver | Path of the run's image map: a JSON object from each declared image reference to the image to run. |
 | `BIFFIX_JOB_DEFINITION_MAP_FILE` | executor | Path of the run's job definition map: a JSON object from each tenant image (as the image map names it) to the ARN, with revision, of the task job definition the backend registered for it. Read once, when the executor starts; a missing or malformed file stops the run. |
+| `BIFFIX_EXECUTION` | observer | `single_job` for a run whose tasks all run on the coordinator's host: when the flow is created, every process, each `withName:`/`withLabel:` selector included, is set to the local executor. |
+| `BIFFIX_DRY_RUN` | observer | Any non-empty value (even `false`) marks a preview, which also forces the local executor. |
+| `BIFFIX_SINGLE_JOB_CPUS` | observer | With `BIFFIX_EXECUTION=single_job`, the most CPUs the local executor may schedule: the effective `executor.$local.cpus` is capped at it (a lower workflow limit is kept). |
+| `BIFFIX_SINGLE_JOB_TASK_MEMORY_MIB` | observer | With `BIFFIX_EXECUTION=single_job`, the memory (MiB) the local executor may schedule, the job's size less the coordinator's JVM reserve: the effective `executor.$local.memory` is capped at it. The cap applies only when both this and `BIFFIX_SINGLE_JOB_CPUS` are set. |
 
 The observer needs all three of `BIFFIX_RUN_ID`, `BIFFIX_INGEST_URL` and `BIFFIX_INGEST_TOKEN`;
 with only some of them it warns and names the missing ones.

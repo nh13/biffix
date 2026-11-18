@@ -12,16 +12,23 @@ import com.networknt.schema.SpecificationVersion
 import groovy.json.JsonOutput
 import nextflow.Session
 import nextflow.cloud.CloudSpotTerminationException
+import nextflow.container.ContainerConfig
 import nextflow.dag.DAG
 import nextflow.exception.AbortSignalException
 import nextflow.exception.MissingFileException
 import nextflow.exception.ProcessFailedException
 import nextflow.executor.Executor
+import nextflow.executor.ExecutorConfig
+import nextflow.processor.LocalPollingMonitor
+import nextflow.util.MemoryUnit
 import nextflow.processor.TaskConfig
 import nextflow.processor.TaskHandler
 import nextflow.processor.TaskId
 import nextflow.processor.TaskProcessor
 import nextflow.processor.TaskRun
+import nextflow.script.ProcessConfig
+import nextflow.script.ScriptType
+import nextflow.script.dsl.ProcessConfigBuilder
 import nextflow.script.params.FileOutParam
 import nextflow.script.params.ValueOutParam
 import nextflow.trace.TraceRecord
@@ -125,6 +132,7 @@ class BiffixObserverSpec extends Specification {
             getName() >> (opts.process ?: '')
         }
         final conf = Stub(TaskConfig) { get('previousException') >> opts.previousException }
+        final containerConfig = opts.engine ? Stub(ContainerConfig) { getEngine() >> opts.engine } : null
         final valid = (opts.validExitStatus ?: [0]) as List
         final run = Stub(TaskRun) {
             getProcessor() >> proc
@@ -138,6 +146,9 @@ class BiffixObserverSpec extends Specification {
             isSuccess(_) >> { args -> args[0] in valid }
             getContainer() >> (opts.container as String)
             getContainerFingerprint() >> (opts.fingerprint as String)
+            isContainerEnabled() >> (opts.containerEnabled as boolean)
+            getContainerConfig() >> containerConfig
+            getType() >> (opts.type ?: ScriptType.SCRIPTLET)
         }
         return Stub(TaskHandler) { getTask() >> run }
     }
@@ -156,6 +167,129 @@ class BiffixObserverSpec extends Specification {
             getError() >> error
             getUniqueId() >> UUID.fromString('3f6c2a1e-0000-4000-8000-000000000000')
         }
+    }
+
+    def "single-job and preview runs force local even through selectors and inline directives"() {
+        given:
+        final config = [process: [executor: 'awsbatch',
+            'withName:.*': [executor: 'awsbatch', cpus: 2],
+            'withName:ALIGN': [executor: 'awsbatch', memory: '1 GB'],
+            'withLabel:remote': [executor: 'awsbatch', queue: 'remote-queue']]]
+
+        when:
+        BiffixObserver.forceLocalExecutor(config, env)
+        final process = new ProcessConfig([:])
+        process.put('executor', 'awsbatch') // an inline executor directive overrides process defaults
+        process.put('label', ['remote'])
+        new ProcessConfigBuilder(process).applyConfig(config.process, 'ALIGN', 'ALIGN', 'FLOW:ALIGN')
+
+        then:
+        process.get('executor') == 'local'
+        process.get('cpus') == 2
+        process.get('memory') == '1 GB'
+        process.get('queue') == 'remote-queue'
+        config.process.executor == 'local'
+        config.process.findAll { k, v -> k.startsWith('with') }.values().every { it.executor == 'local' }
+
+        where:
+        env << [[BIFFIX_EXECUTION: 'single_job'], [BIFFIX_DRY_RUN: '1'], [BIFFIX_DRY_RUN: 'false']]
+    }
+
+    def "without a single-job or preview flag executor configuration is untouched"() {
+        given:
+        final config = [process: [executor: 'awsbatch', 'withName:ALIGN': [executor: 'awsbatch']]]
+        final original = [process: [executor: 'awsbatch', 'withName:ALIGN': [executor: 'awsbatch']]]
+
+        when:
+        BiffixObserver.forceLocalExecutor(config, [BIFFIX_EXECUTION: 'batch', BIFFIX_DRY_RUN: ''])
+
+        then:
+        config == original
+    }
+
+    def "forcing local creates a selector even when the workflow configured no process scope"() {
+        given:
+        final config = [:]
+
+        when:
+        BiffixObserver.forceLocalExecutor(config, [BIFFIX_EXECUTION: 'single_job'])
+        final process = new ProcessConfig([:])
+        process.put('executor', 'awsbatch')
+        new ProcessConfigBuilder(process).applyConfig(config.process, 'INLINE', 'INLINE', 'INLINE')
+
+        then:
+        process.get('executor') == 'local'
+    }
+
+    def "single-job budgets clamp the merged local monitor allocation, preserving lower effective limits"() {
+        given:
+        final config = [executor: executor]
+        final originalQueueSize = executor.queueSize
+
+        when:
+        BiffixObserver.forceLocalExecutor(config, [BIFFIX_EXECUTION: 'single_job',
+            BIFFIX_SINGLE_JOB_CPUS: '8', BIFFIX_SINGLE_JOB_TASK_MEMORY_MIB: '59392'])
+        final effective = new ExecutorConfig(config.executor)
+
+        then: 'the actual monitor sizing methods, not just generated defaults, see the bounded allocation'
+        effective.getExecConfigProp('local', 'cpus', 0) == wantCpus
+        (effective.getExecConfigProp('local', 'memory', 0) as MemoryUnit).toBytes() == wantMiB * 1024L * 1024L
+        LocalPollingMonitor.configCpus(effective, 'local') == wantCpus
+        LocalPollingMonitor.configMem(effective, 'local') == wantMiB * 1024L * 1024L
+        config.executor.queueSize == originalQueueSize
+
+        where:
+        executor                                                                                     || wantCpus | wantMiB
+        [:]                                                                                          || 8        | 59392
+        [cpus: 96, memory: '96 GB']                                                                   || 8        | 59392
+        [cpus: 4, memory: '32 GB']                                                                    || 4        | 32768
+        [cpus: 4, memory: '32 GB', '$local': [cpus: 96, memory: '96 GB'], queueSize: 17]               || 8        | 59392
+        [cpus: 96, memory: '96 GB', '$local': [cpus: 2, memory: '16 GB']]                              || 2        | 16384
+        [cpus: 4, memory: '32 GB', '$local': [cpus: 6]]                                                 || 6        | 32768
+        [cpus: 0, memory: '96 GB', '$local': [cpus: 0]]                                                 || 8        | 59392
+    }
+
+    def "preview without a single-job allocation does not change executor resource budgets"() {
+        given:
+        final config = [executor: [cpus: 96, memory: '96 GB', '$local': [cpus: 4, memory: '4 GB']]]
+        final original = new groovy.json.JsonSlurper().parseText(JsonOutput.toJson(config.executor))
+
+        when:
+        BiffixObserver.forceLocalExecutor(config, [BIFFIX_DRY_RUN: '1'])
+
+        then:
+        config.executor == original
+    }
+
+    def "a single-job budget without its CPU count forces local but leaves executor budgets alone"() {
+        given:
+        final config = [executor: [cpus: 96, memory: '96 GB']]
+
+        when:
+        BiffixObserver.forceLocalExecutor(config, [BIFFIX_EXECUTION: 'single_job',
+            BIFFIX_SINGLE_JOB_TASK_MEMORY_MIB: '59392'])
+
+        then:
+        config.process.executor == 'local'
+        config.executor == [cpus: 96, memory: '96 GB']
+    }
+
+    def "a single-job config the plugin cannot bound still starts the run's events"() {
+        given:
+        final config = [executor: ['$local': [memory: 'not a size']]]
+        final s = Stub(Session) {
+            getConfig() >> config
+            getUniqueId() >> UUID.fromString('3f6c2a1e-0000-4000-8000-000000000000')
+        }
+        observer.environment = [BIFFIX_EXECUTION: 'single_job', BIFFIX_SINGLE_JOB_CPUS: '8',
+            BIFFIX_SINGLE_JOB_TASK_MEMORY_MIB: '59392']
+
+        when:
+        observer.onFlowCreate(s)
+
+        then: 'local is still forced, and run_started still reaches ingest'
+        config.process.executor == 'local'
+        posted.find { it.kind == 'run_started' }?.session_id == '3f6c2a1e-0000-4000-8000-000000000000'
     }
 
     def "run_started carries the session's uniqueId"() {
@@ -572,18 +706,85 @@ class BiffixObserverSpec extends Specification {
         !ofKind('task_submitted')[2].containsKey('image')
     }
 
-    def "the image a task reports is its container's identity, not the local file an engine runs"() {
-        given: 'with Apptainer the task runs a local image file, its fingerprint is the tenant reference'
+    def "a local task names its container's identity on task_created, not the image file Apptainer runs"() {
+        given: 'a single-job run: the local executor runs the task in the tenant copy\'s image file, its fingerprint the reference'
         final mapped = '123456789012.dkr.ecr.us-east-1.amazonaws.com/biffix/wf/align@sha256:' + 'a' * 64
         final sif = '/scratch/apptainer/images/' + mapped.replace(':', '-').replace('/', '-') + '.img'
         observer.imagesMapped = true
 
         when:
-        observer.onTaskSubmit(event(trace([name: 'a (1)', process: 'a', attempt: 1, native_id: 'j1', container: sif]),
-            task(name: 'a (1)', index: 1, process: 'a', executor: 'awsbatch', container: sif, fingerprint: mapped)))
+        observer.onTaskSubmit(event(trace([name: 'a (1)', process: 'a', attempt: 1, container: sif]),
+            task(name: 'a (1)', index: 1, process: 'a', executor: 'local', container: sif, fingerprint: mapped,
+                containerEnabled: true)))
+        observer.onTaskSubmit(event(trace([name: 'b (1)', process: 'b', attempt: 1]),
+            task(name: 'b (1)', index: 1, process: 'b', executor: 'local')))
+
+        then: 'no binding (it has no Batch job); a task with no container names none'
+        ofKind('task_submitted').isEmpty()
+        ofKind('task_created').collect { it.image } == [mapped, null]
+        !ofKind('task_created')[1].containsKey('image')
+    }
+
+    def "native exec tasks never report an inherited image even when Apptainer is enabled"() {
+        given:
+        observer.imagesMapped = mapped
+        final image = 'quay.io/acme/tool:1'
+
+        when:
+        observer.onTaskSubmit(event(trace([name: 'NATIVE (1)', process: 'NATIVE', container: image]),
+            task(name: 'NATIVE (1)', index: 1, process: 'NATIVE', executor: 'local',
+                type: ScriptType.GROOVY, container: image, fingerprint: image,
+                containerEnabled: true, engine: 'apptainer')))
+
+        then:
+        ofKind('task_created').size() == 1
+        !ofKind('task_created')[0].containsKey('image')
+
+        where:
+        mapped << [true, false]
+    }
+
+    def "without an image map a local task never names the image file Apptainer runs as its image"() {
+        given: 'no image map: the trace and the task carry the execution target, which may be a local file'
+        observer.imagesMapped = false
+
+        when:
+        observer.onTaskSubmit(event(trace([name: 'a (1)', process: 'a', attempt: 1, container: target]),
+            task(name: 'a (1)', index: 1, process: 'a', executor: 'local', container: target,
+                containerEnabled: true, engine: engine)))
+
+        then:
+        ofKind('task_created').collect { it.image } == [reported]
+
+        where:
+        engine        | target                                         || reported
+        'apptainer'   | '/scratch/apptainer/images/quay.io-x-y-1.0.img' || null
+        'singularity' | 'quay.io-x-y-1.0.sif'                           || null
+        'apptainer'   | './images/fastqc.sif'                          || null
+        'apptainer'   | 'file:///scratch/images/fastqc.img'             || null
+        'docker'      | 'quay.io/biocontainers/fastqc:0.12.1'           || 'quay.io/biocontainers/fastqc:0.12.1'
+        'docker'      | 'quay.io/acme/tool:release.sif'                 || 'quay.io/acme/tool:release.sif'
+        'docker'      | 'quay.io/acme/tool:release.img'                 || 'quay.io/acme/tool:release.img'
+        'docker'      | 'tool.sif'                                     || 'tool.sif'
+        'docker'      | 'file:release.sif'                             || 'file:release.sif'
+        'docker'      | 'docker://quay.io/acme/tool:release.img'        || 'docker://quay.io/acme/tool:release.img'
+        'apptainer'   | 'quay.io/acme/tool:release.sif'                 || 'quay.io/acme/tool:release.sif'
+        'singularity' | 'docker://quay.io/acme/tool:release.img'        || 'docker://quay.io/acme/tool:release.img'
+    }
+
+    def "a Batch task names its image on task_submitted only"() {
+        given:
+        final mapped = '123456789012.dkr.ecr.us-east-1.amazonaws.com/biffix/wf/align@sha256:' + 'a' * 64
+        observer.imagesMapped = true
+
+        when:
+        observer.onTaskSubmit(event(trace([name: 'a (1)', process: 'a', attempt: 1, native_id: 'j1', container: 'trace/image:old']),
+            task(name: 'a (1)', index: 1, process: 'a', executor: 'awsbatch', container: 'target/image:other', fingerprint: mapped,
+                containerEnabled: true)))
 
         then:
         ofKind('task_submitted').collect { it.image } == [mapped]
+        !ofKind('task_created')[0].containsKey('image')
     }
 
     def "without an image map a task reports its container, not another resolver's fingerprint"() {

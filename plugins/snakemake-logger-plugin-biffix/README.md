@@ -45,8 +45,9 @@ command-line option; a non-empty option wins.
 | --- | --- | --- |
 | `BIFFIX_RUN_ID` | `--logger-biffix-run-id` | The biffix run the events belong to. |
 | `BIFFIX_INGEST_URL` | `--logger-biffix-ingest-url` | Base URL of the ingest route. |
-| `BIFFIX_INGEST_TOKEN` | `--logger-biffix-ingest-token` | The run's capability token. It is a secret, so prefer the environment variable. |
+| `BIFFIX_INGEST_TOKEN` | `--logger-biffix-ingest-token` | The run's capability token. It is a secret, so prefer the environment variable. The handler removes it from Snakemake's environment once read, so jobs and workflow code that read the variable see it unset. |
 | `BIFFIX_EVENT_FILE` | `--logger-biffix-event-file` | Name of the durable events file, relative to the directory Snakemake starts in (default `.biffix_events.jsonl`). |
+| `BIFFIX_TASK_IMAGES_FILE` | none | Set by the coordinator in a single-job run only: path of a JSON object from each rule name to the image its jobs run in (as the run's image map names it). Each job's `task_created` names its rule's image; a rule the file lacks ran without a container. Read once, at the first job; a missing or unreadable file means no images. |
 
 Snakemake's own derived variables (`SNAKEMAKE_LOGGER_BIFFIX_*`) are not read; the `BIFFIX_*` names
 are the only environment channel.

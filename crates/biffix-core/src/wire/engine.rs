@@ -57,6 +57,10 @@ pub enum EngineBody {
         /// Task keys of the in-run tasks that produced this task's inputs (its upstream).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         deps: Vec<String>,
+        /// The container image a task the engine runs itself (not on Batch) runs in, as the run's
+        /// image map names it (not the local image file the engine may run). Optional + additive.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        image: Option<String>,
     },
     /// An attempt was submitted to Batch — binds `batch_job_id → (run_id, task_key)`.
     TaskSubmitted {

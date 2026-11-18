@@ -13,6 +13,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.function.LongSupplier
 import nextflow.Session
 import nextflow.exception.AbortSignalException
+import nextflow.executor.ExecutorConfig
+import nextflow.util.MemoryUnit
+import nextflow.script.ScriptType
 import nextflow.extension.FilesEx
 import nextflow.processor.TaskHandler
 import nextflow.script.params.FileOutParam
@@ -130,6 +133,10 @@ class BiffixObserver implements TraceObserverV2 {
      */
     @PackageScope
     boolean imagesMapped = System.getenv(BiffixContainerResolver.MAP_ENV) as boolean
+
+    /** The environment single-job and preview settings are read from at flow creation. Test seam. */
+    @PackageScope
+    Map<String, String> environment = System.getenv()
 
     BiffixObserver() {
         this(
@@ -314,6 +321,44 @@ class BiffixObserver implements TraceObserverV2 {
             log.debug("nf-biffix: could not read the task's container: ${e.message}")
             return null
         }
+    }
+
+    /**
+     * The image a task the local executor runs (in a single-job run, every task) runs in, as
+     * {@link #imageOf} gives it: the tenant reference, not the local image file Apptainer runs. Null
+     * for a task that runs without a container.
+     */
+    @CompileDynamic
+    private static String localImageOf(TraceRecord trace, TaskHandler handler, boolean mapped) {
+        try {
+            if (handler?.task?.type == ScriptType.GROOVY || !handler?.task?.isContainerEnabled()) {
+                return null
+            }
+        } catch (Throwable e) {
+            log.debug("nf-biffix: could not tell whether the task runs in a container: ${e.message}")
+            return null
+        }
+        final image = imageOf(trace, handler, mapped)
+        // Without the map's fingerprint the trace and the task carry the execution target, which
+        // for Apptainer can be the local image file: that names no image, so none is reported.
+        final engine = handler?.task?.containerConfig?.engine
+        return isLocalImageFile(image, engine) ? null : image
+    }
+
+    /**
+     * Whether {@code target} is a local image path rather than a registry reference. A suffix alone
+     * only identifies a file for image-file engines: Docker image names and tags can end in it too.
+     */
+    @PackageScope
+    static boolean isLocalImageFile(String target, String engine) {
+        if (!target) {
+            return false
+        }
+        if (target.startsWith('/') || target.startsWith('./') || target.startsWith('../') || target.startsWith('file://')) {
+            return true
+        }
+        return engine in BiffixContainerResolver.IMAGE_FILE_ENGINES && !target.contains(':') &&
+            (target.endsWith('.img') || target.endsWith('.sif'))
     }
 
     /** Exceptions Nextflow raises for an infrastructure failure it re-runs at the same attempt. */
@@ -655,10 +700,69 @@ class BiffixObserver implements TraceObserverV2 {
         return str(trace?.get('native_id'))
     }
 
+    /**
+     * Force every process onto the coordinator for a single-job run or preview. Selectors override
+     * inline directives and are applied in insertion order, so changing only the default or adding
+     * a match-all selector is insufficient: every existing selector must agree too. A nonempty dry
+     * run flag matches the coordinator shell's convention (even the string {@code false}).
+     */
+    @PackageScope
+    static void forceLocalExecutor(Map config, Map<String, String> env) {
+        if (env.get('BIFFIX_EXECUTION') != 'single_job' && !env.get('BIFFIX_DRY_RUN')) {
+            return
+        }
+        Map process = config.get('process') instanceof Map ? (Map) config.get('process') : [:]
+        config.put('process', process)
+        process.put('executor', 'local')
+        process.each { key, value ->
+            if ((key.toString().startsWith('withName:') || key.toString().startsWith('withLabel:')) && value instanceof Map) {
+                ((Map) value).put('executor', 'local')
+            }
+        }
+        Map all = process.get('withName:.*') instanceof Map ? (Map) process.get('withName:.*') : [:]
+        all.put('executor', 'local')
+        process.put('withName:.*', all)
+        if (env.get('BIFFIX_EXECUTION') == 'single_job' && env.get('BIFFIX_SINGLE_JOB_CPUS')
+                && env.get('BIFFIX_SINGLE_JOB_TASK_MEMORY_MIB')) {
+            clampLocalResources(config, env)
+        }
+    }
+
+    /**
+     * Bound Nextflow's own local scheduling pool after config merge. Its ExecutorConfig gives
+     * {@code $local} precedence over generic settings (not the minimum of the two); writing the
+     * bounded effective values there preserves lower workflow limits and prevents an override
+     * from restoring the host's full memory, including the coordinator's JVM reserve.
+     */
+    private static void clampLocalResources(Map config, Map<String, String> env) {
+        final maxCpus = Integer.parseInt(env.get('BIFFIX_SINGLE_JOB_CPUS'))
+        final maxMemory = Long.parseLong(env.get('BIFFIX_SINGLE_JOB_TASK_MEMORY_MIB')) * 1024L * 1024L
+        Map executor = config.get('executor') instanceof Map ? (Map) config.get('executor') : [:]
+        config.put('executor', executor)
+        final effective = new ExecutorConfig(executor)
+        final cpus = effective.getExecConfigProp('local', 'cpus', maxCpus) as int
+        final memory = effective.getExecConfigProp('local', 'memory', maxMemory) as MemoryUnit
+        Map local = executor.get('$local') instanceof Map ? (Map) executor.get('$local') : [:]
+        // Zero CPUs means "use the host" to Nextflow, not a lower limit.
+        local.put('cpus', cpus == 0 ? maxCpus : Math.min(cpus, maxCpus))
+        local.put('memory', new MemoryUnit(Math.min(memory.toBytes(), maxMemory)))
+        executor.put('$local', local)
+    }
+
     @Override
     void onFlowCreate(Session session) {
         try {
             this.session = session
+            // Session.start notifies us before processes are created, even without ingest config.
+            if (session != null) {
+                // Its own guard: a config this cannot bound must not also stop the run's events.
+                // Nextflow reads the same values when it creates the executor and reports them.
+                try {
+                    forceLocalExecutor(session.config, environment)
+                } catch (Throwable t) {
+                    log.warn("nf-biffix: could not apply the single-job executor settings (swallowed): ${t.message}")
+                }
+            }
             if (!active) {
                 final warning = configWarning(System.getenv())
                 if (warning) {
@@ -700,7 +804,9 @@ class BiffixObserver implements TraceObserverV2 {
             // local. The group is what rolls task states up onto the graph node; task_submitted
             // carries no group, so a Batch task would otherwise never appear under its process.
             // Mirrors the Snakemake plugin, which emits task_created (with the rule) for every job.
-            emit(BiffixEvents.taskCreated(tkey, processGroup(trace, handler), taskDeps(handler, tkey)))
+            // A local task has no task_submitted, so this names the image it runs in.
+            final image = isBatchTask(handler) ? null : localImageOf(trace, handler, imagesMapped)
+            emit(BiffixEvents.taskCreated(tkey, processGroup(trace, handler), taskDeps(handler, tkey), image))
             // A retry (attempt > 1) is a distinct lifecycle event, for any executor. Usually already
             // announced when the failed attempt completed (onTaskComplete); this repeats it (it
             // dedupes on next_attempt) for a retry that announcement missed.
