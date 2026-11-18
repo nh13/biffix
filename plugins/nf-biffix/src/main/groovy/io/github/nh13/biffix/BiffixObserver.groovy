@@ -123,6 +123,14 @@ class BiffixObserver implements TraceObserverV2 {
     @PackageScope
     Integer coordinatorAttempt = batchAttempt(System.getenv('AWS_BATCH_JOB_ATTEMPT'))
 
+    /**
+     * Whether the run maps its images ({@link BiffixContainerResolver#MAP_ENV}): only then is a
+     * task's container fingerprint the image it runs (the resolver's), rather than another
+     * resolver's key (Wave's is a hash). Test seam.
+     */
+    @PackageScope
+    boolean imagesMapped = System.getenv(BiffixContainerResolver.MAP_ENV) as boolean
+
     BiffixObserver() {
         this(
             System.getenv('BIFFIX_RUN_ID'),
@@ -278,12 +286,24 @@ class BiffixObserver implements TraceObserverV2 {
     }
 
     /**
-     * The container the task runs, as Nextflow resolved it (in a biffix run the tenant copy
-     * {@link BiffixContainerResolver} mapped it to): the trace's {@code container}, else the task's.
-     * Null when neither is known.
+     * The image the task runs (in a biffix run the tenant copy {@link BiffixContainerResolver}
+     * mapped it to): when the run maps its images ({@code mapped}), the task's container
+     * fingerprint, which is that reference whatever form the engine runs it in (for Apptainer, a
+     * local image file); else the trace's {@code container}, else the task's. Null when none is
+     * known.
      */
     @CompileDynamic
-    private static String imageOf(TraceRecord trace, TaskHandler handler) {
+    private static String imageOf(TraceRecord trace, TaskHandler handler, boolean mapped) {
+        if (mapped) {
+            try {
+                final fingerprint = str(handler?.task?.containerFingerprint)
+                if (fingerprint) {
+                    return fingerprint
+                }
+            } catch (Throwable e) {
+                log.debug("nf-biffix: could not read the task's container fingerprint: ${e.message}")
+            }
+        }
         final fromTrace = str(trace?.get('container'))
         if (fromTrace) {
             return fromTrace
@@ -673,7 +693,7 @@ class BiffixObserver implements TraceObserverV2 {
                     // The binding first: it binds this Batch job id to (run_id, task_key) so the
                     // EventBridge terminal for that job folds into this task. The
                     // terminal comes from EventBridge, not here. It names the image the job runs.
-                    emit(BiffixEvents.taskSubmitted(tkey, attempt, nativeId, imageOf(trace, handler)))
+                    emit(BiffixEvents.taskSubmitted(tkey, attempt, nativeId, imageOf(trace, handler, imagesMapped)))
                 }
             }
             // Always record the task exists + its DAG group (process), for EVERY task — Batch or

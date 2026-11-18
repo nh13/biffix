@@ -137,6 +137,7 @@ class BiffixObserverSpec extends Specification {
             getExitStatus() >> (opts.exitStatus as Integer)
             isSuccess(_) >> { args -> args[0] in valid }
             getContainer() >> (opts.container as String)
+            getContainerFingerprint() >> (opts.fingerprint as String)
         }
         return Stub(TaskHandler) { getTask() >> run }
     }
@@ -569,6 +570,33 @@ class BiffixObserverSpec extends Specification {
         then: 'omitted when neither knows it'
         ofKind('task_submitted').collect { it.image } == [mapped, mapped, null]
         !ofKind('task_submitted')[2].containsKey('image')
+    }
+
+    def "the image a task reports is its container's identity, not the local file an engine runs"() {
+        given: 'with Apptainer the task runs a local image file, its fingerprint is the tenant reference'
+        final mapped = '123456789012.dkr.ecr.us-east-1.amazonaws.com/biffix/wf/align@sha256:' + 'a' * 64
+        final sif = '/scratch/apptainer/images/' + mapped.replace(':', '-').replace('/', '-') + '.img'
+        observer.imagesMapped = true
+
+        when:
+        observer.onTaskSubmit(event(trace([name: 'a (1)', process: 'a', attempt: 1, native_id: 'j1', container: sif]),
+            task(name: 'a (1)', index: 1, process: 'a', executor: 'awsbatch', container: sif, fingerprint: mapped)))
+
+        then:
+        ofKind('task_submitted').collect { it.image } == [mapped]
+    }
+
+    def "without an image map a task reports its container, not another resolver's fingerprint"() {
+        given: "Wave's fingerprint is a hash of the container, not an image"
+        final image = 'quay.io/biocontainers/fastqc:0.12.1'
+        observer.imagesMapped = false
+
+        when:
+        observer.onTaskSubmit(event(trace([name: 'a (1)', process: 'a', attempt: 1, native_id: 'j1', container: image]),
+            task(name: 'a (1)', index: 1, process: 'a', executor: 'awsbatch', container: image, fingerprint: 'a' * 32)))
+
+        then:
+        ofKind('task_submitted').collect { it.image } == [image]
     }
 
     // ---- execution ids ---------------------------------------------------------------------------

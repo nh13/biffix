@@ -24,7 +24,11 @@ The plugin has three extension points:
   executor, or a failed submit) it emits the terminal event itself.
 - **`BiffixContainerResolver`** runs each task on the tenant's copy of its container. When
   `BIFFIX_IMAGE_MAP_FILE` is set, every process `container` is looked up in that run's image map,
-  and a task whose image is not in the map fails instead of pulling from a public registry.
+  and a task whose image is not in the map fails instead of pulling from a public registry. The
+  tenant copy then goes through Nextflow's own resolution, so with Apptainer (a biffix single-job
+  run) the task runs the local image file the coordinator converted into `apptainer.libraryDir`,
+  while its identity (the container fingerprint, which keys the task hash and the image the task
+  reports) stays the tenant reference.
 - **`BiffixAwsBatchExecutor`** is nf-amazon's AWS Batch executor under the same `awsbatch` name
   (it wins the name whichever plugin loads first). In a biffix run it registers no job
   definitions: each task is submitted to the task job definition the biffix backend registered
