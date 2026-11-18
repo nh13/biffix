@@ -84,6 +84,17 @@
         "$ref": "#/$defs/FormSection"
       }
     },
+    "single_job": {
+      "description": "Runs may execute as one Batch job on one host, by default on this queue-class and at this\nsize (`single_job:` in `biffix.yaml`; see [`crate::single_job`]). Absent ⇒ they may not.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SingleJobSpec"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "title": {
       "type": [
         "string",
@@ -726,6 +737,44 @@
         "field",
         "values"
       ]
+    },
+    "SingleJobSpec": {
+      "description": "How a run executes as one job: which single-job queue-class and what size. Every field is\noptional; a size is either `instance` or both `cpus` and `memory_gib`.",
+      "type": "object",
+      "properties": {
+        "cpus": {
+          "description": "The vCPUs the run needs (with `memory_gib`).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "instance": {
+          "description": "An exact instance type of that queue-class (`c6id.8xlarge`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "memory_gib": {
+          "description": "The memory the run needs, in GiB (with `cpus`).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "queue_class": {
+          "description": "The single-job queue-class (a deploy's `single_job: true` queue-class) to run on; absent ⇒\nthe deploy's first.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
     },
     "WidgetHint": {
       "description": "The semantic widget hint. Keeps the UI decoupled from schema dialects.",
