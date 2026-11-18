@@ -2,9 +2,10 @@
 # biffix coordinator: the Snakemake engine. Sourced by entrypoint.sh; defines functions only.
 #   Reads: WORK, SRC, CONFIG, STORE, LIB_DIR, SM_META_URI, SM_META_FINGERPRINT, the run's BIFFIX_*
 #          env, the resolved SNAKEMAKE_AWS_BATCH_JOB_QUEUE / _ROLE, BIFFIX_JOB_DEFINITION_MAP_FILE
-#          and QUEUE_SELECTORS_FILE.
+#          and QUEUE_SELECTORS_FILE; for a single-job run (lib/single_job.sh) SCRATCH, SJ_CPUS,
+#          SJ_TASK_MEMORY_MIB, SJ_IMAGES, SJ_BIN, BIFFIX_ENGINE_VERSION and BIFFIX_DRY_RUN.
 #   Sets:  rc (Snakemake's exit status), SNAKEMAKE_AWS_BATCH_JOB_TAGS, SNAKEMAKE_OUTPUT_CACHE,
-#          SM_META_RESTORE_FAILED.
+#          SM_META_RESTORE_FAILED; for a single-job run PATH and BIFFIX_TASK_IMAGES_FILE.
 
 # Snakemake's run metadata (.snakemake/metadata + incomplete markers) is what lets a run see that a
 # rule's code, params, inputs or software changed; without it Snakemake keeps any existing output.
@@ -72,7 +73,8 @@ snakemake_job_tags() {
   printf '%s' "$tags"
 }
 
-# Run Snakemake with the AWS Batch executor + the biffix logger plugin.
+# Run Snakemake with the AWS Batch executor + the biffix logger plugin; a single-job run with its
+# jobs on this host instead (snakemake_single_job_args).
 run_snakemake() {
   local SNAKEFILE="$SRC/$BIFFIX_ENTRYPOINT"
   # `--retries` re-submits a fresh Batch job on a worker failure (a reclaim included; see "Spot
@@ -127,10 +129,110 @@ run_snakemake() {
       echo "biffix-coordinator: no rule is marked cache:; running without the cache" >&2
     fi
   fi
-  local -a ARGS=(
+  local -a ARGS=(--configfile "$CONFIG" "${CACHE_ARGS[@]}")
+  if is_single_job; then
+    snakemake_single_job_args
+  else
+    snakemake_batch_args
+  fi
+  ARGS+=(
+    # What makes Snakemake re-run a job whose output exists: not a change of its software
+    # environment, whose recorded hash differs between the two modes (tasks mode, which passes no
+    # --sdm, records a constant one; a single-job run, with --sdm apptainer, hashes each job's
+    # image), so either mode's metadata serves a resume or a later run into the same output prefix.
+    # The cost: a single-job run does not re-run a job only because its image changed.
+    --rerun-triggers mtime params input code
+    --default-storage-provider s3
+    --default-storage-prefix "$STORE"
+    --logger biffix
+    --retries "$RETRIES"
+    "${KEEP_GOING_ARGS[@]}"
+    --verbose
+    --rerun-incomplete
+  )
+  [ -z "${BIFFIX_DRY_RUN:-}" ] || ARGS+=(--dry-run)
+  [ -z "${BIFFIX_TARGET:-}" ] || ARGS+=("$BIFFIX_TARGET")
+  # The command line, for the run's logs (lib/logs.sh): it names files, not their contents.
+  printf '%s\n' "${ARGS[@]}" > "$WORK/snakemake.args"
+  start_logs_sync
+  restore_snakemake_metadata
+  start_metadata_sync
+  # From the source root, as `snakemake` from a checkout: Snakemake reads a workflow's `configfile:`
+  # (the standard layout's config/config.yaml), and every other relative path (a target included),
+  # against its working directory. From anywhere else that configfile is not found and, since
+  # --configfile is given, skipped without a word, so the run went on with biffix's params alone.
+  # The params still override it: a --configfile outranks the workflow's own. Its .snakemake (the
+  # metadata above) and the logger's events.jsonl are kept there too.
+  run_engine INT run_in "$SRC" snakemake "${ARGS[@]}"
+  stop_metadata_sync
+  sync_snakemake_metadata final
+}
+
+# snakemake_single_job_args: run_snakemake's ARGS for a single-job run (lib/single_job.sh): every
+# job runs on this host, in the image its job on AWS Batch would run, from the image files the
+# coordinator converted before the run. Reads run_snakemake's SNAKEFILE.
+snakemake_single_job_args() {
+  # A wrapper Snakefile beside the workflow's (so its relative includes and scripts resolve as
+  # before) includes it, then sets every rule's container, module rules' included, as the AWS Batch
+  # executor picks a job's image: the rule's aws_batch_container_image through the image map, else
+  # the version's default image (none: the rule runs in this container, the image its Batch job
+  # would have run). A rule's own `container:` is ignored, as on AWS Batch. An image the map does
+  # not name fails the run before any job starts, so no task pulls one (single_job.py
+  # set_rule_containers). It also writes each rule's image to BIFFIX_TASK_IMAGES_FILE, for the
+  # logger plugin to record each task's image.
+  local snakefile check=check
+  snakefile="$(dirname "$SNAKEFILE")/.biffix-container.smk"
+  [ -z "${BIFFIX_DRY_RUN:-}" ] || check=no-check
+  export BIFFIX_TASK_IMAGES_FILE="$WORK/task-images.json"
+  run_setup_step "Writing the Snakefile that sets each rule's image failed" \
+    python3 "$LIB_DIR/single_job.py" snakefile-wrapper "$SNAKEFILE" "$snakefile" \
+    "${BIFFIX_IMAGE_MAP_FILE:-}" "$SJ_IMAGES" "${BIFFIX_WORKER_IMAGE:-}" \
+    "$BIFFIX_TASK_IMAGES_FILE" "$check"
+  cp "$snakefile" "$WORK/Snakefile.biffix"
+  # Snakemake schedules its jobs within the job's size less its own reserve (single_job_memory), by
+  # their memory resource.
+  local -a memory
+  mapfile -t memory < <(snakemake_memory_resources "$BIFFIX_ENGINE_VERSION" "$SJ_TASK_MEMORY_MIB")
+  ARGS+=(
+    --snakefile "$snakefile"
+    --cores "$SJ_CPUS"
+    --resources "${memory[@]}"
+    # Every job in its image, through biffix's apptainer wrapper (lib/single_job.sh), from the
+    # converted image files. --cleanenv: Snakemake otherwise passes this job's environment, the
+    # run's capability token with it, into every task (a task can still read it from the
+    # engine's /proc, lib/single_job.sh); the wrapper passes a job's thread counts (OMP_NUM_THREADS
+    # and the like) through it, but no workflow `envvars:`. Its working directory (the source root,
+    # its home in the container) and the local storage are bound by Snakemake itself.
+    --sdm apptainer
+    --apptainer-prefix "$SCRATCH/apptainer/snakemake"
+    --apptainer-args=--cleanenv
+    # Inputs fetched from S3, and local copies of outputs (each still published to the run's
+    # output prefix), on the instance store.
+    --local-storage-prefix "$SCRATCH/storage"
+  )
+  export PATH="$SJ_BIN:$PATH"
+}
+
+# snakemake_memory_resources <snakemake version> <MiB>: the --resources values that cap the memory
+# of the jobs running at once at <MiB>, one per line. From 9.16.3, Snakemake reads mem_mb, mem_mib
+# and mem as one resource (a rule asking for any is capped by any) and refuses more than one of
+# them on the command line; before it, mem_mb and mem_mib are separate (a rule's mem_mb implies its
+# mem_mib, not the other way round), so both are given.
+snakemake_memory_resources() {
+  local mib=$2 major minor patch
+  IFS=. read -r major minor patch <<<"$1"
+  printf 'mem_mb=%s\n' "$((mib * 1048576 / 1000000))"
+  major=${major//[!0-9]/} minor=${minor//[!0-9]/} patch=${patch%%[!0-9]*}
+  if [ $((10#${major:-0} * 1000000 + 10#${minor:-0} * 1000 + 10#${patch:-0})) -lt 9016003 ]; then
+    printf 'mem_mib=%s\n' "$mib"
+  fi
+}
+
+# snakemake_batch_args: run_snakemake's ARGS for a run whose jobs are AWS Batch jobs. Reads
+# run_snakemake's SNAKEFILE, MAX_JOBS and CORES.
+snakemake_batch_args() {
+  ARGS+=(
     --snakefile "$SNAKEFILE"
-    --configfile "$CONFIG"
-    "${CACHE_ARGS[@]}"
     --executor aws-batch
     --aws-batch-region "$BIFFIX_REGION"
     --aws-batch-job-queue "$SNAKEMAKE_AWS_BATCH_JOB_QUEUE"
@@ -162,27 +264,7 @@ run_snakemake() {
   require_count BIFFIX_SPOT_ATTEMPTS "$SPOT_ATTEMPTS"
   ARGS+=(
     --aws-batch-spot-attempts "$SPOT_ATTEMPTS"
-    --default-storage-provider s3
-    --default-storage-prefix "$STORE"
-    --logger biffix
     --jobs "$MAX_JOBS"
     --cores "$CORES"
-    --retries "$RETRIES"
-    "${KEEP_GOING_ARGS[@]}"
-    --verbose
-    --rerun-incomplete
   )
-  [ -z "${BIFFIX_DRY_RUN:-}" ] || ARGS+=(--dry-run)
-  [ -z "${BIFFIX_TARGET:-}" ] || ARGS+=("$BIFFIX_TARGET")
-  restore_snakemake_metadata
-  start_metadata_sync
-  # From the source root, as `snakemake` from a checkout: Snakemake reads a workflow's `configfile:`
-  # (the standard layout's config/config.yaml), and every other relative path (a target included),
-  # against its working directory. From anywhere else that configfile is not found and, since
-  # --configfile is given, skipped without a word, so the run went on with biffix's params alone.
-  # The params still override it: a --configfile outranks the workflow's own. Its .snakemake (the
-  # metadata above) and the logger's events.jsonl are kept there too.
-  run_engine INT run_in "$SRC" snakemake "${ARGS[@]}"
-  stop_metadata_sync
-  sync_snakemake_metadata final
 }

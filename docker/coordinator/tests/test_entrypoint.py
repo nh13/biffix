@@ -18,6 +18,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tarfile
 import threading
 import time
@@ -40,13 +41,30 @@ printf '%s\n' "$@" > "$FAKE_ARGV"
 for v in SNAKEMAKE_AWS_BATCH_JOB_TAGS SNAKEMAKE_AWS_BATCH_CONTAINER_IMAGE_MAP NXF_UUID \
   NXF_IGNORE_RESUME_HISTORY NXF_PLUGINS_DEFAULT BIFFIX_IMAGE_MAP_FILE \
   SNAKEMAKE_AWS_BATCH_JOB_DEFINITION_MAP BIFFIX_JOB_DEFINITION_MAP_FILE \
-  SNAKEMAKE_AWS_BATCH_JOB_ROLE PWD; do
+  SNAKEMAKE_AWS_BATCH_JOB_ROLE PWD NXF_OPTS NXF_APPTAINER_NEW_PID_NAMESPACE APPTAINER_CACHEDIR \
+  APPTAINER_TMPDIR APPTAINER_DOCKER_PASSWORD BIFFIX_TASK_IMAGES_FILE PATH; do
   printf '%s=%s\n' "$v" "${!v-<unset>}"
 done > "$FAKE_ENV"
 ls .snakemake/metadata > "$FAKE_SEEN" 2>/dev/null || true
 if [ -n "${FAKE_WRITE_METADATA:-}" ]; then
   mkdir -p .snakemake/metadata && echo new > .snakemake/metadata/new-output
 fi
+# The engine's logs, its output, and a failed local task's files.
+if [ -n "${FAKE_WRITE_LOG:-}" ]; then
+  mkdir -p .snakemake/log && echo "snakemake log" > .snakemake/log/2026-11-18T000000.snakemake.log
+  [ "${1:-}" != -log ] || echo "nextflow log" > "$2"
+  echo "engine says: boom" >&2
+fi
+[ -z "${FAKE_TRACE:-}" ] || echo "task_id hash" > trace-20261118-00000000.txt
+if [ -n "${FAKE_LAST_WORDS:-}" ]; then
+  for i in $(seq 1 "$FAKE_LAST_WORDS"); do echo "engine line $i"; done
+fi
+if [ -n "${FAKE_FAILED_TASK:-}" ]; then
+  mkdir -p "$FAKE_FAILED_TASK" && echo 1 > "$FAKE_FAILED_TASK/.exitcode"
+  echo "task says: out of cheese" > "$FAKE_FAILED_TASK/.command.err"
+fi
+# What the engine sees of a single-job run's scratch root, which is cleared at exit.
+[ -z "${FAKE_KEEP:-}" ] || cp -R "$BIFFIX_SCRATCH_ROOT/." "$FAKE_KEEP/"
 if [ -n "${FAKE_WAIT_FOR_TERM:-}" ]; then
   # Records the signal that stopped it. A signal ignored when bash starts cannot be trapped, so the
   # INT trap also shows the engine was started with SIGINT at its default.
@@ -780,7 +798,11 @@ def test_nextflow_retry_defaults_rank_below_the_pipeline_s_own_config(nf_job: Jo
     config = (nf_job.work / "nextflow.config").read_text()
     assert "errorStrategy" not in config and "maxRetries" not in config
     assert nf_job.run(BIFFIX_RETRIES="0").returncode == 0
-    assert (nf_job.work / ".nextflow-home/config").read_text() == ""
+    defaults = (nf_job.work / ".nextflow-home/config").read_text()
+    assert "errorStrategy" not in defaults and "maxRetries" not in defaults
+    # biffix never turns the trace on: its task metrics need `ps` and more in every task image.
+    assert nf_job.run().returncode == 0
+    assert "trace" not in (nf_job.work / ".nextflow-home/config").read_text()
 
 
 # ── the rest of the env contract ──
@@ -1222,3 +1244,571 @@ def test_any_other_403_is_still_a_failure(sm_job: Job) -> None:
     assert "events replay chunk of 3 failed (swallowed): HTTP 403: capability token" in stderr
     assert "run cancelled" not in stderr
     assert "replayed 0/3 events" in stderr
+
+
+# ── the run's logs (both modes) ──
+
+
+def _logs(job: Job) -> dict[str, bytes]:
+    """What the run uploaded under its logs/ prefix, by name."""
+    root = job.s3 / "bucket/runs/run-test/logs"
+    if not root.exists():
+        return {}
+    return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+def test_a_nextflow_run_uploads_its_log_and_generated_config(nf_job: Job) -> None:
+    got = nf_job.run(FAKE_WRITE_LOG="1")
+    assert got.returncode == 0, got.stderr
+    logs = _logs(nf_job)
+    assert logs["nextflow.log"] == b"nextflow log\n"
+    assert logs["nextflow.config"] == (nf_job.work / "nextflow.config").read_bytes()
+    assert b"process.maxRetries" in logs["nextflow-defaults.config"]
+    # biffix asks for no trace, so there is none.
+    assert "trace.txt" not in logs
+    # A run that succeeded has no failure to explain.
+    assert "failure.txt" not in logs
+
+
+def test_a_trace_the_pipeline_turned_on_is_uploaded(nf_job: Job) -> None:
+    got = nf_job.run(FAKE_TRACE="1")
+    assert got.returncode == 0, got.stderr
+    assert _logs(nf_job)["trace.txt"] == b"task_id hash\n"
+
+
+def test_failure_txt_quotes_the_engine_s_very_last_lines(sm_job: Job) -> None:
+    # The copy of the engine's output has caught up before failure.txt is written.
+    got = sm_job.run(FAKE_LAST_WORDS="20000", FAKE_RC="2")
+    assert got.returncode == 2, got.stderr
+    failure = _logs(sm_job)["failure.txt"].decode()
+    assert failure.startswith("The engine exited with status 2.")
+    assert failure.rstrip().endswith("engine line 20000")
+    # The copy is kept to its end, not the whole output.
+    assert (sm_job.work / "engine-output.log").stat().st_size < 1024 * 1024
+
+
+def test_a_failed_snakemake_run_uploads_the_end_of_its_output(sm_job: Job) -> None:
+    got = sm_job.run(FAKE_WRITE_LOG="1", FAKE_RC="3")
+    assert got.returncode == 3, got.stderr
+    logs = _logs(sm_job)
+    assert logs["snakemake.log"] == b"snakemake log\n"
+    assert b"--executor\naws-batch\n" in logs["snakemake.args"]
+    failure = logs["failure.txt"].decode()
+    assert failure.startswith("The engine exited with status 3.")
+    assert "engine says: boom" in failure
+    # The job's own log still has all of the engine's output.
+    assert "engine says: boom" in got.stderr
+
+
+def test_a_cancelled_run_uploads_its_logs_but_no_failure(sm_job: Job) -> None:
+    rc, stderr, _ = _cancel(sm_job, FAKE_WRITE_LOG="1")
+    assert rc == 143, stderr
+    logs = _logs(sm_job)
+    assert "snakemake.log" in logs and "failure.txt" not in logs
+
+
+def test_the_logs_are_uploaded_while_the_engine_runs(nf_job: Job) -> None:
+    proc = subprocess.Popen(
+        ["bash", str(SCRIPT)],
+        env=nf_job.env(FAKE_WAIT_FOR_TERM="1", FAKE_WRITE_LOG="1", BIFFIX_LOGS_SYNC_SECS="1"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while "nextflow.log" not in _logs(nf_job):
+            assert proc.poll() is None, proc.communicate()
+            assert time.monotonic() < deadline, "no logs while the engine ran"
+            time.sleep(0.1)
+        assert not (nf_job.out / "termed").exists(), "the engine is still running"
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=30)
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+    assert proc.returncode == 143
+
+
+# ── single-job runs ──
+
+
+_APPTAINER = r"""#!/usr/bin/env bash
+case "${1:-}" in --version|version) echo "apptainer version 1.5.5"; exit 0 ;; esac
+if [ "${1:-}" = pull ]; then
+  dest=$2 ref=$3
+  printf '%s %s %s\n' "$ref" "${APPTAINER_DOCKER_USERNAME:--}" "${APPTAINER_DOCKER_PASSWORD:--}" \
+    >> "$FAKE_PULLS"
+  mkdir -p "$FAKE_RUNNING" && touch "$FAKE_RUNNING/$$"
+  ls "$FAKE_RUNNING" | wc -l | tr -d ' ' >> "$FAKE_CONCURRENCY"
+  case " ${FAKE_PULL_HANG:-} " in *" $ref "*) sleep 60 ;; esac
+  sleep "${FAKE_PULL_SECS:-0}"
+  rm -f "$FAKE_RUNNING/$$"
+  case " ${FAKE_PULL_FAIL:-} " in *" $ref "*) echo "FATAL: unauthorized: $ref"; exit 255 ;; esac
+  echo "image file of $ref" > "$dest"
+  exit 0
+fi
+printf '%s\n' "$@" "APPTAINER_BINDPATH=${APPTAINER_BINDPATH-}" \
+  "APPTAINERENV_OMP_NUM_THREADS=${APPTAINERENV_OMP_NUM_THREADS-<unset>}" > "$FAKE_APPTAINER_ARGV"
+"""
+
+ECR = "123456789012.dkr.ecr.us-test-1.amazonaws.com"
+TOOL = f"{ECR}/biffix-t/tool@sha256:{'1' * 64}"
+WORKER = f"{ECR}/biffix-t/wf@sha256:{'2' * 64}"
+PUBLIC = "quay.io/public/thing:1"
+# The file on the scratch root a run holds its lock on: all a run leaves there.
+LOCK = ".biffix-lock"
+SJ_MAP = {
+    "tool:1": TOOL,
+    "docker.io/library/tool:1": TOOL,
+    TOOL: TOOL,
+    "quay.io/public/thing:1": PUBLIC,
+    WORKER: WORKER,
+    "$default": WORKER,
+}
+
+
+@pytest.fixture(scope="session")
+def apptainer_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    bin_dir = tmp_path_factory.mktemp("fake-apptainer")
+    exe = bin_dir / "apptainer"
+    exe.write_text(_APPTAINER)
+    exe.chmod(0o755)
+    return bin_dir
+
+
+def _sif(image: str) -> str:
+    """The image file name Nextflow looks for (lib/single_job.py image_file_name)."""
+    return image.replace(":", "-").replace("/", "-") + ".img"
+
+
+class SingleJob:
+    """A Job run as a single-job run: a scratch root, a fake apptainer and ECR, and a copy of the
+    scratch root as the engine saw it (`kept`), since it is cleared at exit."""
+
+    def __init__(self, job: Job, apptainer_dir: Path):
+        self.job = job
+        self.scratch = job.root / "scratch"
+        self.kept = job.root / "kept"
+        self.scratch.mkdir()
+        # What the single-job hosts' boot script writes, outside the scratch root, once it has
+        # mounted the instance store there (the job sees it read-only).
+        self.marker = job.root / "host/instance-store"
+        self.marker.parent.mkdir()
+        self.marker.write_text("")
+        self.kept.mkdir()
+        self.apptainer_dir = apptainer_dir
+
+    def env(self, **overrides: str) -> dict[str, str]:
+        out = self.job.out
+        env = {
+            "BIFFIX_EXECUTION": "single_job",
+            "BIFFIX_SINGLE_JOB_CPUS": "8",
+            "BIFFIX_SINGLE_JOB_MEMORY_MIB": "65536",
+            "BIFFIX_SCRATCH_ROOT": str(self.scratch),
+            "BIFFIX_INSTANCE_STORE_MARKER": str(self.marker),
+            "BIFFIX_OOM_SCORE_ADJ_FILE": str(out / "oom_score_adj"),
+            # Neither is needed: no task is a Batch job.
+            "BIFFIX_QUEUE_CLASS_MAP": "",
+            "SNAKEMAKE_AWS_BATCH_JOB_ROLE": "",
+            "PATH": f"{self.apptainer_dir}:{os.environ['PATH']}",
+            "FAKE_ECR_REGISTRY": ECR,
+            "FAKE_ECR_PASSWORD": "ecr-SECRET-pw",
+            "FAKE_PULLS": str(out / "pulls"),
+            "FAKE_RUNNING": str(out / "running"),
+            "FAKE_CONCURRENCY": str(out / "concurrency"),
+            "FAKE_APPTAINER_ARGV": str(out / "apptainer-argv"),
+            "FAKE_KEEP": str(self.kept),
+        }
+        return env | overrides
+
+    def run(self, **overrides: str) -> subprocess.CompletedProcess[str]:
+        """The run, with the image map SJ_MAP."""
+        for f in ("pulls", "concurrency"):
+            (self.job.out / f).unlink(missing_ok=True)
+        self.job.put("bucket", "runs/run-test/images.json", json.dumps(SJ_MAP).encode())
+        return self.job.run(**self.env(BIFFIX_IMAGE_MAP_URI=MAP_URI, **overrides))
+
+    @property
+    def pulls(self) -> list[list[str]]:
+        path = self.job.out / "pulls"
+        return [line.split(" ") for line in path.read_text().splitlines()] if path.exists() else []
+
+
+@pytest.fixture
+def sm_single(sm_job: Job, apptainer_dir: Path) -> SingleJob:
+    return SingleJob(sm_job, apptainer_dir)
+
+
+@pytest.fixture
+def nf_single(nf_job: Job, apptainer_dir: Path) -> SingleJob:
+    return SingleJob(nf_job, apptainer_dir)
+
+
+@pytest.mark.parametrize(
+    ("env", "why"),
+    [
+        ({"BIFFIX_SINGLE_JOB_CPUS": ""}, "BIFFIX_SINGLE_JOB_CPUS required"),
+        ({"BIFFIX_SINGLE_JOB_MEMORY_MIB": ""}, "BIFFIX_SINGLE_JOB_MEMORY_MIB required"),
+        ({"BIFFIX_SINGLE_JOB_CPUS": "lots"}, "BIFFIX_SINGLE_JOB_CPUS is not a number: lots"),
+        ({"BIFFIX_SINGLE_JOB_MEMORY_MIB": "64G"}, "BIFFIX_SINGLE_JOB_MEMORY_MIB is not a number"),
+        ({"BIFFIX_SINGLE_JOB_CPUS": "0"}, "BIFFIX_SINGLE_JOB_CPUS must be at least 1"),
+        ({"BIFFIX_EXECUTION": "cluster"}, "unknown execution mode BIFFIX_EXECUTION='cluster'"),
+        ({"BIFFIX_RESUME": "1"}, "a single-job run cannot be resumed"),
+        ({"BIFFIX_SCRATCH_ROOT": "/"}, "the scratch root must be an absolute path other than /"),
+        ({"BIFFIX_SCRATCH_ROOT": "//"}, "the scratch root must be an absolute path other than /"),
+        (
+            {"BIFFIX_SCRATCH_ROOT": "/scratch/.."},
+            "the scratch root must be an absolute path other than /",
+        ),
+        ({"BIFFIX_SCRATCH_ROOT": "scratch"}, "the scratch root must be an absolute path"),
+        ({"BIFFIX_SIF_PARALLEL": "0"}, "BIFFIX_SIF_PARALLEL must be at least 1: 0"),
+        ({"BIFFIX_SIF_PARALLEL": "two"}, "BIFFIX_SIF_PARALLEL is not a number: two"),
+        ({"BIFFIX_SCRATCH_ROOT": "/nonexistent/scratch"}, "is not a writable directory"),
+        ({"PATH": os.environ["PATH"]}, "has no apptainer: a single-job run needs an x86_64"),
+        # Too small to leave the tasks a GiB beside the engine's reserve.
+        ({"BIFFIX_SINGLE_JOB_MEMORY_MIB": "3000"}, "leaves 952 MiB for tasks"),
+    ],
+)
+def test_a_misconfigured_single_job_run_fails_with_ex_config(
+    sm_single: SingleJob, env: dict[str, str], why: str
+) -> None:
+    got = sm_single.run(**env)
+    assert got.returncode == 78, got.stderr
+    assert why in got.stderr
+    assert not (sm_single.job.out / "argv").exists()
+
+
+def test_the_scratch_root_is_cleared_before_the_run_stages_anything(sm_single: SingleJob) -> None:
+    # A previous run's data on this reused host, and an image file its workflow could have changed.
+    (sm_single.scratch / "old-run/src").mkdir(parents=True)
+    (sm_single.scratch / "old-run/src/secret.txt").write_text("another project's data")
+    (sm_single.scratch / ".hidden").write_text("x")
+    images = sm_single.scratch / "apptainer/images"
+    images.mkdir(parents=True)
+    (images / _sif(TOOL)).write_text("tampered")
+    got = sm_single.run()
+    assert got.returncode == 0, got.stderr
+    kept = sm_single.kept
+    assert not (kept / "old-run").exists() and not (kept / ".hidden").exists()
+    assert (
+        kept / "apptainer/images" / _sif(TOOL)
+    ).read_text() == f"image file of docker://{TOOL}\n"
+    # And it is cleared again at exit, all but the lock file.
+    assert [p.name for p in sm_single.scratch.iterdir()] == [LOCK]
+
+
+def test_a_scratch_root_that_is_not_the_instance_store_is_refused(sm_single: SingleJob) -> None:
+    sm_single.marker.unlink()
+    (sm_single.scratch / "host-file").write_text("the host's own")
+    got = sm_single.run()
+    assert got.returncode == 78, got.stderr
+    assert f"is not the host's instance store (no marker {sm_single.marker})" in got.stderr
+    assert not (sm_single.job.out / "argv").exists()
+    # Nothing is wiped.
+    assert (sm_single.scratch / "host-file").read_text() == "the host's own"
+
+
+def test_the_scratch_root_is_canonicalized(sm_single: SingleJob) -> None:
+    # Spelled with `..` and repeated slashes, it is still the one directory that is wiped.
+    (sm_single.scratch / "old").write_text("x")
+    spelled = f"{sm_single.scratch}/../{sm_single.scratch.name}//"
+    got = sm_single.run(BIFFIX_SCRATCH_ROOT=spelled)
+    assert got.returncode == 0, got.stderr
+    assert sm_single.job.engine_env["PATH"].startswith(f"{sm_single.scratch.resolve()}/run/bin:")
+    assert [p.name for p in sm_single.scratch.iterdir()] == [LOCK]
+
+
+def test_every_task_image_is_converted_before_the_engine_starts(sm_single: SingleJob) -> None:
+    got = sm_single.run(BIFFIX_WORKER_IMAGE=WORKER, BIFFIX_SIF_PARALLEL="2", FAKE_PULL_SECS="0.5")
+    assert got.returncode == 0, got.stderr
+    # Each distinct tenant image once, into the image file Nextflow would look for.
+    pulled = {p[0]: p[1:] for p in sm_single.pulls}
+    assert sorted(pulled) == sorted(f"docker://{i}" for i in (TOOL, WORKER, PUBLIC))
+    assert sorted(p.name for p in (sm_single.kept / "apptainer/images").iterdir()) == sorted(
+        _sif(i) for i in (TOOL, WORKER, PUBLIC)
+    )
+    # The ECR login goes to the region's ECR only, and is never logged nor left to the engine.
+    assert pulled[f"docker://{TOOL}"] == ["AWS", "ecr-SECRET-pw"]
+    assert pulled[f"docker://{PUBLIC}"] == ["-", "-"]
+    assert "ecr-SECRET-pw" not in got.stderr + got.stdout
+    assert sm_single.job.engine_env["APPTAINER_DOCKER_PASSWORD"] == "<unset>"
+    # Several at once, never more than asked for.
+    assert max(int(n) for n in (sm_single.job.out / "concurrency").read_text().split()) == 2
+    # No task job definitions: none was asked for, none fetched.
+    assert sm_single.job.engine_env["SNAKEMAKE_AWS_BATCH_JOB_DEFINITION_MAP"] == "<unset>"
+    # Apptainer's own cache and build space are on the instance store.
+    assert sm_single.job.engine_env["APPTAINER_CACHEDIR"] == str(
+        sm_single.scratch / "apptainer/cache"
+    )
+
+
+def test_a_task_image_that_cannot_be_pulled_fails_the_run_at_once(sm_single: SingleJob) -> None:
+    started = time.monotonic()
+    got = sm_single.run(
+        FAKE_PULL_FAIL=f"docker://{PUBLIC}", FAKE_PULL_HANG=f"docker://{TOOL}", FAKE_PULL_SECS="0"
+    )
+    took = time.monotonic() - started
+    # A run failure, not a misconfiguration, naming the image; the other pulls are stopped.
+    assert got.returncode == 1, got.stderr
+    assert f"could not convert the task image {PUBLIC}" in got.stderr
+    assert f"FATAL: unauthorized: docker://{PUBLIC}" in got.stderr
+    assert took < 30, took
+    assert not (sm_single.job.out / "argv").exists()
+    # Its reason is in the run's logs, as the conversion's failure, not the engine's.
+    failure = _logs(sm_single.job)["failure.txt"].decode()
+    assert failure.startswith("Converting the task images failed (exit status 1).")
+    assert PUBLIC in failure
+
+
+def test_a_cancel_stops_the_image_conversion_at_once(sm_single: SingleJob) -> None:
+    sm_single.job.put("bucket", "runs/run-test/images.json", json.dumps(SJ_MAP).encode())
+    proc = subprocess.Popen(
+        ["bash", str(SCRIPT)],
+        env=sm_single.job.env(
+            **sm_single.env(BIFFIX_IMAGE_MAP_URI=MAP_URI, FAKE_PULL_HANG=f"docker://{TOOL}")
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not any(p[0] == f"docker://{TOOL}" for p in sm_single.pulls):
+            assert proc.poll() is None, proc.communicate()
+            assert time.monotonic() < deadline, "the conversion never started"
+            time.sleep(0.05)
+        signalled = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        _, stderr = proc.communicate(timeout=30)
+        took = time.monotonic() - signalled
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+    # Stopped well within Batch's stop timeout, as a cancel, not a failure.
+    assert proc.returncode == 143, stderr
+    assert took < 10, took
+    assert "stopping the task images' conversion (SIGTERM)" in stderr
+    assert "the task image conversion was stopped" in stderr
+    assert not (sm_single.job.out / "argv").exists()
+    assert "failure.txt" not in _logs(sm_single.job)
+    # A stopped run leaves its scratch to the next run to clear.
+    assert "leaving" in stderr and (sm_single.scratch / "run").exists()
+
+
+def test_no_ecr_login_fails_the_run(sm_single: SingleJob) -> None:
+    got = sm_single.run(FAKE_ECR_DENY="1")
+    assert got.returncode == 1, got.stderr
+    assert "could not log in to ECR in us-test-1" in got.stderr
+    assert sm_single.pulls == []
+
+
+def test_a_single_job_dry_run_converts_nothing_and_writes_nothing(sm_single: SingleJob) -> None:
+    before = _s3_objects(sm_single.job) | {"bucket/runs/run-test/images.json"}
+    got = sm_single.run(BIFFIX_DRY_RUN="1")
+    assert got.returncode == 0, got.stderr
+    assert "--dry-run" in sm_single.job.argv
+    assert sm_single.pulls == []
+    assert _s3_objects(sm_single.job) == before
+
+
+def test_single_job_snakemake_runs_every_job_here_in_its_image(sm_single: SingleJob) -> None:
+    got = sm_single.run(BIFFIX_WORKER_IMAGE=WORKER)
+    assert got.returncode == 0, got.stderr
+    argv = sm_single.job.argv
+    scratch = sm_single.scratch
+    assert _after(argv, "--cores") == "8"
+    # 64 GiB less Snakemake's 4 GiB reserve, as the one memory resource Snakemake 9.27 takes.
+    at = argv.index("--resources")
+    assert argv[at + 1 : at + 3] == ["mem_mb=64424", "--sdm"]
+    assert _after(argv, "--sdm") == "apptainer"
+    assert _after(argv, "--apptainer-prefix") == str(scratch / "apptainer/snakemake")
+    assert "--apptainer-args=--cleanenv" in argv
+    assert _after(argv, "--local-storage-prefix") == str(scratch / "storage")
+    assert _after(argv, "--default-storage-prefix") == "s3://bucket/runs/run-test/"
+    assert "--retries" in argv and "--keep-going" in argv and "--logger" in argv
+    for batch_only in ("--executor", "--jobs", "--container-image", "--aws-batch-job-queue"):
+        assert batch_only not in argv
+    assert not any(a.startswith("--aws-batch") for a in argv)
+    # Tasks start through biffix's apptainer wrapper.
+    assert sm_single.job.engine_env["PATH"].startswith(f"{scratch}/run/bin:")
+
+
+def test_single_job_snakemake_sets_every_rule_s_image_in_a_wrapper_snakefile(
+    sm_single: SingleJob,
+) -> None:
+    got = sm_single.run(BIFFIX_WORKER_IMAGE=WORKER)
+    assert got.returncode == 0, got.stderr
+    src = sm_single.kept / "run/src"
+    wrapper = Path(_after(sm_single.job.argv, "--snakefile"))
+    assert wrapper == sm_single.scratch / "run/src/.biffix-container.smk"
+    text = (src / ".biffix-container.smk").read_text()
+    assert f'include: "{sm_single.scratch / "run/src/Snakefile"}"\n' in text
+    task_images = sm_single.scratch / "run/task-images.json"
+    images = sm_single.scratch / "apptainer/images"
+    map_file = sm_single.scratch / "run/images.json"
+    assert (
+        f'set_rule_containers(workflow, "{map_file}", "{images}", "{WORKER}", "{task_images}", '
+        "True)\n"
+    ) in text
+    # Nothing is linked into the source: no `container:` value is read.
+    assert not any(p.is_symlink() for p in src.rglob("*"))
+    # The logger plugin finds each rule's image there.
+    assert sm_single.job.engine_env["BIFFIX_TASK_IMAGES_FILE"] == str(task_images)
+    # The engine config biffix generated is in the run's logs.
+    logs = _logs(sm_single.job)
+    assert logs["Snakefile.biffix"].decode() == text
+    assert b"--sdm\napptainer\n" in logs["snakemake.args"]
+
+
+def test_single_job_snakemake_without_a_default_image_runs_such_rules_here(
+    sm_single: SingleJob,
+) -> None:
+    got = sm_single.run()
+    assert got.returncode == 0, got.stderr
+    text = (sm_single.kept / "run/src/.biffix-container.smk").read_text()
+    assert f'"{sm_single.scratch / "apptainer/images"}", "", ' in text
+
+
+def test_a_single_job_dry_run_checks_no_image_file(sm_single: SingleJob) -> None:
+    got = sm_single.run(BIFFIX_DRY_RUN="1")
+    assert got.returncode == 0, got.stderr
+    assert Path(_after(sm_single.job.argv, "--snakefile")).name == ".biffix-container.smk"
+    # The run converts no image, so the wrapper is told not to look for their files.
+    text = (sm_single.kept / "run/src/.biffix-container.smk").read_text()
+    assert text.rstrip().endswith(", False)")
+
+
+def test_snakemake_parses_the_command_line_of_a_single_job_run(sm_single: SingleJob) -> None:
+    pytest.importorskip("snakemake")
+    got = sm_single.run(BIFFIX_WORKER_IMAGE=WORKER, BIFFIX_TARGET="all")
+    assert got.returncode == 0, got.stderr
+    # The real Snakemake (the dev dependency, with the storage and logger plugins the command line
+    # names) parses it: no option it refuses, no two memory resources.
+    parsed = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; from snakemake.cli import parse_args; "
+         "_, a = parse_args(sys.argv[1:]); "
+         "print(sorted(t.name for t in a.rerun_triggers), sorted(a.resources), a.targets, "
+         "sorted(m.name for m in a.software_deployment_method))",
+         *sm_single.job.argv],
+        capture_output=True, text=True, timeout=120,
+    )  # fmt: skip
+    assert parsed.returncode == 0, parsed.stderr
+    assert parsed.stdout.split("\n")[0] == (
+        "['CODE', 'INPUT', 'MTIME', 'PARAMS'] ['mem_mb'] ['all'] ['APPTAINER']"
+    )
+
+
+def test_single_job_nextflow_runs_every_task_here_through_apptainer(nf_single: SingleJob) -> None:
+    got = nf_single.run(BIFFIX_WORKER_IMAGE=WORKER, BIFFIX_ENGINE_SESSION_ID="u1")
+    assert got.returncode == 0, got.stderr
+    scratch = nf_single.scratch
+    config = (nf_single.kept / "run/nextflow.config").read_text().splitlines()
+    for line in [
+        "process.executor = 'local'",
+        "process { withName: '.*' { executor = 'local' } }",
+        f"process.container = '{WORKER}'",
+        "aws.region = 'us-test-1'",
+        "apptainer.enabled = true",
+        f"apptainer.libraryDir = '{scratch}/apptainer/images'",
+        f"apptainer.cacheDir = '{scratch}/apptainer/nextflow-cache'",
+        f"workDir = '{scratch}/work'",
+        "plugins { id 'nf-biffix@0.5.0' }",
+        *(
+            f"{engine}.enabled = false"
+            for engine in ("docker", "podman", "singularity", "conda", "wave", "fusion")
+        ),
+    ]:
+        assert line in config, line
+    for batch_only in ("awsbatch", "aws.batch", "process.queue", "cloudcache", "resourceLabels"):
+        assert not any(batch_only in line for line in config), batch_only
+    # The job's size, as the lowest-priority defaults; the JVM heap capped and kept out of it.
+    defaults = (nf_single.kept / "run/.nextflow-home/config").read_text().splitlines()
+    for line in [
+        "process.errorStrategy = 'retry'",
+        "executor.cpus = 8",
+        "executor.memory = '59392 MB'",
+        "process.resourceLimits = [cpus: 8, memory: '59392 MB']",
+        "process.ext.singularity_pull_docker_container = true",
+    ]:
+        assert line in defaults, line
+    # No trace: its task metrics would need `ps` and more in every task image.
+    assert not any("trace" in line for line in defaults)
+    env = nf_single.job.engine_env
+    assert env["NXF_OPTS"] == "-Xmx4096m"
+    assert env["NXF_APPTAINER_NEW_PID_NAMESPACE"] == "false"
+    assert env["PATH"].startswith(f"{scratch}/run/bin:")
+    assert env["NXF_UUID"] == "u1"
+    assert "-resume" not in nf_single.job.argv
+
+
+def test_a_retried_single_job_nextflow_run_starts_afresh(nf_single: SingleJob) -> None:
+    got = nf_single.run(BIFFIX_ENGINE_SESSION_ID="u1", AWS_BATCH_JOB_ATTEMPT="2")
+    assert got.returncode == 0, got.stderr
+    assert "-resume" not in nf_single.job.argv
+    assert nf_single.job.engine_env["NXF_UUID"] == "u1"
+    assert nf_single.job.engine_env["NXF_IGNORE_RESUME_HISTORY"] == "<unset>"
+
+
+def test_a_single_job_nextflow_run_uploads_its_failed_tasks_files(nf_single: SingleJob) -> None:
+    task = nf_single.scratch / "work/ab/cdef0123"
+    got = nf_single.run(FAKE_FAILED_TASK=str(task), FAKE_WRITE_LOG="1", FAKE_RC="1")
+    assert got.returncode == 1, got.stderr
+    logs = _logs(nf_single.job)
+    assert logs["tasks/ab/cdef0123/.command.err"] == b"task says: out of cheese\n"
+    assert "engine says: boom" in logs["failure.txt"].decode()
+    assert "nextflow.log" in logs and "nextflow.config" in logs
+
+
+def test_the_apptainer_wrapper_makes_each_task_the_one_the_kernel_kills(
+    nf_single: SingleJob,
+) -> None:
+    got = nf_single.run()
+    assert got.returncode == 0, got.stderr
+    wrapper = nf_single.kept / "run/bin/apptainer"
+    # Run as a task's container starts: `apptainer exec <image> …`, found on PATH.
+    task = subprocess.run(
+        [str(wrapper), "exec", "img", "bash"],
+        env=nf_single.env(APPTAINER_BINDPATH="/refs"),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert task.returncode == 0, task.stderr
+    # More killable than the engine; and its /tmp on the instance store, beside any other bind.
+    assert (nf_single.job.out / "oom_score_adj").read_text() == "500\n"
+    assert (nf_single.job.out / "apptainer-argv").read_text().splitlines() == [
+        "exec",
+        "img",
+        "bash",
+        f"APPTAINER_BINDPATH=/refs,{nf_single.scratch}/tmp:/tmp,{nf_single.scratch}/tmp",
+        "APPTAINERENV_OMP_NUM_THREADS=<unset>",
+    ]
+    # A Snakemake job's thread count reaches its container, which --cleanenv would not let it.
+    task = subprocess.run(
+        [str(wrapper), "exec", "img", "bash"],
+        env=nf_single.env(OMP_NUM_THREADS="3"),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert task.returncode == 0, task.stderr
+    argv = (nf_single.job.out / "apptainer-argv").read_text().splitlines()
+    assert argv[-1] == "APPTAINERENV_OMP_NUM_THREADS=3"
+
+
+def test_tasks_mode_is_unchanged_by_the_single_job_variables(sm_job: Job) -> None:
+    # BIFFIX_EXECUTION absent or "tasks": the run is today's, whatever else is set.
+    for execution in ("", "tasks"):
+        got = sm_job.run(BIFFIX_EXECUTION=execution, BIFFIX_SINGLE_JOB_CPUS="8")
+        assert got.returncode == 0, got.stderr
+        assert _after(sm_job.argv, "--executor") == "aws-batch"
+        assert "--sdm" not in sm_job.argv
+        # Its metadata and a single-job run's serve each other (lib/snakemake.sh).
+        at = sm_job.argv.index("--rerun-triggers")
+        assert sm_job.argv[at + 1 : at + 5] == ["mtime", "params", "input", "code"]
