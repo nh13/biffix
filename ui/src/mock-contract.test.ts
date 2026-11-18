@@ -1365,6 +1365,66 @@ describe('the mock API', () => {
     ]);
   });
 
+  it('launches a single-job run at the size submit resolves, and refuses one it cannot serve', async () => {
+    const rnaseq = { workflow_version_id: 'aabbccddeeff:v1', params: {} };
+    const launched = obj(await call('POST', '/runs', { ...rnaseq, single_job: {} }));
+    expect(obj(await call('GET', `/runs/${launched.run_id}`)).single_job).toEqual({
+      queue_class: 'single',
+      instance_type: 'c6id.8xlarge',
+      vcpus: 32,
+      memory_mib: 61184,
+    });
+    const sized = obj(
+      await call('POST', '/runs', { ...rnaseq, single_job: { cpus: 16, memory_gib: 100 } }),
+    );
+    expect(obj(await call('GET', `/runs/${sized.run_id}`)).single_job).toMatchObject({
+      instance_type: 'm6id.8xlarge',
+    });
+    // memory_gib is what the tasks get: a c6id.8xlarge leaves a Nextflow run's tasks 54 GiB.
+    for (const [memory_gib, instance_type] of [
+      [54, 'c6id.8xlarge'],
+      [56, 'm6id.8xlarge'],
+    ] as const) {
+      const run = obj(
+        await call('POST', '/runs', { ...rnaseq, single_job: { cpus: 32, memory_gib } }),
+      );
+      expect(obj(await call('GET', `/runs/${run.run_id}`)).single_job).toMatchObject({
+        instance_type,
+      });
+    }
+    // Naming the version's own queue-class keeps its default size.
+    const named = obj(
+      await call('POST', '/runs', { ...rnaseq, single_job: { queue_class: 'single' } }),
+    );
+    expect(obj(await call('GET', `/runs/${named.run_id}`)).single_job).toMatchObject({
+      instance_type: 'c6id.8xlarge',
+    });
+    const refusals: [Record<string, Json>, string][] = [
+      [
+        { ...rnaseq, single_job: {}, resume_from: 'run_01HGW4resume' },
+        'a single-job run cannot be a resume',
+      ],
+      [
+        { workflow_version_id: 'ddeeff001122:v3', params: {}, single_job: {} },
+        'this workflow version does not allow single-job runs',
+      ],
+      [{ ...rnaseq, single_job: { instance: 'r6id.8xlarge' } }, 'is not one of single-job'],
+      [{ ...rnaseq, single_job: { queue_class: 'huge' } }, 'no single-job queue-class `huge`'],
+      [{ ...rnaseq, single_job: { cpus: 8 } }, 'cpus and memory_gib must be given together'],
+      [
+        { ...rnaseq, single_job: { cpus: 32, memory_gib: 200 } },
+        "leaves 200 GiB for the run's tasks (after what the host, ECS and the nextflow engine keep)",
+      ],
+      [{ ...rnaseq, single_job: { cpus: 0, memory_gib: 64 } }, 'must each be at least 1'],
+      [{ ...rnaseq, single_job: { instance: 'C6ID.8XLARGE' } }, 'is not an exact instance type'],
+    ];
+    for (const [body, message] of refusals) {
+      const bad = await call('POST', '/runs', body);
+      expect(bad.status, JSON.stringify(body)).toBe(400);
+      expect(bad.text, JSON.stringify(body)).toContain(message);
+    }
+  });
+
   it('cancels a running run once its coordinator reports, a not-yet-running one at once', async () => {
     expect((await call('POST', '/runs/run_01HGW5cancelme/cancel')).status).toBe(202);
     // The request is recorded, but the run is still running until its coordinator's FAILED is

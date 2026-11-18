@@ -156,7 +156,7 @@ export function tryAgainRequest(
     runName: prefill.runName,
     tables: prefill.tables,
     reference: prefill.reference,
-    from: { runId: run.run_id, resume, images: prefill.images },
+    from: { runId: run.run_id, resume, images: prefill.images, singleJob: prefill.singleJob },
     retention: prefill.retention,
     experiment: prefill.experiment,
   });

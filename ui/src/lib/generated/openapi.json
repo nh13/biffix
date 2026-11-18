@@ -6353,6 +6353,17 @@
                 "type": "boolean",
                 "description": "True when the engine reported a different session than the one biffix launched it with (so\n`engine_session_id` is the engine's own). Omitted when false."
               },
+              "single_job": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/RunSingleJob",
+                    "description": "The run executed as one AWS Batch job on one host (single-job mode), at this size. Absent for\na run that executed one Batch job per task."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "submit_images": {
                 "type": [
                   "array",
@@ -6918,6 +6929,34 @@
           }
         }
       },
+      "RunSingleJob": {
+        "type": "object",
+        "description": "How a single-job run executed (`RunDetail.single_job`): its queue-class, the instance type its\nsize was taken from, and the vCPUs and memory its one job was given.",
+        "required": [
+          "queue_class",
+          "instance_type",
+          "vcpus",
+          "memory_mib"
+        ],
+        "properties": {
+          "instance_type": {
+            "type": "string"
+          },
+          "memory_mib": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "queue_class": {
+            "type": "string"
+          },
+          "vcpus": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "RunSubmitRequest": {
         "type": "object",
         "description": "`POST /runs` request: launch a frozen workflow version with resolved parameters.",
@@ -7003,6 +7042,17 @@
               "null"
             ],
             "description": "A human name for the run, shown in run lists and on the run page. At most 200 characters."
+          },
+          "single_job": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SingleJobRequest",
+                "description": "Execute the run as one AWS Batch job on one host (single-job mode) instead of one Batch job\nper task: the engine runs every task locally, each in the image its Batch job would run,\nwith its working files on the host's local disk (a Nextflow run's work directory; a\nSnakemake run still publishes every output to its output prefix). The version must allow it (`single_job:` in its\n`biffix.yaml`); the fields given here override the version's default queue-class and size.\nAbsent ⇒ one Batch job per task. A single-job run cannot be a resume (`resume_from`): its\nwork directory would be on one host's local disk."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "tables": {
             "type": [
@@ -7266,6 +7316,44 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "SingleJobRequest": {
+        "type": "object",
+        "description": "A run's single-job settings (`RunSubmitRequest.single_job`). Each field is optional and falls\nback to the version's default; a size is either `instance` or both `cpus` and `memory_gib`\n(the smallest instance type of the queue-class with at least that much is used). With no size\nhere or in the version, the queue-class's smallest instance type is used.",
+        "properties": {
+          "cpus": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "An instance type with at least this many vCPUs (with `memory_gib`).",
+            "minimum": 0
+          },
+          "instance": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An exact instance type of the queue-class (`c6id.8xlarge`): the run gets the whole host."
+          },
+          "memory_gib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "An instance type whose run's tasks get at least this much memory, in GiB (with `cpus`).\nCompared with what the tasks get, not the type's nominal memory: the job is given the\nhost's memory less a reserve for the operating system and ECS (6% plus 256 MiB, rounded\ndown to 256 MiB), and the engine keeps a share of that for itself (Snakemake 1/16, 2 to 8\nGiB; Nextflow its heap, 1/16 within 1 to 8 GiB, and 1/32 slack, at least 1 GiB). A 64 GiB\nhost leaves its tasks about 56 GiB under Snakemake, 54 GiB under Nextflow.",
+            "minimum": 0
+          },
+          "queue_class": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A single-job queue-class of the deploy; absent ⇒ the version's, else the deploy's first."
           }
         }
       },
