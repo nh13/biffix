@@ -551,15 +551,17 @@ pub(crate) async fn readiness(
     let images = statuses(state, rec).await?;
     let mut not_ready = Vec::new();
     let mut failed = false;
-    // A version pinning a retired engine release never runs again, whatever its old variants.
-    let retired = match crate::images::variants::runnable_runtime(&rec.version) {
-        Err(crate::images::variants::NotRunnable::Retired(r)) => Some(r),
+    // A version pinning a retired engine release, or a runtime predating the task job definitions
+    // biffix registers, never runs again, whatever its old variants.
+    use crate::images::variants;
+    let refused = match variants::runnable_runtime(&rec.version) {
+        Err(e @ (variants::NotRunnable::Retired(_) | variants::NotRunnable::Outdated)) => Some(e),
         _ => None,
     };
-    match retired {
-        Some(retired) => {
+    match refused {
+        Some(refused) => {
             failed = true;
-            not_ready.push(retired.to_string());
+            not_ready.push(refused.to_string());
         }
         None if runtime.launch.is_none() => {
             let r = &runtime;

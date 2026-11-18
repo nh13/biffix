@@ -755,7 +755,7 @@ async fn launch_ready(
     let variant = match crate::images::variants::launch_variant(state, &rec.version, project).await
     {
         Ok(variant) => variant,
-        Err(e @ (NotRunnable::Retired(_) | NotRunnable::Failed { .. })) => {
+        Err(e @ (NotRunnable::Retired(_) | NotRunnable::Outdated | NotRunnable::Failed { .. })) => {
             return failed(state, run_id, Stage::Launch, &e.to_string()).await
         }
         Err(e @ NotRunnable::Building(_)) => return wait(e.to_string()),

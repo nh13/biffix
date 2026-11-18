@@ -85,14 +85,25 @@ pub(crate) fn runtime_of(version: &WorkflowVersion) -> Result<(&str, RuntimeReci
 }
 
 /// The version's runtime, if biffix can still run it: one pinning a retired engine release
-/// (`biffix_workflow::engines::RETIRED`) is refused by name rather than built or launched on an old
-/// variant.
+/// (`biffix_workflow::engines::RETIRED`), or one whose engine registers its own task job
+/// definitions ([`RuntimeRecipe::runs_on_registered_job_definitions`]), is refused by name rather
+/// than built or launched on an old variant.
+///
+/// The check is on the recipe, which every variant a launch may pick shares: a variant is the
+/// runtime of `runtime_key` (the recipe's hash) on some base image, and the runtime build checks
+/// the base carries exactly the executor and nf-biffix the recipe pins. So a refused recipe is
+/// refused on every variant, the current base's or the older base's a launch falls back to
+/// (including a run submitted between a deploy's `cdk deploy` and its variant builds), and a
+/// runnable one's variants all run the engine that uses the backend's job definitions.
 pub(crate) fn runnable_runtime(
     version: &WorkflowVersion,
 ) -> Result<(&str, RuntimeRecipe), NotRunnable> {
     let (key, recipe) = runtime_of(version)?;
     if let Some(r) = biffix_workflow::engines::retired(recipe.engine(), recipe.engine_version()) {
         return Err(NotRunnable::Retired(r));
+    }
+    if !recipe.runs_on_registered_job_definitions() {
+        return Err(NotRunnable::Outdated);
     }
     Ok((key, recipe))
 }
@@ -258,6 +269,13 @@ pub(crate) enum NotRunnable {
     /// replacement is the way forward.
     #[error("{0}")]
     Retired(biffix_workflow::engines::Retired),
+    /// The version's engine runtime registers its own task job definitions, which biffix now
+    /// registers instead (coordinators may not): re-registering moves it to the current pins.
+    #[error(
+        "this version's engine runtime predates the task job definitions biffix registers, so its \
+         tasks cannot start; re-register it on the current pins (`biffix workflows reregister`)"
+    )]
+    Outdated,
     #[error("the version's engine runtime is still being built{}; try again in a few minutes", logs(.0))]
     Building(Option<String>),
     #[error("the version's engine runtime failed to build: {reason}{}", logs(.logs_url))]
@@ -431,12 +449,13 @@ pub async fn sweep(state: &AppState) -> Result<VariantSweepReport, BuildError> {
     // Versions whose runtime cannot be read: their runtime is never built, which the report says.
     let mut unreadable = 0;
     for rec in state.registry.list_versions().await? {
-        // A retired release's runtime is never built again (its versions are refused at launch).
+        // A retired release's runtime, or one predating the task job definitions biffix
+        // registers, is never built again (its versions are refused at launch).
         match runnable_runtime(&rec.version) {
             Ok((key, recipe)) => {
                 runtimes.entry(key.to_string()).or_insert(recipe);
             }
-            Err(NotRunnable::Retired(_)) => {}
+            Err(NotRunnable::Retired(_) | NotRunnable::Outdated) => {}
             Err(e) => {
                 tracing::warn!(version = rec.version.id, error = %e, "variants: skipped");
                 unreadable += 1;

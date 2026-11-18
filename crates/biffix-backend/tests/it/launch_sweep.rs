@@ -713,6 +713,28 @@ async fn a_launch_that_may_pass_waits_and_one_that_will_not_fails() {
     assert!(h.cloud.launched.lock().unwrap().is_empty());
 }
 
+/// A run parked across an upgrade whose version's runtime predates the task job definitions biffix
+/// registers (its engine would register its own, which no coordinator may): failed at launch with
+/// why, never launched to have every task fail at submit.
+#[tokio::test]
+async fn a_parked_run_whose_runtime_predates_registered_job_definitions_fails() {
+    let h = parked().await;
+    h.images_ready();
+    {
+        let mut versions = h.registry.versions.lock().unwrap();
+        let version = &mut versions.get_mut("abc:hash:0").unwrap().version;
+        version.runtime_recipe["pins"]["executor_sha"] =
+            json!("a0aaf7a725bfb5120721413afc920f4a21737c53");
+    }
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+    let (reason, stage) = h.failure().unwrap();
+    assert_eq!(stage, "launch");
+    assert!(reason.contains("re-register it on the current pins"), "{reason}");
+    assert!(!h.parked());
+    assert!(h.cloud.launched.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn a_run_whose_task_job_definitions_cannot_be_prepared_waits_or_fails() {
     // AWS unavailable: parked, and the next sweep launches it.

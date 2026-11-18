@@ -494,3 +494,38 @@ fn the_build_scripts_use_the_crate_s_names() {
 fn the_coordinator_subject_joins_key_and_base() {
     assert_eq!(coordinator_subject("abc", "sha256:def"), "coordinator:abc@sha256:def");
 }
+
+/// Every runtime biffix pins now runs its tasks on the backend's job definitions, and one recorded
+/// on an executor or nf-biffix from before (which registers its own) does not.
+#[test]
+fn only_runtimes_on_the_job_definition_map_run_on_registered_job_definitions() {
+    let sm = recipe("snakemake", "9.27.0").unwrap();
+    assert!(sm.runs_on_registered_job_definitions(), "the executor pin must be listed");
+    for release in crate::engines::NEXTFLOW_RELEASES {
+        assert!(recipe("nextflow", release).unwrap().runs_on_registered_job_definitions());
+    }
+    // The executor pinned before the job definition map, and any commit not listed.
+    let older = |sha: &str| match sm.clone() {
+        RuntimeRecipe::Snakemake { recipe_version, engine_version, mut pins } => {
+            pins.executor_sha = sha.into();
+            RuntimeRecipe::Snakemake { recipe_version, engine_version, pins }
+        }
+        RuntimeRecipe::Nextflow { .. } => unreachable!(),
+    };
+    assert!(!older("a0aaf7a725bfb5120721413afc920f4a21737c53").runs_on_registered_job_definitions());
+    assert!(!older("").runs_on_registered_job_definitions());
+    // nf-biffix before 0.7.0, and a version that does not parse; 0.7.0 and later do.
+    let nf = |version: &str| match recipe("nextflow", "26.10.5").unwrap() {
+        RuntimeRecipe::Nextflow { recipe_version, engine_version, mut pins } => {
+            pins.nf_biffix_version = version.into();
+            RuntimeRecipe::Nextflow { recipe_version, engine_version, pins }
+        }
+        RuntimeRecipe::Snakemake { .. } => unreachable!(),
+    };
+    for version in ["0.6.2", "0.6.10", "0.1.0", "x", ""] {
+        assert!(!nf(version).runs_on_registered_job_definitions(), "{version}");
+    }
+    for version in ["0.7.0", "0.7.1", "0.10.0", "1.0.0"] {
+        assert!(nf(version).runs_on_registered_job_definitions(), "{version}");
+    }
+}

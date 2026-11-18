@@ -638,6 +638,74 @@ async fn a_version_on_a_retired_release_is_refused_by_name() {
     assert!(h.cloud.variant_job_definitions.lock().unwrap().is_empty());
 }
 
+/// Re-key the registered version `id` onto a Snakemake runtime pinning the executor from before the
+/// job definition map (whose engine registers its own task job definitions); its new runtime key.
+fn record_pre_map_runtime(h: &Harness, id: &str) -> String {
+    use biffix_workflow::runtime::{runtime_key, RuntimeRecipe};
+    let rec = h.registry.versions.lock().unwrap()[id].clone();
+    let mut recipe: RuntimeRecipe =
+        serde_json::from_value(rec.version.runtime_recipe.clone()).unwrap();
+    let RuntimeRecipe::Snakemake { pins, .. } = &mut recipe else { panic!("{recipe:?}") };
+    pins.executor_sha = "a0aaf7a725bfb5120721413afc920f4a21737c53".into();
+    let key = runtime_key(&recipe);
+    let mut versions = h.registry.versions.lock().unwrap();
+    let rec = versions.get_mut(id).unwrap();
+    rec.version.runtime_key = key.clone();
+    rec.version.runtime_recipe = serde_json::to_value(&recipe).unwrap();
+    key
+}
+
+const PRE_MAP: &str = "this version's engine runtime predates the task job definitions biffix \
+                       registers, so its tasks cannot start; re-register it on the current pins \
+                       (`biffix workflows reregister`)";
+
+/// A version registered before biffix registered its tasks' job definitions keeps a runtime whose
+/// engine registers its own, which no coordinator may: it is refused by name at submit, reads
+/// `failed`, and gets no variant builds, rather than launching tasks that all fail at submit.
+#[tokio::test]
+async fn a_version_whose_runtime_predates_registered_job_definitions_is_refused() {
+    let h = harness();
+    let id = register(&h).await;
+    let old_key = record_pre_map_runtime(&h, &id);
+    // Even with its current base's variant built and ready.
+    h.registry.variants.lock().unwrap().push(fake_variant(&old_key, FAKE_BASE_DIGEST));
+    let builds_before = h.cloud.runtime_builds.lock().unwrap().len();
+
+    let (status, body) = submit(&h, &id).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body.as_str().unwrap(), PRE_MAP);
+    assert!(h.cloud.launched.lock().unwrap().is_empty());
+    assert!(h.cloud.task_job_definitions.lock().unwrap().is_empty());
+
+    let (status, detail) =
+        call(&h.state, request("GET", &format!("/workflows/{id}"), "operators", None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["state"], "failed", "{detail}");
+    assert_eq!(detail["not_ready"], json!([PRE_MAP]), "{detail}");
+
+    let report = sweep_ok(&h).await;
+    assert_eq!(report.runtimes, 0, "{report:?}");
+    assert_eq!(h.cloud.runtime_builds.lock().unwrap().len(), builds_before);
+}
+
+/// Mid-upgrade (the new backend and IAM deployed, the current base's variant not built yet), a
+/// pre-map version would fall back to its variant of an older base, whose engine registers its own
+/// job definitions: it is refused instead, whichever variant it would have run on.
+#[tokio::test]
+async fn a_pre_map_version_never_falls_back_to_an_older_base_s_variant() {
+    let h = harness();
+    let id = register(&h).await;
+    let old_key = record_pre_map_runtime(&h, &id);
+    h.registry.variants.lock().unwrap().push(fake_variant(&old_key, "sha256:old"));
+
+    let (status, body) = submit(&h, &id).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body.as_str().unwrap(), PRE_MAP);
+    assert!(h.cloud.launched.lock().unwrap().is_empty());
+    // (A current version with the same fallback launches on it:
+    // after_a_base_bump_runs_use_the_previous_variant_until_the_new_one_is_ready.)
+}
+
 /// A Nextflow workflow declaring `plugins` (each `[id, version, sha256 digit]`), from source `sha`.
 fn nf_register_body(sha: &str, plugins: &[(&str, &str, char)]) -> Value {
     let mut body = register_body();

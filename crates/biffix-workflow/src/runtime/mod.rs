@@ -69,13 +69,18 @@ pub struct SnakemakePins {
     /// `snakemake-storage-plugin-s3` release (task I/O goes through S3).
     pub storage_s3: String,
     /// Commit of the AWS Batch executor fork, built into a wheel in the base image. The fork
-    /// (branch `biffix-pin/2026-10-24`) is upstream (as of #54; per-rule queues are upstream's
-    /// #40, `--aws-batch-spot-attempts` its #62) plus three open upstream PRs: #55 (remote job-state
-    /// events, with the job's image, and a pre-formatted log message), #60 (the strict container
-    /// image map) and #61 (`--aws-batch-log-group`). On top are three fixes to upstream's own code:
-    /// no TerminateJob on a job that already finished, an iam:GetRole preflight denial logged at
-    /// debug, and a batch:TagResource probe denial reported as inconclusive. Re-pin to upstream
-    /// once they merge.
+    /// (branch `biffix-pin/2026-11-18`) is upstream (as of #54; per-rule queues are
+    /// upstream's #40, `--aws-batch-spot-attempts` its #62) plus five open upstream PRs: #55
+    /// (remote job-state events, with the job's image, and a pre-formatted log message), #60 (the
+    /// strict container image map), #61 (`--aws-batch-log-group`), #64
+    /// (`--aws-batch-job-definition-map`: each job runs on the pre-registered definition of its
+    /// image and the executor registers none; it refuses a job role, log group,
+    /// `--aws-batch-privileged`, or a rule's job definition or privileged resource beside it) and
+    /// #65 (`--aws-batch-privileged`: privileged containers opt-in). On top are three fixes to
+    /// upstream's own code: no TerminateJob on a job that already finished, an iam:GetRole
+    /// preflight denial logged at debug, and a batch:TagResource probe denial reported as
+    /// inconclusive. Re-pin to upstream once they merge. Every re-pin appends its commit to
+    /// [`JOB_DEFINITION_MAP_EXECUTORS`].
     pub executor_sha: String,
     /// `snakemake-logger-plugin-biffix` version, built into a wheel in the base image.
     pub logger_version: String,
@@ -294,6 +299,18 @@ pub fn runtime_key(recipe: &RuntimeRecipe) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+/// The executor commits whose `--aws-batch-job-definition-map` runs every job on the task job
+/// definitions the backend registers, so the executor registers none. A runtime built on any other
+/// commit registers its own, which IAM denies every coordinator since the backend took that over:
+/// its tasks would all fail at submit, so its versions are refused at launch until re-registered
+/// ([`RuntimeRecipe::runs_on_registered_job_definitions`]). Commits are not ordered, so each
+/// re-pin appends its own (a test requires the pin table's to be here).
+pub const JOB_DEFINITION_MAP_EXECUTORS: &[&str] = &["240b612ce6ec22b44777449cab4156094b40eb19"];
+
+/// The first nf-biffix release whose `awsbatch` executor runs every task on the task job
+/// definitions the backend registers (as [`JOB_DEFINITION_MAP_EXECUTORS`] for Snakemake).
+pub const JOB_DEFINITION_MAP_NF_BIFFIX: EngineVersion = EngineVersion::new(0, 7, 0);
+
 /// The build subject of the coordinator variant = `base@base_digest` + the runtime's layer.
 pub fn coordinator_subject(runtime_key: &str, base_digest: &str) -> String {
     format!("coordinator:{runtime_key}@{base_digest}")
@@ -343,6 +360,21 @@ impl RuntimeRecipe {
                 pins.workflow_plugins = validate_workflow_plugins(plugins)?;
                 Ok(Self::Nextflow { recipe_version, engine_version, pins })
             }
+        }
+    }
+
+    /// Whether the runtime's engine runs every task on the job definitions the backend registers
+    /// at launch, rather than registering its own: a Snakemake executor in
+    /// [`JOB_DEFINITION_MAP_EXECUTORS`], or nf-biffix [`JOB_DEFINITION_MAP_NF_BIFFIX`] or newer. A
+    /// runtime recorded before then cannot run (coordinators may register no job definition), and
+    /// the version that recorded it must be re-registered on the current pins.
+    pub fn runs_on_registered_job_definitions(&self) -> bool {
+        match self {
+            Self::Snakemake { pins, .. } => {
+                JOB_DEFINITION_MAP_EXECUTORS.contains(&pins.executor_sha.as_str())
+            }
+            Self::Nextflow { pins, .. } => EngineVersion::parse(&pins.nf_biffix_version)
+                .is_some_and(|v| v >= JOB_DEFINITION_MAP_NF_BIFFIX),
         }
     }
 
