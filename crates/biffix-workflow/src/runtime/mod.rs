@@ -69,15 +69,17 @@ pub struct SnakemakePins {
     /// `snakemake-storage-plugin-s3` release (task I/O goes through S3).
     pub storage_s3: String,
     /// Commit of the AWS Batch executor fork, built into a wheel in the base image. The fork
-    /// (branch `biffix-pin/2026-11-18`) is upstream (as of #54; per-rule queues are
-    /// upstream's #40, `--aws-batch-spot-attempts` its #62) plus five open upstream PRs: #55
+    /// (branch `biffix-pin/2026-11-19-2`) is upstream (as of #54; per-rule queues are
+    /// upstream's #40, `--aws-batch-spot-attempts` its #62) plus six open upstream PRs: #55
     /// (remote job-state events, with the job's image, and a pre-formatted log message), #60 (the
     /// strict container image map), #61 (`--aws-batch-log-group`), #64
     /// (`--aws-batch-job-definition-map`: each job runs on the pre-registered definition of its
     /// image and the executor registers none; it refuses a job role, log group,
-    /// `--aws-batch-privileged`, or a rule's job definition or privileged resource beside it) and
-    /// #65 (`--aws-batch-privileged`: privileged containers opt-in). On top are three fixes to
-    /// upstream's own code: no TerminateJob on a job that already finished, an iam:GetRole
+    /// `--aws-batch-privileged`, or a rule's job definition or privileged resource beside it), #65
+    /// (`--aws-batch-privileged`: privileged containers opt-in) and #66 (`--aws-batch-rule-queues`:
+    /// rule → job queue, outranking a rule's `batch_queue`, without replacing the workflow
+    /// profile's `set-resources` as `--set-resources` does). On top are three fixes to upstream's
+    /// own code: no TerminateJob on a job that already finished, an iam:GetRole
     /// preflight denial logged at debug, and a batch:TagResource probe denial reported as
     /// inconclusive. Re-pin to upstream once they merge. Every re-pin appends its commit to
     /// [`JOB_DEFINITION_MAP_EXECUTORS`].
@@ -305,7 +307,8 @@ pub fn runtime_key(recipe: &RuntimeRecipe) -> String {
 /// its tasks would all fail at submit, so its versions are refused at launch until re-registered
 /// ([`RuntimeRecipe::runs_on_registered_job_definitions`]). Commits are not ordered, so each
 /// re-pin appends its own (a test requires the pin table's to be here).
-pub const JOB_DEFINITION_MAP_EXECUTORS: &[&str] = &["240b612ce6ec22b44777449cab4156094b40eb19"];
+pub const JOB_DEFINITION_MAP_EXECUTORS: &[&str] =
+    &["240b612ce6ec22b44777449cab4156094b40eb19", "e4c5db79d8e7f952928c47914aeac9728e10f851"];
 
 /// The first nf-biffix release whose `awsbatch` executor runs every task on the task job
 /// definitions the backend registers (as [`JOB_DEFINITION_MAP_EXECUTORS`] for Snakemake).

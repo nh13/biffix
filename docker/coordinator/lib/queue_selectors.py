@@ -9,17 +9,21 @@ one per line:
 
 - nextflow: a `process { withLabel: '<label>' { queue = '<arn>' } }` per label, then a
   `process { withName: '<name>' { queue = '<arn>' } }` per name, for the `-c` config;
-- snakemake: a `<rule>:batch_queue='<arn>'` per name, the values of `--set-resources`.
+- snakemake: one JSON object of rule name to queue ARN, the executor's rule queue map
+  (`--aws-batch-rule-queues`), when the assignment names any rule.
 
 Nothing for no assignment. Exits 1, saying why on stderr, when a queue-class has no queue in the
 map, or the assignment is not one registration would accept (labels are Nextflow's only; every
-label and name is an exact one, since both engines read selectors as regular expressions).
+Nextflow label and name is an exact one, since Nextflow reads selectors as regular expressions;
+a Snakemake rule name is any non-empty name with no control character, since the executor's rule
+queue map is matched exactly and Snakemake names a rule with any string).
 
 Registration already checks all of this: the source of truth is
 `crates/biffix-workflow/src/queues.rs` (`QueueAssignment::validate`). The checks here repeat it on
 purpose, as defence in depth: the assignment reaches this script through the job's environment,
 and what it prints is written into the engine's config, so a selector that is not an exact name
-would match other tasks, and a quote or line break would change the config. Keep the grammars in
+would match other tasks, and a quote or line break would change the config (the Snakemake map is
+written as JSON, which quotes any name). Keep the grammars in
 step with queues.rs. (worker_queue.py's map parsing is not imported: lib/ is not on the import path
 when the tests load this file, and its errors would not say which variable is wrong.)
 """
@@ -35,7 +39,17 @@ LABEL = re.compile(rf"{_LABEL_WORD}(?:={_LABEL_WORD})?")
 IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
 # A Nextflow process name: its own, an alias, or a fully qualified `WF:SUB:PROC`.
 PROCESS = re.compile(rf"{IDENTIFIER}(?::{IDENTIFIER})*")
-RULE = re.compile(IDENTIFIER)
+
+
+def is_rule_name(name: str) -> bool:
+    """A Snakemake rule name as the rule queue map can carry it (queues.rs `is_rule_name`): any
+    non-empty name with no control character."""
+    return bool(name) and not any(_is_control(c) for c in name)
+
+
+def _is_control(c: str) -> bool:
+    # Rust's char::is_control: the C0 and C1 control characters.
+    return ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F
 
 
 class AssignmentError(Exception):
@@ -106,12 +120,13 @@ def settings(engine: str, raw_assignment: str, raw_queues: str) -> list[str]:
     elif engine == "snakemake":
         if by_label:
             raise AssignmentError("by_label applies only to Nextflow; Snakemake rules have none")
+        rule_queues: dict[str, str] = {}
         for name, queue_class in by_name.items():
-            if not RULE.fullmatch(name):
+            if not is_rule_name(name):
                 raise AssignmentError(f"by_name {name!r} is not a Snakemake rule name")
-            queue = queue_of(queue_class, f"by_name.{name}")
-            # A Python string literal: Snakemake evaluates a --set-resources value.
-            lines.append(f"{name}:batch_queue={queue!r}")
+            rule_queues[name] = queue_of(queue_class, f"by_name.{name}")
+        if rule_queues:
+            lines.append(json.dumps(rule_queues, sort_keys=True))
     else:
         raise AssignmentError(f"unknown engine {engine!r}")
     return lines
@@ -120,14 +135,15 @@ def settings(engine: str, raw_assignment: str, raw_queues: str) -> list[str]:
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         sys.exit("usage: queue_selectors.py <engine>")
+    raw = os.environ.get("BIFFIX_QUEUE_ASSIGNMENT", "")
     try:
-        out = settings(
-            sys.argv[1],
-            os.environ.get("BIFFIX_QUEUE_ASSIGNMENT", ""),
-            os.environ.get("BIFFIX_QUEUE_CLASS_MAP", ""),
-        )
+        out = settings(sys.argv[1], raw, os.environ.get("BIFFIX_QUEUE_CLASS_MAP", ""))
     except AssignmentError as e:
         print(f"biffix-coordinator: {e}", file=sys.stderr)
         sys.exit(1)
     for line in out:
         print(line)
+    # Counted from the assignment, not the lines printed: Snakemake's map is one line.
+    assignment = _object(raw, "BIFFIX_QUEUE_ASSIGNMENT")
+    count = sum(len(_selectors(assignment, key)) for key in ("by_label", "by_name"))
+    print(f"biffix-coordinator: {count} task selector(s) on other worker queues", file=sys.stderr)

@@ -253,7 +253,8 @@ small-spot --queue-class large-spot --queue-class small-ondemand`): a version li
 queue-classes it uses, and registration refuses a `queues:` entry outside that list, or a
 queue-class the deployment does not offer. Labels and names are exact (no patterns): a label as
 Nextflow's `label` directive accepts it, a process name, alias or fully qualified name
-(`NFCORE_RNASEQ:RNASEQ:MULTIQC`), or a Snakemake rule name. Without `default`, tasks no selector
+(`NFCORE_RNASEQ:RNASEQ:MULTIQC`), or a Snakemake rule name as Snakemake gives it (a `name:`
+directive's string included). Without `default`, tasks no selector
 picks run on the first `--queue-class`, else the deployment's first. The order of `--queue-class`
 is part of a version only in that case (several queue-classes and no `default`): registering again
 with another first is a new build. (Versions registered with several queue-classes and no `default`
@@ -273,16 +274,17 @@ How each engine applies it:
   labels that `by_label` sends to different queue-classes gets one of them, depending on config
   order: give each process at most one such label, or pick it `by_name`.
 - **Snakemake.** The default is the AWS Batch executor's queue, which a rule's own `batch_queue`
-  resource still overrides; each `by_name` entry is passed as
-  `--set-resources <rule>:batch_queue=<queue>`, which overrides the rule's own. Rules have no
-  labels, so `by_label` is refused. A rule name that is not in the workflow is ignored by
-  Snakemake. Rules that share a `group:` run as one AWS Batch job, on one queue, so they must
-  share a queue-class: give every rule of a group the same one, or none of them.
+  resource still overrides; the `by_name` entries go to the executor's rule queue map
+  (`--aws-batch-rule-queues`), which overrides a rule's own `batch_queue` and leaves every other
+  resource, including the workflow profile's `set-resources`, as it is. Rules have no labels, so
+  `by_label` is refused. A rule name that is not in the workflow is ignored. Rules that share a
+  `group:` run as one AWS Batch job, on one queue, so they must share a queue-class: give every
+  rule of a group the same one, or none of them.
 
 A selector that matches nothing assigns nothing, and those tasks run on the default. For a
 Snakemake workflow, `biffix workflows register` warns about a `by_name` entry naming a rule the
-Snakefile does not define (when it can see every rule: not through a dynamic `include:` or a
-module). A Nextflow workflow's process names and labels are not known until it runs, so nothing
+Snakefile does not define (when it can see every rule name: not through a dynamic `include:` or a
+module, and not with an unnamed rule or a `name:` directive). A Nextflow workflow's process names and labels are not known until it runs, so nothing
 checks them at registration: check where tasks ran instead. The Batch queue each task ran on is in
 the API's task view (`host.queue`) and in the run's provenance crate (`jobQueue`).
 

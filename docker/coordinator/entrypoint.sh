@@ -65,7 +65,7 @@
 #   default: the map's first), BIFFIX_QUEUE_ASSIGNMENT (JSON {"by_label": {label: queue_class},
 #   "by_name": {name: queue_class}}: the tasks the version sends to another worker queue-class,
 #   from its biffix.yaml `queues:`; Nextflow: withLabel/withName `queue` selectors in the -c
-#   config; Snakemake: `--set-resources <rule>:batch_queue=…`; lib/tasks.sh),
+#   config; Snakemake: the executor's --aws-batch-rule-queues map; lib/tasks.sh),
 #   SNAKEMAKE_AWS_BATCH_JOB_ROLE (the project run base role, which child
 #   jobs assume; required, and handed to the engine, only without a job definition map, where the
 #   engine registers its own job definitions: the backend's carry it; the Nextflow path reads it

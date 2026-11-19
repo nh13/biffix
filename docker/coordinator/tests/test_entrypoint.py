@@ -573,16 +573,17 @@ def test_snakemake_rules_go_to_the_queues_the_version_assigns(sm_job: Job) -> No
     assert got.returncode == 0, got.stderr
     argv = sm_job.argv
     assert _after(argv, "--aws-batch-job-queue") == "arn:queue/first"
-    at = argv.index("--set-resources")
-    assert argv[at + 1 : at + 3] == [
-        "align:batch_queue='arn:queue/second'",
-        "call:batch_queue='arn:queue/second'",
-    ]
-    # An option follows the list, so it never takes the target as one more value.
-    assert argv[at + 3].startswith("--") and argv[-1] == "all"
-    # Without an assignment, no --set-resources at all.
+    # The executor's rule queue map, by path; never --set-resources, which would drop the workflow
+    # profile's own set-resources.
+    rule_queues = Path(_after(argv, "--aws-batch-rule-queues"))
+    assert json.loads(rule_queues.read_text()) == {
+        "align": "arn:queue/second",
+        "call": "arn:queue/second",
+    }
+    assert "--set-resources" not in argv and argv[-1] == "all"
+    # Without an assignment, no map at all.
     assert sm_job.run().returncode == 0
-    assert "--set-resources" not in sm_job.argv
+    assert "--aws-batch-rule-queues" not in sm_job.argv
 
 
 def test_nextflow_config_wires_the_run(nf_job: Job) -> None:

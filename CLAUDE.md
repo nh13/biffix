@@ -87,13 +87,14 @@ publishes it to GHCR with each release, and `build-coordinator-image.yml` builds
 deployer's own ECR, both through the two-architecture build in `coordinator-image.yml`
 (`build-and-push.sh` is only the manual fallback for a tenant without the image-build role). Its Snakemake AWS Batch executor is pinned to a fork
 (`docker/coordinator/wheels.env` holds the repo and commit; the branch, `biffix-pin/<date>`, never
-force-pushed, is named in `crates/biffix-workflow/src/runtime/mod.rs`): upstream plus five open
+force-pushed, is named in `crates/biffix-workflow/src/runtime/mod.rs`): upstream plus six open
 upstream PRs, #55 (remote job-state events), #60 (strict container image map), #61 (task log
 group), #64 (`--aws-batch-job-definition-map`, which runs each job on a pre-registered job
 definition and registers none, refusing a job role, log group, privileged setting or per-rule job
-definition beside it) and #65 (`--aws-batch-privileged`, which makes privileged containers
-opt-in), plus small log-noise fixes to upstream's own code. Per-rule queues (#40) and spot reclaim
-retries (#62) are already upstream. Re-pin to upstream once they merge. Every re-pin appends its
+definition beside it), #65 (`--aws-batch-privileged`, which makes privileged containers
+opt-in) and #66 (`--aws-batch-rule-queues`: per-rule job queues, which unlike
+`--set-resources` keep the workflow profile's `set-resources`), plus small log-noise fixes to
+upstream's own code. Per-rule queues (#40) and spot reclaim retries (#62) are already upstream. Re-pin to upstream once they merge. Every re-pin appends its
 commit to `JOB_DEFINITION_MAP_EXECUTORS` (`runtime/mod.rs`): a version whose runtime pins an
 executor or nf-biffix from before the job-definition map is refused at launch until
 re-registered. `lib/snakemake.sh` always passes the spot-attempts and image-map settings, and the

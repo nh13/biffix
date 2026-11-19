@@ -5,7 +5,6 @@ drives the whole script; these pin down the edges it does not reach."""
 
 from __future__ import annotations
 
-import ast
 import importlib.util
 import io
 import json
@@ -437,11 +436,25 @@ def test_a_nextflow_assignment_is_withlabel_then_withname_selectors() -> None:
     ]
 
 
-def test_a_snakemake_assignment_is_set_resources_values() -> None:
+def test_a_snakemake_assignment_is_the_executor_s_rule_queue_map() -> None:
     got = module("queue_selectors").settings(
-        "snakemake", json.dumps({"by_name": {"align": "cpu", "call": "spot"}}), QUEUES
+        "snakemake", json.dumps({"by_name": {"call": "spot", "align": "cpu"}}), QUEUES
     )
-    assert got == ["align:batch_queue='arn:q/cpu'", "call:batch_queue='arn:q/spot'"]
+    assert got == ['{"align": "arn:q/cpu", "call": "arn:q/spot"}']
+    # No rule named, no map.
+    assert module("queue_selectors").settings("snakemake", "{}", QUEUES) == []
+
+
+def test_a_snakemake_rule_name_is_any_name_snakemake_gives() -> None:
+    # A `name:` directive's string, or an unnamed rule's number: the map is matched exactly, and
+    # JSON quotes the name.
+    names = {"1": "cpu", "align-bwa-mem": "spot", "a:b (x)": "cpu"}
+    (got,) = module("queue_selectors").settings("snakemake", json.dumps({"by_name": names}), QUEUES)
+    assert json.loads(got) == {
+        "1": "arn:q/cpu",
+        "align-bwa-mem": "arn:q/spot",
+        "a:b (x)": "arn:q/cpu",
+    }
 
 
 def test_a_queue_is_quoted_for_the_engine_that_reads_it() -> None:
@@ -451,9 +464,9 @@ def test_a_queue_is_quoted_for_the_engine_that_reads_it() -> None:
     assert selectors.settings("nextflow", one, queues) == [
         "process { withName: 'a' { queue = 'arn:q/\\'x\\\\' } }"
     ]
-    # A Python literal, which Snakemake evaluates back to the queue.
+    # JSON, which the executor reads back to the queue.
     (sm,) = selectors.settings("snakemake", one, queues)
-    assert ast.literal_eval(sm.split("=", 1)[1]) == "arn:q/'x\\"
+    assert json.loads(sm) == {"a": "arn:q/'x\\"}
 
 
 @pytest.mark.parametrize(
@@ -463,7 +476,9 @@ def test_a_queue_is_quoted_for_the_engine_that_reads_it() -> None:
         ("snakemake", '{"by_label": {"x": "cpu"}}', "by_label applies only to Nextflow"),
         ("nextflow", '{"by_label": {"pro.*": "cpu"}}', "'pro.*' is not a Nextflow label"),
         ("nextflow", '{"by_name": {"A|B": "cpu"}}', "'A|B' is not a Nextflow process name"),
-        ("snakemake", '{"by_name": {"a:b": "cpu"}}', "'a:b' is not a Snakemake rule name"),
+        ("snakemake", '{"by_name": {"": "cpu"}}', "'' is not a Snakemake rule name"),
+        ("snakemake", '{"by_name": {"a\\nb": "cpu"}}', "'a\\nb' is not a Snakemake rule name"),
+        ("snakemake", '{"by_name": {"a\\u0085": "cpu"}}', "is not a Snakemake rule name"),
         ("nextflow", '{"by_rule": {}}', "unknown keys: by_rule"),
         ("nextflow", '{"by_name": ["A"]}', "by_name is not an object of strings"),
         ("nextflow", "[1]", "BIFFIX_QUEUE_ASSIGNMENT is not a JSON object"),
@@ -521,11 +536,12 @@ def test_an_assignment_is_resolved_for_the_engine(tmp_path: Path) -> None:
         WORK=str(tmp_path),
         ENGINE="snakemake",
         BIFFIX_QUEUE_CLASS_MAP=QUEUES,
-        BIFFIX_QUEUE_ASSIGNMENT='{"by_name": {"align": "cpu"}}',
+        BIFFIX_QUEUE_ASSIGNMENT='{"by_name": {"align": "cpu", "call": "spot"}}',
     )
     assert got.returncode == 0, got.stderr
-    assert got.stdout == "align:batch_queue='arn:q/cpu'\n"
-    assert "1 task selector(s) on other worker queues" in got.stderr
+    assert got.stdout == '{"align": "arn:q/cpu", "call": "arn:q/spot"}\n'
+    # Counted by selector, though Snakemake's map is one line.
+    assert "2 task selector(s) on other worker queues" in got.stderr
 
 
 def test_an_unresolvable_assignment_fails_with_ex_config(tmp_path: Path) -> None:

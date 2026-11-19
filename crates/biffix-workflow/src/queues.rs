@@ -20,14 +20,18 @@
 //!   process definition, then `withLabel`, then `withName`), and that file is read after the
 //!   pipeline's, so for the same selector biffix's value wins.
 //! - **Snakemake**: `default` is the executor's `--aws-batch-job-queue` (a rule's own
-//!   `batch_queue` resource still wins), and each `by_name` entry a
-//!   `--set-resources <rule>:batch_queue=…`, which overrides the rule's own. Snakemake rules have
-//!   no labels, so `by_label` is refused. Rules that share a `group:` run as one AWS Batch job,
+//!   `batch_queue` resource still wins), and the `by_name` entries the executor's rule queue map
+//!   (`--aws-batch-rule-queues`), which outranks a rule's own `batch_queue` and, unlike
+//!   `--set-resources`, leaves the workflow profile's `set-resources` in place. Snakemake rules
+//!   have no labels, so `by_label` is refused. Rules that share a `group:` run as one AWS Batch job,
 //!   on one queue, so they must share a queue-class: assign every rule of a group the same one,
 //!   or none of them.
 //!
-//! Every selector is an exact name, never a pattern: both engines read their selectors as regular
-//! expressions, so only names with no regex metacharacter are accepted.
+//! Every selector is an exact name, never a pattern. Nextflow reads `withLabel` and `withName` as
+//! regular expressions, so its labels and names are held to grammars with no regex
+//! metacharacter. Snakemake's rule queue map is matched exactly, and Snakemake names a rule with
+//! any string (a `name:` directive's, or an unnamed rule's number), so a rule name is any
+//! non-empty string with no control character.
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
@@ -44,11 +48,6 @@ const MAX_QUEUE_SELECTOR_BYTES: usize = 2048;
 
 /// The longest label or name accepted, in characters.
 const MAX_QUEUE_SELECTOR_CHARS: usize = 128;
-
-/// An identifier as both engines name a process or rule: an ASCII letter or `_`, then letters,
-/// digits or `_`.
-static IDENTIFIER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").expect("valid"));
 
 /// A Nextflow process name: an identifier, or identifiers joined by `:` (a fully qualified name).
 static PROCESS_NAME: LazyLock<Regex> = LazyLock::new(|| {
@@ -126,7 +125,10 @@ pub enum QueueAssignmentError {
          joined by `:` for a fully qualified name)"
     )]
     BadProcessName(String),
-    #[error("`queues.by_name`: `{0}` is not a Snakemake rule name (an identifier)")]
+    #[error(
+        "`queues.by_name`: `{0}` is not a Snakemake rule name (a non-empty name with no control \
+         character)"
+    )]
     BadRuleName(String),
     /// A label or name longer than the engines' selectors are allowed here; `what` says which
     /// (`label`, `process name`, `rule name`), `at` where (`by_label.<label>`, `by_name.<name>`).
@@ -145,6 +147,12 @@ pub enum QueueAssignmentError {
         listed_note(.listed)
     )]
     NotInVersion { missing: Vec<String>, listed: Vec<String> },
+}
+
+/// A Snakemake rule name as the rule queue map can carry it: Snakemake names a rule with any
+/// string, so any non-empty one with no control character (which no Snakefile can spell).
+fn is_rule_name(name: &str) -> bool {
+    !name.is_empty() && !name.chars().any(char::is_control)
 }
 
 fn listed_note(listed: &[String]) -> String {
@@ -209,18 +217,21 @@ impl QueueAssignment {
             }
         }
         for name in self.by_name.keys() {
-            let (what, grammar) = match engine {
-                Engine::Nextflow => ("process name", &*PROCESS_NAME),
-                Engine::Snakemake => ("rule name", &*IDENTIFIER),
+            let what = match engine {
+                Engine::Nextflow => "process name",
+                Engine::Snakemake => "rule name",
             };
             if name.chars().count() > MAX_QUEUE_SELECTOR_CHARS {
                 return Err(QueueAssignmentError::TooLong { what, at: format!("by_name.{name}") });
             }
-            if !grammar.is_match(name) {
-                return Err(match engine {
-                    Engine::Nextflow => QueueAssignmentError::BadProcessName(name.clone()),
-                    Engine::Snakemake => QueueAssignmentError::BadRuleName(name.clone()),
-                });
+            match engine {
+                Engine::Nextflow if !PROCESS_NAME.is_match(name) => {
+                    return Err(QueueAssignmentError::BadProcessName(name.clone()));
+                }
+                Engine::Snakemake if !is_rule_name(name) => {
+                    return Err(QueueAssignmentError::BadRuleName(name.clone()));
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -322,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn a_name_is_an_identifier_or_a_nextflow_qualified_name() {
+    fn a_name_is_a_nextflow_process_name_or_any_snakemake_rule_name() {
         for ok in ["ALIGN", "_x", "NFCORE_SAREK:SAREK:BWAMEM1_MEM"] {
             assert_eq!(
                 check(&assignment(None, &[], &[(ok, "q")]), Engine::Nextflow),
@@ -337,8 +348,16 @@ mod tests {
                 "{bad}"
             );
         }
-        assert_eq!(check(&assignment(None, &[], &[("align", "q")]), Engine::Snakemake), Ok(()));
-        for bad in ["A:B", "a.b", "", "a\n"] {
+        // Snakemake names a rule with any string (a `name:` directive's, or an unnamed rule's
+        // number), and its rule queue map is matched exactly.
+        for ok in ["align", "1", "align-bwa-mem", "a.b", "A:B", "call (gpu)"] {
+            assert_eq!(
+                check(&assignment(None, &[], &[(ok, "q")]), Engine::Snakemake),
+                Ok(()),
+                "{ok}"
+            );
+        }
+        for bad in ["", "a\n", "a\tb", "\u{7f}"] {
             assert_eq!(
                 check(&assignment(None, &[], &[(bad, "q")]), Engine::Snakemake),
                 Err(QueueAssignmentError::BadRuleName(bad.into())),

@@ -151,12 +151,11 @@ run_snakemake() {
       --aws-batch-log-group "$BIFFIX_TASK_LOG_GROUP"
     )
   fi
-  # The rules the version sends to other queues (lib/tasks.sh), as the executor's per-rule
-  # `batch_queue` resource: --set-resources overrides a rule's own. Options follow it, so its list
-  # never takes the target.
-  local -a QUEUE_RESOURCES=()
-  mapfile -t QUEUE_RESOURCES <"$QUEUE_SELECTORS_FILE"
-  [ "${#QUEUE_RESOURCES[@]}" = 0 ] || ARGS+=(--set-resources "${QUEUE_RESOURCES[@]}")
+  # The rules the version sends to other queues (lib/tasks.sh): the executor's rule queue map, a
+  # JSON object of rule to queue in QUEUE_SELECTORS_FILE, passed by its path. It outranks a rule's
+  # own `batch_queue` resource and, unlike --set-resources on the command line, leaves the
+  # workflow profile's set-resources in place (Snakemake would drop the profile's whole list).
+  [ ! -s "$QUEUE_SELECTORS_FILE" ] || ARGS+=(--aws-batch-rule-queues "$QUEUE_SELECTORS_FILE")
   [ -z "${BIFFIX_WORKER_IMAGE:-}" ] || ARGS+=(--container-image "$BIFFIX_WORKER_IMAGE")
   # Spot reclaims (see "Spot reclaims" in entrypoint.sh).
   local SPOT_ATTEMPTS="${BIFFIX_SPOT_ATTEMPTS:-5}"
