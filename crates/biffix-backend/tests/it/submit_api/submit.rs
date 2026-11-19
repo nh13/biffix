@@ -335,14 +335,29 @@ async fn a_submit_whose_launch_answer_was_lost_binds_its_job_or_parks_the_run() 
     // again now but parked, for the launch sweep (which stops any it finds first).
     cloud.lose_launch_replies.store(1, SeqCst);
     cloud.hide_live_coordinators.store(true, SeqCst);
+    let before = biffix_core::clock::epoch_micros();
     let res = app.clone().oneshot(post("/runs", Some("operators"), &body)).await.unwrap();
+    let after = biffix_core::clock::epoch_micros();
     assert_eq!(res.status(), StatusCode::ACCEPTED);
     let out = json_body(res).await;
     assert_eq!(out["state"], "preparing_images", "{out}");
     assert!(out["coordinator_job_id"].is_null(), "{out}");
     assert_eq!(cloud.launched.lock().unwrap().len(), 2);
     let run_id = biffix_core::ids::RunId::new(out["run_id"].as_str().unwrap());
-    assert!(state.store.get_pending_launch(&run_id).await.unwrap().is_some());
+    let parked = state.store.get_pending_launch(&run_id).await.unwrap().expect("parked");
+    // The queue it tried, where the sweep looks for that coordinator even if a deploy moves it.
+    let tried = cloud.launched.lock().unwrap()[1].coordinator_queue.clone();
+    assert_eq!(parked.plan["attempted_queues"], json!([tried]), "{}", parked.plan);
+    // And when that launch began (during the request, before the job was created), so a sweep
+    // before Batch lists that coordinator does not take an empty listing, or an older job, as
+    // proof there is none.
+    let at = parked.plan["launch_uncertain_at_micros"].as_i64().expect("recorded");
+    assert!((before..=after).contains(&at), "{before}..={after}: {}", parked.plan);
+    let created = cloud.coordinator_created_at.lock().unwrap()["coord-lost-2"];
+    assert!(at <= created, "{at} > {created}");
+    // And when its answer was found lost, after that, from which Batch's listing window counts.
+    let lost = parked.plan["launch_answer_lost_at_micros"].as_i64().expect("recorded");
+    assert!(created <= lost && lost <= after, "{created}..={after}: {}", parked.plan);
     // Recorded as preparing, never as submitted.
     let kinds: Vec<_> = events
         .events
@@ -353,6 +368,17 @@ async fn a_submit_whose_launch_answer_was_lost_binds_its_job_or_parks_the_run() 
         .map(|e| e.kind().as_str().to_string())
         .collect();
     assert_eq!(kinds, ["run_preparing"]);
+
+    // Batch lists one job, but one created before this launch began (an earlier launch's, still
+    // ending): never taken for the job this launch created, so the run is parked.
+    cloud.hide_live_coordinators.store(false, SeqCst);
+    cloud.lose_launch_replies.store(1, SeqCst);
+    cloud.backdate_coordinators.store(true, SeqCst);
+    let res = app.clone().oneshot(post("/runs", Some("operators"), &body)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    let out = json_body(res).await;
+    assert_eq!(out["state"], "preparing_images", "{out}");
+    assert!(out["coordinator_job_id"].is_null(), "{out}");
 }
 
 #[tokio::test]

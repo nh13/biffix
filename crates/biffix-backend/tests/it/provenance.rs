@@ -244,6 +244,46 @@ fn every_reference_resolves_to_an_entity_or_a_profile() {
 }
 
 #[test]
+fn a_single_job_runs_engine_run_records_its_mode_and_size() {
+    let (v, a, o) = (version(), anchor(), outputs());
+    let mut d = detail();
+    // One job per task: no engine-run usage.
+    assert!(entity(&build(&d, Some(&v), Some(&a), &o), "#engine-run")
+        .get("resourceUsage")
+        .is_none());
+    d.single_job = Some(biffix_core::event::SingleJobUse {
+        queue_class: "single".into(),
+        instance_type: "c6id.8xlarge".into(),
+        vcpus: 32,
+        memory_mib: 61_184,
+    });
+    let c = build(&d, Some(&v), Some(&a), &o);
+    let usage = ids(&entity(&c, "#engine-run")["resourceUsage"]);
+    let values: BTreeMap<String, Value> = usage
+        .iter()
+        .map(|id| {
+            let pv = entity(&c, id);
+            (pv["name"].as_str().unwrap().to_string(), pv["value"].clone())
+        })
+        .collect();
+    assert_eq!(values["executionMode"], "single_job");
+    assert_eq!(values["queueClass"], "single");
+    assert_eq!(values["instanceType"], "c6id.8xlarge");
+    assert_eq!(values["vcpus"], "32");
+    assert_eq!(values["memory"], "61184");
+    assert_eq!(entity(&c, "#usage/engine-run/memory")["unitText"], "MiB");
+    let (_, dup) = graph_ids(&c);
+    assert!(!dup, "an @id appears twice");
+    // A task the engine reported no image for ran in the job itself: it names none, not the
+    // run's default image.
+    for task in &mut d.tasks {
+        task.image = None;
+    }
+    let c = build(&d, Some(&v), Some(&a), &o);
+    assert!(entity(&c, "#task/align%3Asample%3DA").get("containerImage").is_none());
+}
+
+#[test]
 fn steps_are_ordered_producer_first_and_tasks_link_step_to_tool() {
     let c = crate_json();
     assert_eq!(entity(&c, "#step/align")["position"], "0");

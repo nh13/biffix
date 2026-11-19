@@ -85,6 +85,8 @@ pub struct MemStore {
     pub pending_deleted: Mutex<Vec<(String, bool)>>,
     /// Make `put_pending_launch` fail (the store is unavailable).
     pub fail_put_pending: std::sync::atomic::AtomicBool,
+    /// Make the next this many `put_pending_launch` calls fail (a blip), then succeed.
+    pub fail_next_put_pending: std::sync::atomic::AtomicUsize,
     /// Run once, by the next `list_pending_launches`, after it has taken its listing: what another
     /// launcher does between one sweep's listing and its claims.
     pub after_list_pending: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -899,7 +901,9 @@ impl PendingLaunchStore for MemStore {
         &self,
         pending: &crate::store::pending::PendingLaunch,
     ) -> Result<(), StoreError> {
-        if self.fail_put_pending.load(std::sync::atomic::Ordering::SeqCst) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let blip = self.fail_next_put_pending.fetch_update(SeqCst, SeqCst, |n| n.checked_sub(1));
+        if self.fail_put_pending.load(SeqCst) || blip.is_ok() {
             return Err(StoreError::Unavailable("pending_launch is down".into()));
         }
         self.pending.lock().unwrap().insert(pending.run_id.to_string(), pending.clone());

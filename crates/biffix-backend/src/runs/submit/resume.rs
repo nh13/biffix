@@ -114,9 +114,11 @@ fn resumable_into(
 }
 
 /// The half of the resume rules that depends on the prior run alone: it has a known engine, it is
-/// finished, its intermediate files were not deleted, a Nextflow run recorded its engine session,
-/// and it recorded an output prefix to resume in (the resumed run is forced onto it verbatim, so it
-/// finds the prior's work dir).
+/// finished, its intermediate files were not deleted, a Nextflow run recorded its engine session
+/// and did not run as a single job (its work dir and task cache were on its host's local disk,
+/// gone with the host; a Snakemake single-job run's outputs and metadata are in its output prefix
+/// like any other's), and it recorded an output prefix to resume in (the resumed run is forced
+/// onto it verbatim, so it finds the prior's work dir).
 /// `Err` says why not.
 fn resumable(prior: &RunDetailView) -> Result<ResumeTarget, String> {
     let prior_id = &prior.run.run_id;
@@ -133,6 +135,12 @@ fn resumable(prior: &RunDetailView) -> Result<ResumeTarget, String> {
         return Err(format!(
             "run {prior_id}'s intermediate files were deleted, so it can no longer be resumed; \
              launch it again instead"
+        ));
+    }
+    if engine == Engine::Nextflow && prior.single_job.is_some() {
+        return Err(format!(
+            "run {prior_id} ran as a single job: its work directory was on its host's local disk \
+             and did not outlive the run, so it cannot be resumed; launch it again instead"
         ));
     }
     let session_id = prior.engine_session_id.clone();

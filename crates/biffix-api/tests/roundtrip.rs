@@ -407,6 +407,7 @@ fn submit_round_trips() {
         reference: None,
         retention: None,
         images: None,
+        single_job: None,
     });
     // A submit carrying target, output-prefix, retries, keep-going and resume overrides must
     // round-trip.
@@ -425,6 +426,12 @@ fn submit_round_trips() {
         reference: None,
         retention: None,
         images: Some(vec!["repo/tool:1.0".into()]),
+        single_job: Some(biffix_api::SingleJobRequest {
+            queue_class: Some("single".into()),
+            instance: None,
+            cpus: Some(32),
+            memory_gib: Some(64),
+        }),
     });
     rt(SubmittedRun {
         run_id: RunId::new("run-1"),
@@ -518,6 +525,12 @@ fn run_list_and_detail_round_trip_minimal() {
         engine_session_id: Some("3f6c2a1e-0000-4000-8000-000000000000".into()),
         session_mismatch: true,
         resumed_from: Some(RunId::new("run-0")),
+        single_job: Some(biffix_api::RunSingleJob {
+            queue_class: "single".into(),
+            instance_type: "c6id.8xlarge".into(),
+            vcpus: 32,
+            memory_mib: 61_184,
+        }),
         workflow_registered_at_micros: Some(1_700_000_000_000_000),
         launched_at_micros: Some(1_700_000_100_000_000),
         input_tables: None,
@@ -625,6 +638,7 @@ fn run_detail_flatten_puts_summary_fields_at_top_level() {
         engine_session_id: None,
         session_mismatch: false,
         resumed_from: None,
+        single_job: None,
         workflow_registered_at_micros: None,
         launched_at_micros: None,
         input_tables: None,
@@ -691,6 +705,7 @@ proptest! {
             reference: None,
             retention: None,
             images: None,
+            single_job: None,
         });
         rt(RunSummary {
             experiment_id,

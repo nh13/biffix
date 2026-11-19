@@ -130,6 +130,11 @@ pub(crate) struct ProviderConfig {
     /// The name prefix of variant job definitions (IAM allows registering only these;
     /// `BIFFIX_VARIANT_JOB_DEFINITION_PREFIX`).
     pub(crate) variant_job_definition_prefix: Option<String>,
+    /// The name prefix of single-job variant job definitions, cloned from projects' single-job
+    /// templates (IAM allows submitting only these to the single-job queues;
+    /// `BIFFIX_SINGLE_JOB_VARIANT_JOB_DEFINITION_PREFIX`). Unset on a deploy without single-job
+    /// queue-classes.
+    pub(crate) single_job_variant_job_definition_prefix: Option<String>,
     /// The name prefix of the task job definitions the backend registers for runs' tasks (IAM
     /// allows registering only these, and coordinators submitting only these;
     /// `BIFFIX_TASK_JOB_DEFINITION_PREFIX`).
@@ -170,6 +175,8 @@ impl BackendConfig {
                 .filter_map(|arch| Some((arch, env.string(&image_build_project_var(arch))?)))
                 .collect(),
             variant_job_definition_prefix: env.string("BIFFIX_VARIANT_JOB_DEFINITION_PREFIX"),
+            single_job_variant_job_definition_prefix: env
+                .string("BIFFIX_SINGLE_JOB_VARIANT_JOB_DEFINITION_PREFIX"),
             task_job_definition_prefix: env.string("BIFFIX_TASK_JOB_DEFINITION_PREFIX"),
             worker_image_repo: worker_image_repo.clone(),
             ingest_url: errors.take(env.present("BIFFIX_INGEST_URL")),
@@ -202,6 +209,9 @@ impl BackendConfig {
             // blank = none. Read as 32 bits, as the launch form shows it.
             retention_days: errors.take(env.u32("BIFFIX_RETENTION_DAYS")),
             oauth_client: OAuthClient::from_lookup(|name| env.raw(name).map(str::to_owned)),
+            single_job_queues: errors.take(crate::config::single_job::parse_single_job_queues(
+                env.raw(crate::config::single_job::VAR),
+            )),
         };
         Self {
             db: errors.take(DbConfig::from_env(env)),

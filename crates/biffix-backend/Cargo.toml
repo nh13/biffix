@@ -20,10 +20,10 @@ default = []
 # (with `aws`) biffix-db's schema-isolated pool for the pg tests. Never enabled by a production build:
 # the backend's own dev-dependency on itself below turns it on for its tests, and the CLI's for its
 # end-to-end test.
-test-support = ["dep:tower", "biffix-db?/test-support"]
+test-support = ["dep:tower", "biffix-db?/test-support", "biffix-core/test-support"]
 # The production build: the AWS provider, the Postgres stores and the Lambda wiring. Without it the
 # crate is the API surface over in-memory doubles (its tests) and the OpenAPI exporter.
-aws = ["dep:sqlx", "dep:biffix-db", "biffix-db/aws", "biffix-core/lambda", "dep:aws-config", "dep:aws-sdk-batch", "dep:aws-sdk-ecr", "dep:aws-sdk-s3", "dep:aws-sdk-cognitoidentityprovider", "dep:aws-sdk-cloudwatchlogs", "dep:aws-sdk-sns", "dep:aws-sdk-codebuild", "dep:aws-sdk-ssm", "dep:lambda_http", "dep:lambda_runtime"]
+aws = ["dep:sqlx", "dep:biffix-db", "biffix-db/aws", "biffix-core/lambda", "dep:aws-config", "dep:aws-sdk-batch", "dep:aws-sdk-ec2", "dep:aws-sdk-ecr", "dep:aws-sdk-s3", "dep:aws-sdk-cognitoidentityprovider", "dep:aws-sdk-cloudwatchlogs", "dep:aws-sdk-sns", "dep:aws-sdk-codebuild", "dep:aws-sdk-ssm", "dep:lambda_http", "dep:lambda_runtime"]
 
 [lib]
 name = "biffix_backend"
@@ -70,6 +70,7 @@ sqlx = { workspace = true, optional = true }
 biffix-db = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
 aws-sdk-batch = { workspace = true, optional = true }
+aws-sdk-ec2 = { workspace = true, optional = true }
 aws-sdk-ecr = { workspace = true, optional = true }
 aws-sdk-s3 = { workspace = true, optional = true }
 aws-sdk-cognitoidentityprovider = { workspace = true, optional = true }

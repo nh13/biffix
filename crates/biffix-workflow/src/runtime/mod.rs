@@ -45,12 +45,18 @@ pub const RECIPE_VERSION: u32 = 2;
 ///
 /// 1: `BIFFIX_QUEUE_ASSIGNMENT`, the tasks a version sends to other queue-classes
 /// ([`QUEUE_ASSIGNMENT_CONTRACT`]).
-pub const COORDINATOR_CONTRACT: u32 = 1;
+/// 2: `BIFFIX_EXECUTION=single_job`, a whole run in one Batch job ([`SINGLE_JOB_CONTRACT`]).
+pub const COORDINATOR_CONTRACT: u32 = 2;
 
 /// The coordinator contract that applies a version's `queues:` selectors
 /// (`BIFFIX_QUEUE_ASSIGNMENT`): a coordinator from before it ignores them, and every selected task
 /// would run on the default queue.
 pub const QUEUE_ASSIGNMENT_CONTRACT: u32 = 1;
+
+/// The coordinator contract that runs a single-job run (`BIFFIX_EXECUTION=single_job`): a
+/// coordinator from before it ignores the mode and runs the tasks as Batch jobs, so a version that
+/// allows single-job runs (`single_job:` in `biffix.yaml`) requires it.
+pub const SINGLE_JOB_CONTRACT: u32 = 2;
 
 /// Tag prefix of a stored runtime layer image in the coordinator repository: the runtime build
 /// (`codebuild/runtime/build.sh`) tags each layer `runtime-<key12>-<arch>`, and a test ties the

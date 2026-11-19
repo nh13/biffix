@@ -590,4 +590,5 @@ fn the_coordinator_contract_is_part_of_the_key_only_when_needed() {
     assert_eq!(nf.coordinator_contract(), 1);
     // This source's coordinator implements every contract a recipe can ask of it.
     const { assert!(QUEUE_ASSIGNMENT_CONTRACT <= COORDINATOR_CONTRACT) };
+    const { assert!(SINGLE_JOB_CONTRACT <= COORDINATOR_CONTRACT) };
 }

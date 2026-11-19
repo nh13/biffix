@@ -58,6 +58,12 @@ pub struct ProjectContext {
     /// The project's coordinator job definition (revision ARN): the template its coordinator
     /// variants are cloned from (its job role is the project's coordinator role).
     pub coordinator_job_definition: String,
+    /// The project's single-job coordinator job definition (revision ARN): the template a
+    /// single-job run's variant is cloned from (its job role is the project's run role; it sees
+    /// `/dev/fuse` and the host's `/scratch`). `None` (`null` or absent) on a deploy with no
+    /// single-job queue-class.
+    #[serde(default)]
+    pub single_job_job_definition: Option<String>,
     /// Where the project's task jobs log. Empty only in a composition with no deploy behind it
     /// (the tests'), whose task streams are all in [`crate::aws::logs::BATCH_LOG_GROUP`].
     pub task_log_group: String,
@@ -104,11 +110,35 @@ impl ProjectContext {
         if self.coordinator_job_definition.is_empty() {
             return Err(missing("coordinator_job_definition"));
         }
+        // An empty template is none: a single-job launch then says the deploy has none.
+        self.single_job_job_definition = self.single_job_job_definition.filter(|t| !t.is_empty());
         self.data_sources = validate_sources(
             std::mem::take(&mut self.data_sources),
             &format!("{what}: data_sources"),
         )?;
         Ok(self)
+    }
+
+    /// The coordinator job definition template a run's variant is cloned from: the project's
+    /// coordinator template, or for a `single_job` run its single-job template (which runs as the
+    /// project's run role and sees `/dev/fuse` and the host's `/scratch`). `Err` when the project
+    /// has no single-job template (a deploy with no single-job queue-class).
+    pub(crate) fn variant_template(
+        &self,
+        single_job: bool,
+    ) -> Result<crate::aws::batch::VariantTemplate<'_>, String> {
+        use crate::aws::batch::VariantTemplate;
+        if !single_job {
+            return Ok(VariantTemplate { arn: &self.coordinator_job_definition, single_job });
+        }
+        let arn = self.single_job_job_definition.as_deref().ok_or_else(|| {
+            format!(
+                "project `{}` has no single-job job definition (this deploy has no single-job \
+                 queue-class)",
+                self.id
+            )
+        })?;
+        Ok(VariantTemplate { arn, single_job })
     }
 
     /// Every source the project's viewers may browse: its bucket first, then its data sources.
@@ -833,6 +863,7 @@ mod tests {
                 "data_sources",
                 "id",
                 "run_role_arn",
+                "single_job_job_definition",
                 "task_log_group",
                 "uploads",
                 "viewer_cors"

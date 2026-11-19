@@ -130,6 +130,7 @@ impl From<RunDetailView> for RunDetail {
             engine_session_id: d.engine_session_id,
             session_mismatch: d.session_mismatch,
             resumed_from: d.resumed_from,
+            single_job: d.single_job.map(Into::into),
             workflow_registered_at_micros: d.workflow_registered_at_micros,
             launched_at_micros: d.launched_at_micros,
             input_tables: d.input_tables,
@@ -320,8 +321,10 @@ pub(crate) async fn run_detail(state: &AppState, d: RunDetailView, with_tasks: b
     }
     if let Some(prefix) = detail.output_prefix.as_deref() {
         detail.prefix_kind = Some(prefix_kind(prefix, &rid, detail.resumed_from.as_ref()));
+        // A single-job Nextflow run keeps no resume cache: its work dir was on its host's disk.
         if detail.summary.engine.as_deref()
             == Some(biffix_workflow::engines::Engine::Nextflow.as_str())
+            && detail.single_job.is_none()
         {
             detail.resume_cache_uri = detail
                 .engine_session_id
@@ -335,10 +338,23 @@ pub(crate) async fn run_detail(state: &AppState, d: RunDetailView, with_tasks: b
         }
     }
     if let Some(host) = detail.coordinator_host.as_mut() {
-        // The coordinator always runs on the deploy's coordinator queue (configured as an ARN).
-        let coordinator_queue = &state.deploy.coordinator_queue;
-        let name = coordinator_queue.rsplit('/').next().unwrap_or(coordinator_queue);
-        host.queue.get_or_insert_with(|| name.to_string());
+        // The coordinator runs on the deploy's coordinator queue, or a single-job run's on its
+        // queue-class's (each configured as an ARN), when the host's own events named none. A
+        // single-job run whose queue-class the deploy no longer has is left unlabelled rather
+        // than labelled with the coordinator queue it never ran on.
+        let queue = match &detail.single_job {
+            None => Some(state.deploy.coordinator_queue.as_str()),
+            Some(single) => state
+                .deploy
+                .single_job_queues
+                .iter()
+                .find(|q| q.name == single.queue_class)
+                .map(|q| q.queue.as_str()),
+        };
+        if let Some(queue) = queue {
+            let name = queue.rsplit('/').next().unwrap_or(queue);
+            host.queue.get_or_insert_with(|| name.to_string());
+        }
         fill_queue_capacity(host, &state.deploy.queue_capacities);
     }
     detail

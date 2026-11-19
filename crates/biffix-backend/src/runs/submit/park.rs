@@ -46,7 +46,7 @@ pub(super) async fn park(
         resumed_from: plan.resumed_from.as_ref().map(std::string::ToString::to_string),
         images: plan.images.clone(),
         experiment_id: plan.experiment_id.clone(),
-        single_job: None,
+        single_job: plan.single_job.clone(),
     };
     let event = biffix_core::event::run_preparing(
         run_id,

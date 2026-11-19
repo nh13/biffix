@@ -110,7 +110,30 @@ pub struct SubmitOpts {
     pub images: Vec<String>,
     /// The experiment to launch the run into; the server checks it.
     pub experiment: ExperimentChoice,
+    /// Run as one Batch job on one host (`--single-job`), with these overrides of the version's
+    /// default queue-class and size; `None` runs one Batch job per task.
+    pub single_job: Option<biffix_api::SingleJobRequest>,
     pub follow: bool,
+}
+
+/// Refuse a `--single-job` the version cannot take before the API is asked: a version that does not
+/// allow it (`allowed` is its `single_job:`), or a size that is not one. The server decides the
+/// rest (the deploy's queue-classes and instance types).
+fn check_single_job(
+    allowed: Option<&biffix_workflow::single_job::SingleJobSpec>,
+    request: &biffix_api::SingleJobRequest,
+) -> CliResult<()> {
+    if allowed.is_none() {
+        return Err(CliError::InvalidInput(
+            "this workflow version does not allow single-job runs (its biffix.yaml has no \
+             `single_job:`); drop --single-job"
+                .into(),
+        ));
+    }
+    biffix_workflow::single_job::SingleJobSpec::from(request)
+        .size()
+        .map(|_| ())
+        .map_err(|e| CliError::InvalidInput(format!("--single-job: {e}")))
 }
 
 pub async fn submit(session: &mut Session, opts: SubmitOpts) -> CliResult<()> {
@@ -127,6 +150,9 @@ pub async fn submit(session: &mut Session, opts: SubmitOpts) -> CliResult<()> {
     let detail = client.get_workflow(&opts.version_id).await?;
     let form = FormSchema::deserialize(&detail.form_schema)
         .map_err(|e| CliError::Unclassified(format!("registered form_schema is invalid: {e}")))?;
+    if let Some(request) = &opts.single_job {
+        check_single_job(form.single_job.as_ref(), request)?;
+    }
 
     // A resumed run starts from the params the prior run used (minus secrets, which were recorded
     // redacted); `--params` then `--param` override them, so "resume with one change" is one flag.
@@ -188,6 +214,7 @@ pub async fn submit(session: &mut Session, opts: SubmitOpts) -> CliResult<()> {
         reference,
         retention: opts.retention,
         images: (!images.is_empty()).then_some(images),
+        single_job: opts.single_job,
     };
     let resp = client.submit_run(&req).await?;
 
@@ -545,6 +572,18 @@ fn poll_failed(run_id: &str, e: CliError, transient: &mut u32) -> Option<CliErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_job_is_refused_for_a_version_without_it_or_a_bad_size() {
+        let allowed = biffix_workflow::single_job::SingleJobSpec::default();
+        let request = biffix_api::SingleJobRequest::default();
+        assert!(check_single_job(Some(&allowed), &request).is_ok());
+        let err = check_single_job(None, &request).unwrap_err();
+        assert!(err.to_string().contains("does not allow single-job runs"), "{err}");
+        let bad = biffix_api::SingleJobRequest { instance: Some("huge".into()), ..request };
+        let err = check_single_job(Some(&allowed), &bad).unwrap_err();
+        assert!(err.to_string().contains("--single-job: "), "{err}");
+    }
 
     fn form(json: serde_json::Value) -> FormSchema {
         serde_json::from_value(json).unwrap()

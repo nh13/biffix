@@ -14,6 +14,7 @@
 //! on the variant for the current base, or else on the newest variant of an older base, so a base
 //! bump never blocks runs.
 
+use crate::aws::batch::VariantTemplate;
 use biffix_core::builds::BuildProjection;
 use biffix_workflow::runtime::{coordinator_subject, RuntimeRecipe};
 
@@ -174,11 +175,12 @@ async fn on_current_template(
     variant: CoordinatorVariant,
 ) -> Result<CoordinatorVariant, BuildError> {
     let template = default_template(state).await;
+    let template = VariantTemplate { arn: &template, single_job: false };
     if state.cloud.variant_is_current(
         &variant.runtime_key,
         &variant.base_digest,
         &variant.job_definition_arn,
-        &template,
+        template,
     ) {
         return Ok(variant);
     }
@@ -188,7 +190,7 @@ async fn on_current_template(
             &variant.runtime_key,
             &variant.base_digest,
             &variant.image,
-            &template,
+            template,
         )
         .await?;
     tracing::info!(
@@ -241,7 +243,7 @@ pub(crate) async fn ensure(
                     runtime_key,
                     &base.digest,
                     &image,
-                    &default_template(state).await,
+                    VariantTemplate { arn: &default_template(state).await, single_job: false },
                 )
                 .await?;
             let variant = CoordinatorVariant {
@@ -290,15 +292,17 @@ fn logs(url: &Option<String>) -> String {
     url.as_ref().map(|u| format!(" (build log: {u})")).unwrap_or_default()
 }
 
-/// The variant to launch `version` on in `project`: the one for the deployed base image (moving it
-/// forward if it is not ready), else the newest variant built on an older base. Its job definition
-/// is cloned from `project`'s coordinator template (whose job role is the project's coordinator
-/// role): the recorded one for the default project, else the project's own, found by name and
-/// registered when missing.
+/// The variant to launch `version` on from coordinator job definition `template` (a project's
+/// coordinator template, whose job role is the project's coordinator role, or its single-job
+/// template, whose job role is its run role; `crate::config::projects::ProjectContext::variant_template`): the one for
+/// the deployed base image (moving it forward if it is not ready), else the newest variant built on
+/// an older base. Its job definition is cloned from `template`: the recorded one when it is that
+/// template's (the default project's coordinator template, usually), else the template's own
+/// clone, found by name and registered when missing.
 pub(crate) async fn launch_variant(
     state: &AppState,
     version: &WorkflowVersion,
-    project: &crate::config::projects::ProjectContext,
+    template: VariantTemplate<'_>,
 ) -> Result<LaunchVariant, NotRunnable> {
     let (runtime_key, recipe) = runnable_runtime(version)?;
     let base = state.cloud.coordinator_base().await.map_err(BuildError::from)?;
@@ -321,7 +325,7 @@ pub(crate) async fn launch_variant(
     };
     match variant {
         Some(v) => Ok(LaunchVariant {
-            job_definition: project_job_definition(state, &v, project).await?,
+            job_definition: project_job_definition(state, &v, template).await?,
             image: v.image,
             engine_version: recipe.engine_version().to_string(),
             runtime_key: runtime_key.to_string(),
@@ -340,21 +344,21 @@ pub(crate) async fn launch_variant(
     }
 }
 
-/// The job definition of `variant` for `project`: the recorded one when it is the clone `project`'s
-/// own template names (the default project's, usually), else the project's own clone, found by
-/// name and registered when missing. Decided by the recorded job definition's name, never by
-/// comparing templates with a separately read default: the projects may be read again between the
-/// two, and a clone of another project's template runs as that project's coordinator role.
+/// The job definition of `variant` cloned from `template`: the recorded one when it is that
+/// template's clone (the default project's coordinator template, usually), else the template's own
+/// clone, found by name and registered when missing. Decided by the recorded job definition's name,
+/// never by comparing templates with a separately read default: the projects may be read again
+/// between the two, and a clone of another project's template runs as that project's role.
 async fn project_job_definition(
     state: &AppState,
     variant: &CoordinatorVariant,
-    project: &crate::config::projects::ProjectContext,
+    template: VariantTemplate<'_>,
 ) -> Result<String, BuildError> {
     if state.cloud.variant_is_current(
         &variant.runtime_key,
         &variant.base_digest,
         &variant.job_definition_arn,
-        &project.coordinator_job_definition,
+        template,
     ) {
         return Ok(variant.job_definition_arn.clone());
     }
@@ -364,7 +368,7 @@ async fn project_job_definition(
             &variant.runtime_key,
             &variant.base_digest,
             &variant.image,
-            &project.coordinator_job_definition,
+            template,
         )
         .await?)
 }

@@ -222,7 +222,6 @@ pub(crate) async fn prepare(
     let queues: biffix_workflow::queues::QueueAssignment =
         req.queues.clone().map(Into::into).unwrap_or_default();
     let recipe = recipe.with_coordinator_contract(queues.coordinator_contract());
-    let runtime_key = biffix_workflow::runtime::runtime_key(&recipe);
     let mut form_schema = FormSchema::deserialize(&req.form_schema)
         .map_err(|e| ServiceError::Invalid(format!("invalid form_schema: {e}")))?;
     // The catalog is held to the CLI's limits here too, so a direct API registration cannot
@@ -236,6 +235,21 @@ pub(crate) async fn prepare(
     let reports = std::mem::take(&mut form_schema.reports);
     form_schema.reports =
         biffix_workflow::formschema::normalize_reports(&reports, &mut form_schema.warnings);
+    // A single-job default size is checked as the CLI checks it, so a version registered
+    // directly cannot carry one every single-job submit would then be refused for.
+    if let Some(single_job) = &form_schema.single_job {
+        single_job
+            .size()
+            .map_err(|e| ServiceError::Invalid(format!("invalid form_schema.single_job: {e}")))?;
+    }
+    // Likewise a version that allows single-job runs: a coordinator from before them would run
+    // its tasks as Batch jobs instead.
+    let recipe = recipe.with_coordinator_contract(if form_schema.single_job.is_some() {
+        biffix_workflow::runtime::SINGLE_JOB_CONTRACT
+    } else {
+        0
+    });
+    let runtime_key = biffix_workflow::runtime::runtime_key(&recipe);
     if req.about_markdown.as_ref().is_some_and(|a| a.len() > biffix_api::MAX_ABOUT_BYTES) {
         return Err(ServiceError::Invalid(format!(
             "about_markdown is larger than {} KiB",
