@@ -19,6 +19,14 @@ test('workflow tabs have their own URLs', async ({ page }) => {
   await expect(page).toHaveURL(/\/versions$/);
 });
 
+test('the provenance tab lists which queue-class each task runs on', async ({ page }) => {
+  await page.goto('/workflows/aabbccddeeff%3Av1/provenance');
+  const row = (k: string) => page.locator('.prov-row', { has: page.locator('.k', { hasText: k }) });
+  await expect(row('Queues').locator('.v')).toHaveText('cpu-spot, cpu-ondemand');
+  await expect(row('Default').locator('.v')).toHaveText('cpu-spot');
+  await expect(row('Label process_high').locator('.v')).toHaveText('cpu-ondemand');
+});
+
 test('a version that is not there is asked for once, not polled', async ({ page }) => {
   await page.clock.install();
   const asked: string[] = [];

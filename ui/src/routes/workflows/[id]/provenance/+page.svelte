@@ -4,6 +4,7 @@
   import { getWorkflowContext } from '#lib/workflows/workflowContext.svelte.js';
   import { workflowHref } from '#lib/workflows/workflowNav.js';
   import { archMark, imageLabel, isBuilt, shortDigest } from '#lib/workflows/readiness.js';
+  import { queueRows } from '#lib/workflows/queues.js';
   import { CopiedFlag } from '#lib/util/clipboard.svelte.js';
 
   const wf = getWorkflowContext();
@@ -210,6 +211,12 @@
         >{(detail.queue_classes ?? []).join(', ') || '--'}</span
       >
     </div>
+    <!-- Which of them each task runs on (`queues:` in biffix.yaml), when the version says. -->
+    {#each queueRows(detail.queues, detail.queue_classes ?? []) as row (row.tasks)}
+      <div class="prov-row">
+        <span class="k">{row.tasks}</span><span class="v mono">{row.queueClass}</span>
+      </div>
+    {/each}
 
     <h3>Frozen id</h3>
     <div class="prov-row">
