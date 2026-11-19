@@ -199,6 +199,7 @@ STORE="${BIFFIX_OUTPUT_PREFIX:-s3://$BIFFIX_PROJECT_BUCKET/${BIFFIX_RUN_PREFIX}}
 
 track_staged_tree
 resolve_worker_queue
+resolve_queue_selectors
 
 echo "biffix-coordinator: worker queue=$SNAKEMAKE_AWS_BATCH_JOB_QUEUE image=${BIFFIX_WORKER_IMAGE:-<default>} store=$STORE" >&2
 

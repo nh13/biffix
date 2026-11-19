@@ -53,6 +53,7 @@ COPY docker/coordinator/lib/common.sh \
      docker/coordinator/lib/stage_source.py \
      docker/coordinator/lib/image_map.py \
      docker/coordinator/lib/worker_queue.py \
+     docker/coordinator/lib/queue_selectors.py \
      docker/coordinator/lib/events_jsonl.py \
      docker/coordinator/lib/sm_metadata.py \
      docker/coordinator/lib/snakemake_cache_rules.py \

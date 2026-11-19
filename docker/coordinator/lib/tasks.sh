@@ -1,11 +1,12 @@
 # shellcheck shell=bash
 # biffix coordinator: what the engine's child (task) jobs run with: their images, queue and role.
 # Sourced by entrypoint.sh; defines functions only.
-#   Reads: WORK, LIB_DIR, BIFFIX_IMAGE_MAP_URI, BIFFIX_JOB_DEFINITION_MAP_URI, BIFFIX_QUEUE_CLASS,
-#          BIFFIX_QUEUE_CLASS_MAP, SNAKEMAKE_AWS_BATCH_JOB_QUEUE, SNAKEMAKE_AWS_BATCH_JOB_ROLE.
-#   Sets:  SNAKEMAKE_AWS_BATCH_JOB_QUEUE; with an image map, SNAKEMAKE_AWS_BATCH_CONTAINER_IMAGE_MAP
-#          and BIFFIX_IMAGE_MAP_FILE, and SNAKEMAKE_AWS_BATCH_JOB_DEFINITION_MAP and
-#          BIFFIX_JOB_DEFINITION_MAP_FILE.
+#   Reads: WORK, LIB_DIR, ENGINE, BIFFIX_IMAGE_MAP_URI, BIFFIX_JOB_DEFINITION_MAP_URI,
+#          BIFFIX_QUEUE_CLASS, BIFFIX_QUEUE_CLASS_MAP, BIFFIX_QUEUE_ASSIGNMENT,
+#          SNAKEMAKE_AWS_BATCH_JOB_QUEUE, SNAKEMAKE_AWS_BATCH_JOB_ROLE.
+#   Sets:  SNAKEMAKE_AWS_BATCH_JOB_QUEUE, QUEUE_SELECTORS_FILE; with an image map,
+#          SNAKEMAKE_AWS_BATCH_CONTAINER_IMAGE_MAP and BIFFIX_IMAGE_MAP_FILE, and
+#          SNAKEMAKE_AWS_BATCH_JOB_DEFINITION_MAP and BIFFIX_JOB_DEFINITION_MAP_FILE.
 
 # fetch_image_map: the run's image map, when it has one; every task image resolves through it
 # (strict). Exit 78 when it cannot be read.
@@ -54,4 +55,19 @@ resolve_worker_queue() {
   [ -n "${SNAKEMAKE_AWS_BATCH_JOB_QUEUE:-}" ] \
     || runtime_error "no worker queue resolved (BIFFIX_QUEUE_CLASS='${BIFFIX_QUEUE_CLASS:-}')"
   [ -n "${BIFFIX_JOB_DEFINITION_MAP_FILE:-}" ] || require_env SNAKEMAKE_AWS_BATCH_JOB_ROLE "child-job role"
+}
+
+# resolve_queue_selectors: the tasks the version sends to another worker queue than the default
+# (BIFFIX_QUEUE_ASSIGNMENT, by label or name), in the engine's own terms, one per line in
+# QUEUE_SELECTORS_FILE (empty without an assignment; queue_selectors.py): Nextflow withLabel /
+# withName `queue` selectors for the -c config, or Snakemake --set-resources values. Each
+# queue-class resolves through the same map as the default; exit 78 when one does not. Resolved
+# before the engine starts, so a dry run checks it too.
+resolve_queue_selectors() {
+  QUEUE_SELECTORS_FILE="$WORK/.biffix-queue-selectors"
+  : >"$QUEUE_SELECTORS_FILE"
+  [ -n "${BIFFIX_QUEUE_ASSIGNMENT:-}" ] || return 0
+  python3 "$LIB_DIR/queue_selectors.py" "$ENGINE" >"$QUEUE_SELECTORS_FILE" \
+    || runtime_error "could not resolve the run's queue assignment (BIFFIX_QUEUE_ASSIGNMENT)"
+  echo "biffix-coordinator: $(wc -l <"$QUEUE_SELECTORS_FILE" | tr -d ' ') task selector(s) on other worker queues" >&2
 }

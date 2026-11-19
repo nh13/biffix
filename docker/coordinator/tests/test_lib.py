@@ -5,6 +5,7 @@ drives the whole script; these pin down the edges it does not reach."""
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import io
 import json
@@ -417,6 +418,128 @@ def test_no_worker_queue_or_role_fails_with_ex_config() -> None:
     got = bash("resolve_worker_queue", "tasks", BIFFIX_QUEUE_CLASS_MAP=QUEUES)
     assert got.returncode == 78
     assert "SNAKEMAKE_AWS_BATCH_JOB_ROLE required" in got.stderr
+
+
+ASSIGNMENT = json.dumps(
+    {
+        "by_label": {"process_high": "cpu", "size=large": "spot"},
+        "by_name": {"ALIGN": "cpu", "WF:SUB:CALL": "spot"},
+    }
+)
+
+
+def test_a_nextflow_assignment_is_withlabel_then_withname_selectors() -> None:
+    assert module("queue_selectors").settings("nextflow", ASSIGNMENT, QUEUES) == [
+        "process { withLabel: 'process_high' { queue = 'arn:q/cpu' } }",
+        "process { withLabel: 'size=large' { queue = 'arn:q/spot' } }",
+        "process { withName: 'ALIGN' { queue = 'arn:q/cpu' } }",
+        "process { withName: 'WF:SUB:CALL' { queue = 'arn:q/spot' } }",
+    ]
+
+
+def test_a_snakemake_assignment_is_set_resources_values() -> None:
+    got = module("queue_selectors").settings(
+        "snakemake", json.dumps({"by_name": {"align": "cpu", "call": "spot"}}), QUEUES
+    )
+    assert got == ["align:batch_queue='arn:q/cpu'", "call:batch_queue='arn:q/spot'"]
+
+
+def test_a_queue_is_quoted_for_the_engine_that_reads_it() -> None:
+    queues = json.dumps({"q": "arn:q/'x\\"})
+    selectors = module("queue_selectors")
+    one = json.dumps({"by_name": {"a": "q"}})
+    assert selectors.settings("nextflow", one, queues) == [
+        "process { withName: 'a' { queue = 'arn:q/\\'x\\\\' } }"
+    ]
+    # A Python literal, which Snakemake evaluates back to the queue.
+    (sm,) = selectors.settings("snakemake", one, queues)
+    assert ast.literal_eval(sm.split("=", 1)[1]) == "arn:q/'x\\"
+
+
+@pytest.mark.parametrize(
+    ("engine", "assignment", "why"),
+    [
+        ("nextflow", '{"by_name": {"A": "gpu"}}', "queue-class 'gpu' (by_name.A) has no queue"),
+        ("snakemake", '{"by_label": {"x": "cpu"}}', "by_label applies only to Nextflow"),
+        ("nextflow", '{"by_label": {"pro.*": "cpu"}}', "'pro.*' is not a Nextflow label"),
+        ("nextflow", '{"by_name": {"A|B": "cpu"}}', "'A|B' is not a Nextflow process name"),
+        ("snakemake", '{"by_name": {"a:b": "cpu"}}', "'a:b' is not a Snakemake rule name"),
+        ("nextflow", '{"by_rule": {}}', "unknown keys: by_rule"),
+        ("nextflow", '{"by_name": ["A"]}', "by_name is not an object of strings"),
+        ("nextflow", "[1]", "BIFFIX_QUEUE_ASSIGNMENT is not a JSON object"),
+        ("nextflow", '{"by_name": {"A": 1}}', "by_name is not an object of strings"),
+        ("cromwell", "{}", "unknown engine 'cromwell'"),
+    ],
+)
+def test_an_assignment_that_cannot_be_applied_says_why(
+    engine: str, assignment: str, why: str
+) -> None:
+    got = helper(
+        "queue_selectors", engine, BIFFIX_QUEUE_ASSIGNMENT=assignment, BIFFIX_QUEUE_CLASS_MAP=QUEUES
+    )
+    assert got.returncode == 1
+    assert why in got.stderr, got.stderr
+
+
+@pytest.mark.parametrize(
+    ("queues", "why"),
+    [
+        ('{"cpu": "arn:q/\\ncpu"}', "a worker queue has a control character"),
+        ('{"cpu": ""}', "queue-class 'cpu' (by_name.A) has no queue in BIFFIX_QUEUE_CLASS_MAP"),
+        ("{not json", "BIFFIX_QUEUE_CLASS_MAP is not JSON"),
+        ('["arn:q/cpu"]', "BIFFIX_QUEUE_CLASS_MAP is not a JSON object"),
+    ],
+)
+def test_a_queue_class_map_that_cannot_be_applied_says_why(queues: str, why: str) -> None:
+    got = helper(
+        "queue_selectors",
+        "nextflow",
+        BIFFIX_QUEUE_ASSIGNMENT='{"by_name": {"A": "cpu"}}',
+        BIFFIX_QUEUE_CLASS_MAP=queues,
+    )
+    assert got.returncode == 1
+    assert why in got.stderr, got.stderr
+
+
+@pytest.mark.parametrize("engine", ["nextflow", "snakemake"])
+def test_no_assignment_selects_nothing(tmp_path: Path, engine: str) -> None:
+    got = bash(
+        'resolve_queue_selectors; cat "$QUEUE_SELECTORS_FILE"',
+        "tasks",
+        WORK=str(tmp_path),
+        ENGINE=engine,
+        BIFFIX_QUEUE_CLASS_MAP=QUEUES,
+    )
+    assert got.returncode == 0, got.stderr
+    assert got.stdout == ""
+
+
+def test_an_assignment_is_resolved_for_the_engine(tmp_path: Path) -> None:
+    got = bash(
+        'resolve_queue_selectors; cat "$QUEUE_SELECTORS_FILE"',
+        "tasks",
+        WORK=str(tmp_path),
+        ENGINE="snakemake",
+        BIFFIX_QUEUE_CLASS_MAP=QUEUES,
+        BIFFIX_QUEUE_ASSIGNMENT='{"by_name": {"align": "cpu"}}',
+    )
+    assert got.returncode == 0, got.stderr
+    assert got.stdout == "align:batch_queue='arn:q/cpu'\n"
+    assert "1 task selector(s) on other worker queues" in got.stderr
+
+
+def test_an_unresolvable_assignment_fails_with_ex_config(tmp_path: Path) -> None:
+    got = bash(
+        "resolve_queue_selectors",
+        "tasks",
+        WORK=str(tmp_path),
+        ENGINE="nextflow",
+        BIFFIX_QUEUE_CLASS_MAP=QUEUES,
+        BIFFIX_QUEUE_ASSIGNMENT='{"by_label": {"big": "gpu"}}',
+    )
+    assert got.returncode == 78
+    assert "queue-class 'gpu' (by_label.big) has no queue" in got.stderr
+    assert "could not resolve the run's queue assignment" in got.stderr
 
 
 def test_no_image_map_is_no_change() -> None:
@@ -958,6 +1081,24 @@ def test_groovy_str_escapes_backslashes_and_quotes(value: str, literal: str) -> 
     got = bash('groovy_str "$V" what', "nextflow", V=value)
     assert got.returncode == 0, got.stderr
     assert got.stdout == literal
+
+
+GROOVY_STR_CASES = ["plain", "it's", "a\\b", "\\'", "", "$x ${y}", "arn:aws:batch:q/'x\\", "é"]
+
+
+@pytest.mark.parametrize("value", GROOVY_STR_CASES + ["a\nb", "a\rb", "a\tb", "a\x7fb"])
+def test_groovy_str_agrees_with_queue_selectors(value: str) -> None:
+    # queue_selectors.py writes Nextflow selectors with its own copy of groovy_str: both must
+    # quote alike, and refuse alike.
+    got = bash('groovy_str "$V" what', "nextflow", V=value)
+    selectors = module("queue_selectors")
+    try:
+        literal = selectors.groovy_str(value, "what")
+    except selectors.AssignmentError:
+        assert got.returncode == 78, (value, got.stdout)
+    else:
+        assert got.returncode == 0, got.stderr
+        assert got.stdout == literal
 
 
 @pytest.mark.parametrize("value", ["a\nb", "a\rb", "a\tb"])

@@ -537,6 +537,54 @@ def test_nextflow_config_escapes_every_value(nf_job: Job) -> None:
         assert line in config, line
 
 
+NF_ASSIGNMENT = json.dumps({"by_label": {"process_high": "cpu"}, "by_name": {"ALIGN": "cpu"}})
+
+
+def test_nextflow_tasks_go_to_the_queues_the_version_assigns(nf_job: Job) -> None:
+    got = nf_job.run(BIFFIX_QUEUE_CLASS="cpu", BIFFIX_QUEUE_ASSIGNMENT=NF_ASSIGNMENT)
+    assert got.returncode == 0, got.stderr
+    config = (nf_job.work / "nextflow.config").read_text().splitlines()
+    # The default first, then the selectors, which outrank it (and the pipeline's own queue under
+    # the same selector: this file is read after the pipeline's).
+    at = config.index("process.queue = 'arn:queue/second'")
+    assert config[at + 1 : at + 3] == [
+        "process { withLabel: 'process_high' { queue = 'arn:queue/second' } }",
+        "process { withName: 'ALIGN' { queue = 'arn:queue/second' } }",
+    ]
+    # A dry run keeps them, and still runs every process locally.
+    assert nf_job.run(BIFFIX_DRY_RUN="1", BIFFIX_QUEUE_ASSIGNMENT=NF_ASSIGNMENT).returncode == 0
+    dry = (nf_job.work / "nextflow.config").read_text().splitlines()
+    assert "process { withName: '.*' { executor = 'local' } }" in dry
+    assert "process { withName: 'ALIGN' { queue = 'arn:queue/second' } }" in dry
+
+
+def test_a_queue_assignment_the_map_cannot_resolve_fails_before_the_engine(nf_job: Job) -> None:
+    got = nf_job.run(BIFFIX_QUEUE_ASSIGNMENT=json.dumps({"by_label": {"gpu": "gpu"}}))
+    assert got.returncode == 78
+    assert "queue-class 'gpu' (by_label.gpu) has no queue" in got.stderr
+    assert not (nf_job.out / "argv").exists()
+
+
+def test_snakemake_rules_go_to_the_queues_the_version_assigns(sm_job: Job) -> None:
+    got = sm_job.run(
+        BIFFIX_QUEUE_ASSIGNMENT=json.dumps({"by_name": {"align": "cpu", "call": "cpu"}}),
+        BIFFIX_TARGET="all",
+    )
+    assert got.returncode == 0, got.stderr
+    argv = sm_job.argv
+    assert _after(argv, "--aws-batch-job-queue") == "arn:queue/first"
+    at = argv.index("--set-resources")
+    assert argv[at + 1 : at + 3] == [
+        "align:batch_queue='arn:queue/second'",
+        "call:batch_queue='arn:queue/second'",
+    ]
+    # An option follows the list, so it never takes the target as one more value.
+    assert argv[at + 3].startswith("--") and argv[-1] == "all"
+    # Without an assignment, no --set-resources at all.
+    assert sm_job.run().returncode == 0
+    assert "--set-resources" not in sm_job.argv
+
+
 def test_nextflow_config_wires_the_run(nf_job: Job) -> None:
     got = nf_job.run()
     assert got.returncode == 0, got.stderr

@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # biffix coordinator: the Nextflow engine. Sourced by entrypoint.sh; defines functions only.
 #   Reads: WORK, SRC, STORE, PARAMS_JSON, RUNTIME_ROOT, NXF_HOME, NXF_PLUGINS_DIR, the run's BIFFIX_*
-#          env, the resolved SNAKEMAKE_AWS_BATCH_JOB_QUEUE / _ROLE and BIFFIX_JOB_DEFINITION_MAP_FILE.
+#          env, the resolved SNAKEMAKE_AWS_BATCH_JOB_QUEUE / _ROLE, BIFFIX_JOB_DEFINITION_MAP_FILE
+#          and QUEUE_SELECTORS_FILE.
 #   Sets:  rc (Nextflow's exit status); NXF_PLUGINS_DEFAULT, and NXF_UUID or
 #          NXF_IGNORE_RESUME_HISTORY.
 
@@ -115,6 +116,11 @@ run_nextflow() {
     # pipeline's, so its selector applies last (verified on Nextflow 25.10 and 26.x).
     [ -z "${BIFFIX_DRY_RUN:-}" ] || echo "process { withName: '.*' { executor = 'local' } }"
     echo "process.queue = ${queue}"
+    # The tasks the version sends to other queues (lib/tasks.sh): withLabel/withName selectors,
+    # which outrank process.queue and a process's own `queue` directive, and, read after the
+    # pipeline's config, its `queue` under the same selector; a pipeline selector that is more
+    # specific (withName over withLabel) still wins, as Nextflow ranks them.
+    cat "$QUEUE_SELECTORS_FILE"
     [ -z "$image" ] || echo "process.container = ${image}"
     # Tag every task's Batch job with the run and project it belongs to (nf-amazon submits
     # resourceLabels as job tags): biffix accepts the plugin's task_submitted claim on a job only
