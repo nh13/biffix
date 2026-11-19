@@ -19,7 +19,7 @@
 # commit start from the same bytes. To bump it, take the index digest the tag names now (e.g.
 # `crane digest python:3.12-slim` or `docker buildx imagetools inspect python:3.12-slim`) and
 # replace the one below; the Debian packages installed next are the base release's current ones.
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
