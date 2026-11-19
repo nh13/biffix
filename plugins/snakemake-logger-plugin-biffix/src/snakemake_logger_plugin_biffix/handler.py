@@ -346,6 +346,13 @@ class LogHandler(LogHandlerBase):
 
     # ── dispatch to both sinks ──
     def _dispatch(self, event: dict[str, object]) -> None:
+        # Batch restarts a single-job run from scratch after losing its host. Every fact, including
+        # run_started, must identify that generation so lost local work cannot satisfy the retry.
+        raw_attempt = os.environ.get("AWS_BATCH_JOB_ATTEMPT", "")
+        if raw_attempt.isascii() and raw_attempt.isdecimal():
+            attempt = int(raw_attempt)
+            if 0 < attempt <= 0xFFFFFFFF:
+                event["coordinator_attempt"] = attempt
         try:
             self._writer.write(event)
         except OSError:

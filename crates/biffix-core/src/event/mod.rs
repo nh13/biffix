@@ -91,6 +91,10 @@ pub struct RunEvent {
     pub task_key: Option<TaskKey>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt: Option<Attempt>,
+    /// Engine coordinator generation (AWS_BATCH_JOB_ATTEMPT); missing means legacy generation 1.
+    /// Only single-job runs discard older generations' local work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_attempt: Option<std::num::NonZeroU32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch_job_id: Option<BatchJobId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -151,6 +155,7 @@ impl RunEvent {
             run_id: None,
             task_key: None,
             attempt: None,
+            coordinator_attempt: None,
             batch_job_id: None,
             instance_id: None,
             coordinator_job_id: None,

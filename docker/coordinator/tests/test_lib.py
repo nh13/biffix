@@ -5,12 +5,10 @@ drives the whole script; these pin down the edges it does not reach."""
 
 from __future__ import annotations
 
-import ast
 import importlib.util
 import io
 import json
 import os
-import re
 import subprocess
 import sys
 import tarfile
@@ -1319,46 +1317,6 @@ def test_a_rule_image_resource_must_be_a_plain_string() -> None:
     assert "not a plain string (3)" in (sj.rule_image("a", Resource(3), False).problem or "")
 
 
-def test_the_snakefile_wrapper_includes_the_workflow_then_sets_every_rule_s_container(
-    tmp_path: Path,
-) -> None:
-    snakefile = tmp_path / "workflow/Snakefile"
-    snakefile.parent.mkdir()
-    wrapper = tmp_path / "workflow/.biffix-container.smk"
-    module("single_job").snakefile_wrapper(
-        str(snakefile), str(wrapper), "/w/images.json", "/s/images", 'reg/w"x:1', "/w/ti.json", True
-    )
-    text = wrapper.read_text()
-    calls = [node for node in ast.walk(ast.parse(text)) if isinstance(node, ast.Call)]
-    include = next(
-        node
-        for node in calls
-        if isinstance(node.func, ast.Attribute) and node.func.attr == "include"
-    )
-    assert ast.literal_eval(include.args[0]) == str(snakefile)
-    # Parsed, not searched for in the text: a path with a non-ASCII character is written escaped.
-    spec = next(
-        node
-        for node in calls
-        if isinstance(node.func, ast.Attribute) and node.func.attr == "spec_from_file_location"
-    )
-    assert ast.literal_eval(spec.args[1]) == str((LIB / "single_job.py").resolve())
-    containers = next(
-        node
-        for node in calls
-        if isinstance(node.func, ast.Attribute) and node.func.attr == "set_rule_containers"
-    )
-    assert [ast.literal_eval(arg) for arg in containers.args[1:]] == [
-        "/w/images.json",
-        "/s/images",
-        'reg/w"x:1',
-        "/w/ti.json",
-        True,
-    ]
-    # Preserve the entrypoint's default target instead of restoring the wrapper's empty one.
-    assert text.index("workflow.include(") < text.index("_biffix.set_rule_containers(")
-
-
 # A fake apptainer for a real Snakemake run: it records the image each job runs in, then runs the
 # job's command itself.
 _RECORDING_APPTAINER = r"""#!/usr/bin/env bash
@@ -1371,9 +1329,9 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
-image=$1
+echo "$1" >> "$FAKE_IMAGES"
+export BIFFIX_TEST_IMAGE="$1"
 shift
-printf '%s\t%s\n' "$image" "$*" >> "$FAKE_IMAGES"
 exec "$@"
 """
 
@@ -1401,25 +1359,36 @@ class RealSnakemake:
         self.recorded = root / "recorded"
 
     def run(
-        self, snakefile: str, *args: str, convert: bool = True
+        self,
+        snakefile: str,
+        *args: str,
+        convert: bool = True,
+        cpus: int = 1,
+        memory_mib: int = 61440,
     ) -> subprocess.CompletedProcess[str]:
         sj = module("single_job")
         (self.src / "Snakefile").write_text(snakefile)
         if convert:
             for image in ("reg.io/t@sha256:1", "reg.io/w@sha256:2"):
                 (self.images / sj.image_file_name(image)).write_text("image file")
-        wrapper = sj.snakefile_wrapper(
-            str(self.src / "Snakefile"),
-            "",
-            str(self.map_file),
-            str(self.images),
-            "reg.io/w@sha256:2",
-            str(self.task_images),
-            True,
+        built = bash(
+            'run_setup_step() { shift; "$@"; }; ARGS=(); snakemake_single_job_args; '
+            'printf "%s\\0" "${ARGS[@]}"',
+            "snakemake",
+            SNAKEFILE=str(self.src / "Snakefile"),
+            WORK=str(self.root),
+            SCRATCH=str(self.root),
+            SJ_IMAGES=str(self.images),
+            SJ_BIN=str(self.bin),
+            SJ_CPUS=str(cpus),
+            SJ_TASK_MEMORY_MIB=str(memory_mib),
+            BIFFIX_ENGINE_VERSION="9.27.1",
+            BIFFIX_IMAGE_MAP_FILE=str(self.map_file),
+            BIFFIX_WORKER_IMAGE="reg.io/w@sha256:2",
         )
+        assert built.returncode == 0, built.stderr
         return subprocess.run(
-            [sys.executable, "-m", "snakemake", "--snakefile", str(wrapper), "--cores", "1",
-             "--sdm", "apptainer", "--apptainer-prefix", str(self.root / "prefix"), *args],
+            [sys.executable, "-m", "snakemake", *built.stdout.rstrip("\0").split("\0"), *args],
             cwd=self.src,
             env={"PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(self.root),
                  "FAKE_IMAGES": str(self.recorded)},
@@ -1480,7 +1449,14 @@ def test_a_real_snakemake_runs_every_rule_in_the_image_its_batch_job_would(tmp_p
     pytest.importorskip("snakemake")
     sm = RealSnakemake(tmp_path)
     (sm.src / "mod/Snakefile").write_text(_MODULE_SNAKEFILE)
-    got = sm.run(_SNAKEFILE, "all")
+    workflow = _SNAKEFILE
+    for name in ("a", "b", "c", "l", "g", "gt"):
+        workflow = workflow.replace(f"echo {name} >", "echo ${{BIFFIX_TEST_IMAGE:-}} >")
+    module_workflow = _MODULE_SNAKEFILE.replace("echo m >", "echo $BIFFIX_TEST_IMAGE >").replace(
+        "echo mdef >", "echo $BIFFIX_TEST_IMAGE >"
+    )
+    (sm.src / "mod/Snakefile").write_text(module_workflow)
+    got = sm.run(workflow, "all")
     assert got.returncode == 0, got.stderr
     tool = str(sm.images / "reg.io-t@sha256-1.img")
     worker = str(sm.images / "reg.io-w@sha256-2.img")
@@ -1488,19 +1464,18 @@ def test_a_real_snakemake_runs_every_rule_in_the_image_its_batch_job_would(tmp_p
     # image; the rest the default image, whatever their own or the workflow's `container:`; the
     # local rule runs no container, unless it is in a group, whose Batch job runs the image a rule
     # of the group names (its own naming none). Nothing is pulled.
-    ran = {}
-    for line in sm.recorded.read_text().splitlines():
-        image, command = line.split("\t", 1)
-        (output,) = re.findall(r"> (\w+\.txt)", command)
-        ran[output] = image
-    assert ran == {
-        "a.txt": tool,
-        "m.txt": tool,
-        "b.txt": worker,
-        "c.txt": worker,
-        "g.txt": tool,
-        "gt.txt": tool,
-        "mdef.txt": worker,
+    assert {
+        name: (sm.src / f"{name}.txt").read_text().strip()
+        for name in ("a", "b", "c", "l", "m", "mdef", "g", "gt")
+    } == {
+        "a": tool,
+        "b": worker,
+        "c": worker,
+        "l": "",
+        "m": tool,
+        "mdef": worker,
+        "g": tool,
+        "gt": tool,
     }
     assert json.loads(sm.task_images.read_text()) == {
         "a": "reg.io/t@sha256:1",
@@ -1512,7 +1487,8 @@ def test_a_real_snakemake_runs_every_rule_in_the_image_its_batch_job_would(tmp_p
         "mm_mdef": "reg.io/w@sha256:2",
     }
     assert "Pulling" not in got.stderr
-    assert not (tmp_path / "prefix").exists() or not any((tmp_path / "prefix").iterdir())
+    prefix = tmp_path / "apptainer/snakemake"
+    assert not prefix.exists() or not any(prefix.iterdir())
 
 
 def test_only_the_main_snakemake_process_writes_the_task_image_report(tmp_path: Path) -> None:
@@ -1539,11 +1515,13 @@ def test_only_the_main_snakemake_process_writes_the_task_image_report(tmp_path: 
     assert sorted(p.name for p in tmp_path.iterdir()) == ["images.json", "task-images.json"]
 
 
-def test_native_run_block_does_not_claim_its_optional_shell_container(tmp_path: Path) -> None:
-    """Native Python executes in the engine even when shell calls have a configured image."""
+def test_a_local_native_run_block_runs_in_the_engine_without_an_image(tmp_path: Path) -> None:
+    """A local Python run: block executes in the engine, so it reports no task image (one with an
+    image is refused: test_snakemake_single_job.py)."""
     pytest.importorskip("snakemake")
     sm = RealSnakemake(tmp_path)
-    got = sm.run("""rule native:
+    got = sm.run("""localrules: native
+rule native:
     output: "native.txt"
     run:
         import sys
@@ -1584,43 +1562,6 @@ rule function:
     # Before any job ran.
     assert not sm.recorded.exists()
     assert not (sm.src / "u.txt").exists() and not sm.task_images.exists()
-
-
-@pytest.mark.parametrize(
-    ("version", "resources"),
-    [
-        ("9.27.1", ["mem_mb=64424"]),
-        ("9.16.3", ["mem_mb=64424"]),
-        ("10.0.0", ["mem_mb=64424"]),
-        ("9.16.2", ["mem_mb=64424", "mem_mib=61440"]),
-        ("9.1.0", ["mem_mb=64424", "mem_mib=61440"]),
-        ("8.30.0", ["mem_mb=64424", "mem_mib=61440"]),
-    ],
-)
-def test_the_memory_resource_is_spelled_as_the_snakemake_release_reads_it(
-    version: str, resources: list[str]
-) -> None:
-    got = bash(f"snakemake_memory_resources {version} 61440", "snakemake")
-    assert got.returncode == 0, got.stderr
-    assert got.stdout.splitlines() == resources
-
-
-def test_snakemake_accepts_the_memory_resource_it_is_given() -> None:
-    pytest.importorskip("snakemake")
-    got = bash("snakemake_memory_resources 9.27.1 61440", "snakemake")
-    parse = subprocess.run(
-        [sys.executable, "-c", "import sys; from snakemake.cli import parse_args; "
-         "parse_args(sys.argv[1:])", "--cores", "1", "--resources", *got.stdout.split()],
-        capture_output=True, text=True, timeout=120,
-    )  # fmt: skip
-    assert parse.returncode == 0, parse.stderr
-    # Both spellings at once are refused (the reason it gives one from 9.16.3).
-    both = subprocess.run(
-        [sys.executable, "-c", "import sys; from snakemake.cli import parse_args; "
-         "parse_args(sys.argv[1:])", "--resources", "mem_mb=1", "mem_mib=1"],
-        capture_output=True, text=True, timeout=120,
-    )  # fmt: skip
-    assert both.returncode != 0 and "ResourceDuplicationError" in both.stderr
 
 
 def test_a_conversion_failure_names_two_images_that_would_share_a_file(tmp_path: Path) -> None:
@@ -1708,7 +1649,9 @@ def test_only_failed_tasks_files_are_collected_the_most_recent_first(tmp_path: P
     assert names == ["tasks/cc/3333/.command.err", "tasks/bb/2222/.command.err"]
     for i in range(rl.MAX_FAILED_TASKS + 5):
         _task(tmp_path / "many", f"d{i:05d}", "1", 400 + i)
-    assert len(rl.failed_tasks(tmp_path / "many")) == rl.MAX_FAILED_TASKS
+    assert [u.name for u in rl.failed_tasks(tmp_path / "many")] == [
+        f"tasks/d0/{i:04d}/.command.err" for i in range(rl.MAX_FAILED_TASKS + 4, 4, -1)
+    ]
 
 
 def test_failure_txt_is_the_status_and_the_end_of_the_output(tmp_path: Path) -> None:

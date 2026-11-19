@@ -22,6 +22,10 @@ pub struct EngineEvent {
     pub schema_version: u32,
     pub ts: Timestamp,
     pub run_id: RunId,
+    /// The coordinator's positive AWS_BATCH_JOB_ATTEMPT. Missing means legacy generation 1.
+    /// A single-job retry loses all local work; its engine facts belong to a new generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_attempt: Option<std::num::NonZeroU32>,
     #[serde(flatten)]
     pub body: EngineBody,
 }

@@ -45,12 +45,17 @@ pub const RECIPE_VERSION: u32 = 2;
 ///
 /// 1: `BIFFIX_QUEUE_ASSIGNMENT`, the tasks a version sends to other queue-classes
 /// ([`QUEUE_ASSIGNMENT_CONTRACT`]).
-pub const COORDINATOR_CONTRACT: u32 = 1;
+/// 2: single-job execution with nested Apptainer ([`SINGLE_JOB_CONTRACT`]).
+pub const COORDINATOR_CONTRACT: u32 = 2;
 
 /// The coordinator contract that applies a version's `queues:` selectors
 /// (`BIFFIX_QUEUE_ASSIGNMENT`): a coordinator from before it ignores them, and every selected task
 /// would run on the default queue.
 pub const QUEUE_ASSIGNMENT_CONTRACT: u32 = 1;
+
+/// The coordinator contract that executes `BIFFIX_EXECUTION=single_job` locally, with each task
+/// in its mapped image through Apptainer. Earlier coordinators would submit child Batch jobs.
+pub const SINGLE_JOB_CONTRACT: u32 = 2;
 
 /// Tag prefix of a stored runtime layer image in the coordinator repository: the runtime build
 /// (`codebuild/runtime/build.sh`) tags each layer `runtime-<key12>-<arch>`, and a test ties the

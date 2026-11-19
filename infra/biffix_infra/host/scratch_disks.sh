@@ -120,7 +120,7 @@ biffix_mount_scratch() {
     *) device="$(biffix_stripe "${disks[@]}")" ;;
   esac
   # -K: skip the discard pass, as a new instance-store disk reads as zeros already.
-  mkfs.xfs -f -K -L "$BIFFIX_SCRATCH_DM_NAME" "$device"
+  mkfs.xfs -f -K "$device"
   mount -o noatime "$device" "$BIFFIX_SCRATCH_DIR"
   # Whichever user a job's tasks run as may write to it (like /tmp).
   chmod 1777 "$BIFFIX_SCRATCH_DIR"

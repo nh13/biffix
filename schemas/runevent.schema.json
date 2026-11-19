@@ -24,6 +24,15 @@
         }
       ]
     },
+    "coordinator_attempt": {
+      "description": "Engine coordinator generation (AWS_BATCH_JOB_ATTEMPT); missing means legacy generation 1.\nOnly single-job runs discard older generations' local work.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 1
+    },
     "coordinator_job_id": {
       "description": "The coordinator's Batch job id, set only on `coordinator_submitted` (always equal to its\n`batch_job_id`). Informational: the fold joins on `batch_job_id`, and nothing in biffix\nreads this back. It stays a published contract field because stored events carry it and\nexternal consumers may name the coordinator by it (additive-only).",
       "anyOf": [

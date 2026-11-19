@@ -43,6 +43,9 @@ pub struct Projection {
     /// guess: an AWS event for a coordinator-bound job folds as coordinator lifecycle whatever kind
     /// it arrived as (see [`as_coordinator_event`]).
     coordinator_binding: BTreeMap<String, RunId>,
+    /// Engine facts received before a mode anchor. Replayed once when a single-job anchor arrives;
+    /// tasks-mode anchors discard the buffer because their eager aggregate already is correct.
+    unanchored_engine: BTreeMap<String, BTreeMap<String, RunEvent>>,
 }
 
 /// The coordinator (head-job) lifecycle events. They bind on `coordinator_binding` and drive Run
@@ -408,6 +411,47 @@ impl Projection {
     /// Apply a run-scoped event (engine run_*, coordinator_*, control-plane, or an
     /// engine task_* that already carries run_id + task_key).
     fn apply_run_scoped(&mut self, run: &RunId, e: &RunEvent) {
+        let engine = matches!(e.source, EventSource::Snakemake | EventSource::Nextflow)
+            && !matches!(e.data, EventData::Unknown(_));
+        if engine {
+            let rp = self.run_mut(run);
+            let anchored = rp.anchor_order.is_some() || rp.preparing_seen;
+            if !anchored {
+                self.unanchored_engine
+                    .entry(run.as_str().into())
+                    .or_default()
+                    .insert(e.dedup_key.clone(), e.clone());
+            } else if rp.single_job.is_some() {
+                let generation = e.coordinator_attempt.map_or(1, std::num::NonZeroU32::get);
+                if generation < rp.coordinator_attempt {
+                    return;
+                }
+                if generation > rp.coordinator_attempt {
+                    rp.reset_engine_generation(generation);
+                }
+            }
+        }
+        self.apply_run_fact(run, e);
+        if matches!(e.data, EventData::RunSubmitted(_) | EventData::RunPreparing(_)) {
+            if let Some(buffered) = self.unanchored_engine.remove(run.as_str()) {
+                if self.run_mut(run).single_job.is_some() {
+                    let generation = buffered
+                        .values()
+                        .map(|e| e.coordinator_attempt.map_or(1, std::num::NonZeroU32::get))
+                        .max()
+                        .unwrap_or(1);
+                    self.run_mut(run).reset_engine_generation(generation);
+                    for fact in buffered.values().filter(|e| {
+                        e.coordinator_attempt.map_or(1, std::num::NonZeroU32::get) == generation
+                    }) {
+                        self.apply_run_fact(run, fact);
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_run_fact(&mut self, run: &RunId, e: &RunEvent) {
         // Task-scoped engine events that carry their own task_key.
         if let Some(task) = e.task_key.clone() {
             match &e.data {
@@ -608,18 +652,16 @@ impl Projection {
                 }
             }
             EventData::RunStarted { session_id } => {
-                rp.running_seen = true;
-                // Exactly one `run_started` per run (its dedup key has no task/attempt), so
-                // set-once is exact.
-                if rp.reported_session_id.is_none() {
-                    rp.reported_session_id = session_id.clone();
-                }
+                rp.engine_running_seen = true;
+                // Generation-bearing starts can recur; conflicting sessions settle on the least
+                // within a generation (or across starts in tasks mode), independent of arrival.
+                keep_min(&mut rp.reported_session_id, session_id.as_deref());
             }
             EventData::CoordinatorRunning { .. } => {
                 rp.running_seen = true;
             }
             EventData::RunProgress { completed, total } => {
-                rp.running_seen = true;
+                rp.engine_running_seen = true;
                 // Order-independent monotonic progress: keep the highest `completed`
                 // observed; on a tie in `completed`, keep the larger `total`. A DAG only grows (a
                 // checkpoint can raise `total` while `completed` is unchanged), so this both stops
@@ -671,6 +713,18 @@ impl Projection {
             // One per run; the earliest wins so a replayed fold agrees with the incremental one.
             EventData::WorkDeleted {} => {
                 keep_min_micros(&mut rp.work_deleted_at_micros, e.ts.as_micros());
+            }
+            EventData::RunSucceeded {}
+                if matches!(e.source, EventSource::Snakemake | EventSource::Nextflow) =>
+            {
+                rp.engine_succeeded = true;
+                keep_min_micros(&mut rp.engine_completed_at_micros, e.ts.as_micros());
+            }
+            EventData::RunFailed { .. }
+                if matches!(e.source, EventSource::Snakemake | EventSource::Nextflow) =>
+            {
+                keep_min_micros(&mut rp.engine_failed_at_micros, e.ts.as_micros());
+                keep_min_micros(&mut rp.engine_completed_at_micros, e.ts.as_micros());
             }
             EventData::RunSucceeded {} | EventData::CoordinatorSucceeded { .. } => {
                 rp.succeeded = true;
