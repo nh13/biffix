@@ -8,7 +8,8 @@
 //!   [`viewer`] file kinds, report [`glob`]s, and the sha256 [`digest`] and [`text`] helpers;
 //! - [`images`] (references, content keys, registry media types) found by the [`scan`] of the
 //!   source, or built from a [`pixi`] or Dockerfile recipe;
-//! - the supported [`engines`] and the engine [`runtime`] pins and recipes.
+//! - the supported [`engines`] and the engine [`runtime`] pins and recipes;
+//! - the [`queues`] each task runs on (`queues:` in `biffix.yaml`).
 //!
 //! It builds on `biffix-core` (the RunEvent contract) and nothing else in the workspace. The
 //! backend, the API types, the CLI and `xtask` (the FormSchema schema and the shared test-case
@@ -22,6 +23,7 @@ pub mod glob;
 pub mod images;
 pub mod manifest;
 pub mod pixi;
+pub mod queues;
 pub mod runtime;
 pub mod samples;
 pub mod scan;
