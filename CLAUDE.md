@@ -85,18 +85,25 @@ the steps its `lib/` defines, one file per concern (`lib/*.sh` sourced, `lib/*.p
 Dockerfile copies each by name). Built in CI, not on a laptop: `.github/workflows/release.yml`
 publishes it to GHCR with each release, and `build-coordinator-image.yml` builds it into a
 deployer's own ECR, both through the two-architecture build in `coordinator-image.yml`
-(`build-and-push.sh` is only the manual fallback for a tenant without the image-build role). Its Snakemake AWS Batch executor is pinned to a fork
-(`docker/coordinator/wheels.env` holds the repo and commit; the branch, `biffix-pin/<date>`, never
-force-pushed, is named in `crates/biffix-workflow/src/runtime/mod.rs`): upstream plus five open
-upstream PRs, #55 (remote job-state events), #60 (strict container image map), #61 (task log
-group), #64 (`--aws-batch-job-definition-map`, which runs each job on a pre-registered job
-definition and registers none, refusing a job role, log group, privileged setting or per-rule job
-definition beside it) and #65 (`--aws-batch-privileged`, which makes privileged containers
-opt-in), plus small log-noise fixes to upstream's own code. Per-rule queues (#40) and spot reclaim
-retries (#62) are already upstream. Re-pin to upstream once they merge. Every re-pin appends its
-commit to `JOB_DEFINITION_MAP_EXECUTORS` (`runtime/mod.rs`): a version whose runtime pins an
-executor or nf-biffix from before the job-definition map is refused at launch until
-re-registered. `lib/snakemake.sh` always passes the spot-attempts and image-map settings, and the
+(`build-and-push.sh` is only the manual fallback for a tenant without the image-build role). Its
+Snakemake AWS Batch executor is pinned to a fork (`docker/coordinator/wheels.env` holds the repo
+and commit; the branch, `biffix-pin/<date>`, never force-pushed, is named in
+`crates/biffix-workflow/src/runtime/mod.rs`): upstream plus six open upstream PRs, #55 (remote
+job-state events), #60 (strict container image map), #61 (task log group), #64
+(`--aws-batch-job-definition-map`, which runs each job on a pre-registered job definition and
+registers none, refusing a job role, log group, privileged setting or per-rule job definition
+beside it), #65 (`--aws-batch-privileged`, which makes privileged containers opt-in) and #66
+(`--aws-batch-rule-queues`, a rule → job queue map that, unlike `--set-resources`, keeps the
+workflow profile's `set-resources`), plus small log-noise fixes to upstream's own code. A rule's
+own `batch_queue` resource (#40) and spot reclaim retries (#62) are already upstream. Re-pin to
+upstream once they merge. Every re-pin appends its commit to `JOB_DEFINITION_MAP_EXECUTORS`
+(`runtime/mod.rs`): a version whose runtime pins an executor or nf-biffix from before the
+job-definition map is refused at launch until re-registered. A coordinator feature a version can
+depend on, which an older coordinator would ignore rather than refuse (the `queues:` selectors),
+bumps the coordinator contract (`COORDINATOR_CONTRACT` in `wheels.env` and `runtime/mod.rs`, kept
+equal by a test): the base image records it in its wheels manifest, a version that uses the
+feature records the contract in its runtime recipe, and the runtime build refuses a lower base, so
+no variant of that runtime (an older base's included) drops the feature. `lib/snakemake.sh` always passes the spot-attempts and image-map settings, and the
 job-definition map (or, without one, the log group), so a re-pin must keep an executor that has
 all of them. Task job definitions are registered by the backend at launch, never by workflow
 code (`crates/biffix-backend/src/aws/task_definitions.rs`; the coordinator IAM denies every

@@ -53,6 +53,8 @@ pub(crate) const IMAGE_MAP_URI: &str = "BIFFIX_IMAGE_MAP_URI";
 pub(crate) const JOB_DEFINITION_MAP_URI: &str = "BIFFIX_JOB_DEFINITION_MAP_URI";
 /// The worker queue-class child jobs are submitted to.
 pub(crate) const QUEUE_CLASS: &str = "BIFFIX_QUEUE_CLASS";
+/// The tasks that run on another queue-class, by label or name, as JSON.
+pub(crate) const QUEUE_ASSIGNMENT: &str = "BIFFIX_QUEUE_ASSIGNMENT";
 /// The target to build.
 pub(crate) const TARGET: &str = "BIFFIX_TARGET";
 /// The engine's default storage prefix.
@@ -95,6 +97,7 @@ pub(crate) const OPTIONAL: &[&str] = &[
     IMAGE_MAP_URI,
     JOB_DEFINITION_MAP_URI,
     QUEUE_CLASS,
+    QUEUE_ASSIGNMENT,
     TARGET,
     OUTPUT_PREFIX,
     RETRIES,
@@ -186,8 +189,11 @@ pub(crate) fn coordinator_env(
         // Every task runs on the job definition the backend registered for its image, which
         // carries the project's run role and task log group.
         (JOB_DEFINITION_MAP_URI, launch.maps.as_ref().map(|m| m.job_definitions.clone())),
-        // The first declared worker queue-class selects the child-job queue.
-        (QUEUE_CLASS, launch.queue_classes.first().cloned()),
+        // The assignment's default, else the first declared worker queue-class, selects the
+        // child-job queue.
+        (QUEUE_CLASS, launch.queues.default_queue_class(&launch.queue_classes).map(str::to_string)),
+        // The tasks that run elsewhere (the default travels as the queue-class above).
+        (QUEUE_ASSIGNMENT, queue_assignment(launch)?),
         (TARGET, launch.target.clone()),
         (OUTPUT_PREFIX, launch.output_prefix.clone()),
         (RETRIES, launch.retries.map(|r| r.to_string())),
@@ -200,6 +206,17 @@ pub(crate) fn coordinator_env(
         .into_iter()
         .chain(optional.into_iter().filter_map(|(name, value)| Some((name, value?))))
         .collect())
+}
+
+/// `BIFFIX_QUEUE_ASSIGNMENT`: the assignment's selectors as JSON, `None` when it has none.
+fn queue_assignment(launch: &CoordinatorLaunch) -> Result<Option<String>, AwsError> {
+    let selectors = launch.queues.selectors();
+    if selectors.is_empty() {
+        return Ok(None);
+    }
+    serde_json::to_string(&selectors)
+        .map(Some)
+        .map_err(|e| AwsError::Batch(format!("serializing the run's queue assignment: {e}")))
 }
 
 /// The coordinator job's tags: its run and project, like every child job's. IAM lets no
@@ -218,7 +235,8 @@ pub(crate) fn coordinator_job_tags(
 }
 
 /// Refuse an environment whose container overrides Batch would reject for their size: the run's
-/// parameters (and source) travel in it, so a large parameter set can exceed the limit.
+/// parameters (and source) and the version's queue assignment travel in it, so a large parameter
+/// set can exceed the limit.
 pub(crate) fn check_overrides_size(env: &[(&str, String)]) -> Result<(), AwsError> {
     let environment: Vec<_> = env
         .iter()
@@ -227,11 +245,15 @@ pub(crate) fn check_overrides_size(env: &[(&str, String)]) -> Result<(), AwsErro
     let size = serde_json::json!({ "environment": environment }).to_string().len();
     let limit = CONTAINER_OVERRIDES_LIMIT - CONTAINER_OVERRIDES_SLACK;
     if size > limit {
-        let params = env.iter().find(|(name, _)| *name == PARAMS).map_or(0, |(_, v)| v.len());
+        let len_of =
+            |var: &str| env.iter().find(|(name, _)| *name == var).map_or(0, |(_, v)| v.len());
+        let params = len_of(PARAMS);
+        let queues = len_of(QUEUE_ASSIGNMENT);
         return Err(AwsError::Invalid(format!(
             "the run's settings are too large to launch: AWS Batch allows about {limit} characters \
-             of coordinator environment and this run needs {size} ({params} of them parameters); \
-             pass large values (long lists of files) as a samplesheet or an s3:// folder instead"
+             of coordinator environment and this run needs {size} ({params} of them parameters, \
+             {queues} the version's queue assignment); pass large values (long lists of files) as \
+             a samplesheet or an s3:// folder instead"
         )));
     }
     Ok(())
@@ -271,6 +293,7 @@ mod tests {
             output_prefix: None,
             params: serde_json::json!({"n": 1}),
             queue_classes: vec![],
+            queues: Default::default(),
             retries: None,
             keep_going: None,
             engine_session_id: None,
@@ -328,6 +351,10 @@ mod tests {
             target: Some("all".into()),
             output_prefix: Some("s3://proj/out/".into()),
             queue_classes: vec!["gpu".into(), "cpu".into()],
+            queues: biffix_workflow::queues::QueueAssignment {
+                by_label: [("process_high".to_string(), "cpu".to_string())].into(),
+                ..Default::default()
+            },
             retries: Some(2),
             keep_going: Some(false),
             engine_session_id: Some("sess".into()),
@@ -348,6 +375,7 @@ mod tests {
                 "s3://proj/biffix/runs/run-1/inputs/job-definitions.json",
             ),
             ("BIFFIX_QUEUE_CLASS", "gpu"),
+            ("BIFFIX_QUEUE_ASSIGNMENT", r#"{"by_label":{"process_high":"cpu"}}"#),
             ("BIFFIX_TARGET", "all"),
             ("BIFFIX_OUTPUT_PREFIX", "s3://proj/out/"),
             ("BIFFIX_RETRIES", "2"),
@@ -362,6 +390,22 @@ mod tests {
             assert_eq!(env.get(name).map(String::as_str), Some(*value), "{name}");
         }
         assert_eq!(env.len(), env_map(&minimal_launch()).len() + optional.len());
+    }
+
+    #[test]
+    fn the_queue_assignment_s_default_outranks_the_first_queue_class() {
+        let launch = CoordinatorLaunch {
+            queue_classes: vec!["cpu".into(), "gpu".into()],
+            queues: biffix_workflow::queues::QueueAssignment {
+                default: Some("gpu".into()),
+                ..Default::default()
+            },
+            ..minimal_launch()
+        };
+        let env = env_map(&launch);
+        assert_eq!(env["BIFFIX_QUEUE_CLASS"], "gpu");
+        // A default alone has no selectors to send.
+        assert!(!env.contains_key("BIFFIX_QUEUE_ASSIGNMENT"));
     }
 
     #[test]
@@ -391,6 +435,10 @@ mod tests {
             target: Some("all".into()),
             output_prefix: Some("s3://proj/out/".into()),
             queue_classes: vec!["gpu".into()],
+            queues: biffix_workflow::queues::QueueAssignment {
+                by_name: [("ALIGN".to_string(), "gpu".to_string())].into(),
+                ..Default::default()
+            },
             retries: Some(2),
             keep_going: Some(false),
             engine_session_id: Some("sess".into()),
@@ -475,11 +523,29 @@ mod tests {
         assert!(check_overrides_size(&env).is_ok());
         let files: Vec<String> =
             (0..400).map(|i| format!("s3://proj/data/sample-{i:04}.fastq.gz")).collect();
-        let launch =
-            CoordinatorLaunch { params: serde_json::json!({ "reads": files }), ..minimal_launch() };
+        let launch = CoordinatorLaunch {
+            params: serde_json::json!({ "reads": files }),
+            queue_classes: vec!["cpu".into()],
+            queues: biffix_workflow::queues::QueueAssignment {
+                by_name: [("ALIGN".to_string(), "cpu".to_string())].into(),
+                ..Default::default()
+            },
+            ..minimal_launch()
+        };
         let env = coordinator_env(&launch, DEPLOY_INGEST_URL, DEPLOY_WORKER_REPO).unwrap();
+        let params = serde_json::json!({ "reads": files }).to_string().len();
+        let queues = serde_json::to_string(&launch.queues.selectors()).unwrap().len();
+        assert_ne!(queues, 0);
         match check_overrides_size(&env) {
-            Err(AwsError::Invalid(m)) => assert!(m.contains("too large"), "{m}"),
+            Err(AwsError::Invalid(m)) => {
+                assert!(m.contains("too large"), "{m}");
+                assert!(
+                    m.contains(&format!(
+                        "({params} of them parameters, {queues} the version's queue assignment)"
+                    )),
+                    "{m}"
+                );
+            }
             other => panic!("{other:?}"),
         }
     }

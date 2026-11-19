@@ -5631,6 +5631,40 @@
           }
         }
       },
+      "QueuesRequest": {
+        "type": "object",
+        "description": "The `queues:` block a registration sends ([`VersionQueues`] as a version records it). An\nunknown key, such as a misspelled `by_nmae`, is refused rather than dropped, which would run\nevery task it meant to pick on the default queue-class.",
+        "properties": {
+          "by_label": {
+            "type": "object",
+            "description": "Nextflow only: process label → queue-class.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "by_name": {
+            "type": "object",
+            "description": "Nextflow process or Snakemake rule name → queue-class.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "default": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The queue-class tasks run on when no selector picks one."
+          }
+        },
+        "additionalProperties": false
+      },
       "ReferenceBundle": {
         "type": "object",
         "description": "A reference bundle (`GET /references`).",
@@ -5860,6 +5894,17 @@
               "type": "string"
             },
             "description": "Worker queue-classes this version's tasks reference (validated against the deploy menu)."
+          },
+          "queues": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/QueuesRequest",
+                "description": "Which worker queue-class each task runs on (`queues:` in `biffix.yaml`). Every queue-class\nit names must be one of `queue_classes`. Absent: every task runs on the version's default\nqueue-class."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "registration_inputs": {
             "$ref": "#/components/schemas/RegistrationInputs",
@@ -8437,6 +8482,39 @@
           }
         }
       },
+      "VersionQueues": {
+        "type": "object",
+        "description": "A version's queue assignment, which worker queue-class each task runs on: `queues:` in\n`biffix.yaml`, as the API carries it (the domain type is `biffix_workflow::queues::\nQueueAssignment`). Values are queue-class names, resolved to the deployment's Batch queues\nwhen a run starts.",
+        "properties": {
+          "by_label": {
+            "type": "object",
+            "description": "Nextflow only: process label → queue-class.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "by_name": {
+            "type": "object",
+            "description": "Nextflow process or Snakemake rule name → queue-class.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "default": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The queue-class tasks run on when no selector picks one."
+          }
+        }
+      },
       "VersionRelease": {
         "type": "object",
         "description": "Whether a version is released now, and by whom: the one release shape every workflow read\ncarries (`GET /workflows`, `GET /workflows/{id}`, `PUT /workflows/{id}/release`).\n`at_micros`, `by` and `by_label` describe the change that released it, so they are set only\nwhile `released`.",
@@ -8933,6 +9011,17 @@
             "items": {
               "type": "string"
             }
+          },
+          "queues": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/VersionQueues",
+                "description": "Which worker queue-class each task runs on (`queues:` in `biffix.yaml`); absent when the\nversion assigns none, and every task runs on its default queue-class."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "registration_inputs": {
             "$ref": "#/components/schemas/RegistrationInputs",

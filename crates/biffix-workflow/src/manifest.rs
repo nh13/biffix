@@ -117,6 +117,11 @@ pub struct BiffixManifest {
     /// sha256 and builds it into the runtime layer; `biffix inspect --write` fills this in.
     #[serde(default)]
     pub plugins: Vec<String>,
+    /// The worker queue-class each task runs on: a default, and tasks picked by label (Nextflow)
+    /// or name (see [`crate::queues`]). Unknown keys inside it are refused (the stored
+    /// [`QueueAssignment`](crate::queues::QueueAssignment) ignores them).
+    #[serde(default, deserialize_with = "crate::queues::deserialize_manifest")]
+    pub queues: Option<crate::queues::QueueAssignment>,
     /// Keys this struct does not know, kept only to be warned about (see
     /// [`BiffixManifest::unknown_keys`]).
     #[serde(flatten)]
@@ -640,6 +645,21 @@ form:
             .0
             .contains("has no version"));
         assert!(BiffixManifest::default().nextflow_plugins(Engine::Snakemake).unwrap().is_empty());
+    }
+
+    #[test]
+    fn queues_parse_and_refuse_an_unknown_key() {
+        let m = BiffixManifest::parse_yaml(
+            "queues:\n  default: small-spot\n  by_label: {process_high: large-spot}\n",
+        )
+        .unwrap();
+        assert!(m.unknown_keys().is_empty());
+        let queues = m.queues.unwrap();
+        assert_eq!(queues.default.as_deref(), Some("small-spot"));
+        assert_eq!(queues.by_label["process_high"], "large-spot");
+        assert!(BiffixManifest::default().queues.is_none());
+        let err = BiffixManifest::parse_yaml("queues:\n  by_rule: {align: large}\n").unwrap_err();
+        assert!(err.0.contains("unknown field `by_rule`"), "{}", err.0);
     }
 
     #[test]

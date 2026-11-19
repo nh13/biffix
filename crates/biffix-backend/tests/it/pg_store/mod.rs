@@ -108,6 +108,7 @@ fn registered_version(id: &str) -> biffix_backend::store::registry::RegisteredVe
             target: None,
             form_schema: serde_json::json!({"fields": [], "warnings": []}),
             queue_classes: vec![],
+            queues: Default::default(),
             about_markdown: None,
             runtime_key: "runtime-key".into(),
             runtime_recipe: serde_json::json!({"engine": "nextflow"}),

@@ -226,12 +226,11 @@ pub(super) fn sends_build_options(
         .any(|b| b.target.is_some() || !b.build_args.is_empty())
 }
 
-/// `err`, from reading back the version `id` just registered, annotated with that id: the server
-/// stored the version, and an error that did not name it would lose it. Keeps the exit code.
-pub(super) fn read_back_failed(id: &str, err: CliError) -> CliError {
-    err.map_message(|m| {
-        format!("registered {id}, but its build options could not be read back: {m}")
-    })
+/// `err`, from reading back the version `id` just registered to check `what` it recorded (`build
+/// options`, `queue assignment`), annotated with that id: the server stored the version, and an
+/// error that did not name it would lose it. Keeps the exit code.
+pub(super) fn read_back_failed(id: &str, what: &str, err: CliError) -> CliError {
+    err.map_message(|m| format!("registered {id}, but its {what} could not be read back: {m}"))
 }
 
 /// Refuse a registration whose deployment dropped the target or build args `sent` (as a backend
@@ -497,10 +496,13 @@ mod tests {
             CliError::Forbidden("forbidden".into()),
         ] {
             let code = err.exit_code();
-            let annotated = read_back_failed("v:1", err);
+            let annotated = read_back_failed("v:1", "queue assignment", err);
             assert_eq!(annotated.exit_code(), code);
             let m = annotated.to_string();
-            assert!(m.contains("registered v:1") && m.contains("could not be read back"), "{m}");
+            assert!(
+                m.contains("registered v:1, but its queue assignment could not be read back: "),
+                "{m}"
+            );
         }
     }
 

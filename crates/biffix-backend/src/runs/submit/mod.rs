@@ -467,6 +467,7 @@ pub async fn submit(
             worker_image_repo_uri: worker_image_repo_uri(&req.version),
             params: launch_params,
             queue_classes: req.version.queue_classes.clone(),
+            queues: req.version.queues.clone(),
             retries: req.plan.retries,
             keep_going: req.plan.keep_going,
             engine_session_id,
@@ -699,5 +700,78 @@ mod tests {
                 candidate("s3://b/idx", InputKind::FileOrFolder),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_version_s_queue_assignment_reaches_the_coordinator_s_environment() {
+        let mut version = crate::testing::version_with_reports(
+            "wf",
+            "demo",
+            biffix_workflow::engines::Engine::Nextflow,
+            json!([]),
+        )
+        .version;
+        version.queue_classes = vec!["cpu".into(), "gpu".into()];
+        version.queues = biffix_workflow::queues::QueueAssignment {
+            default: Some("gpu".into()),
+            by_label: [("process_high".to_string(), "cpu".to_string())].into(),
+            ..Default::default()
+        };
+        let req = SubmitRequest {
+            run_id: RunId::new("r1"),
+            version,
+            source: WorkflowSource::Git { repo: "github.com/o/r".into(), git_ref: "main".into() },
+            plan: crate::runs::launch::LaunchPlan {
+                version: crate::runs::launch::LAUNCH_PLAN_VERSION,
+                version_id: "abc:hash".into(),
+                actor: "alice".into(),
+                submitter_label: None,
+                params: json!({}),
+                input_uris: vec![],
+                input_provenance: Default::default(),
+                target: None,
+                output_prefix: None,
+                retries: None,
+                keep_going: None,
+                engine_session_id: None,
+                resumed_from: None,
+                run_name: None,
+                dropped_inactive: vec![],
+                input_tables: Default::default(),
+                reference_bundle: None,
+                sample_count: None,
+                samples: None,
+                retention: None,
+                images: vec![],
+                experiment_id: None,
+            },
+            coordinator_queue: "coordinator".into(),
+            project: crate::aws::batch::LaunchProject {
+                id: "demo".into(),
+                bucket: "b".into(),
+                run_role_arn: "arn:aws:iam::123:role/run".into(),
+                task_log_group: "/biffix/t/demo/tasks".into(),
+            },
+            variant: LaunchVariant {
+                job_definition: "arn:aws:batch:us-east-1:123:job-definition/coord:1".into(),
+                image: "123.dkr.ecr.us-east-1.amazonaws.com/coord@sha256:variant".into(),
+                engine_version: "25.10.4".into(),
+                runtime_key: "k".into(),
+            },
+            image_source_digest: None,
+            image_map: None,
+        };
+        let fake = Arc::new(crate::testing::FakeCloud::new());
+        let cloud: Arc<dyn CloudProvider> = fake.clone();
+        submit(&cloud, req).await.expect("submits");
+        let launched = fake.launched.lock().unwrap().clone();
+        assert_eq!(launched.len(), 1);
+        let env = crate::aws::coordinator_env::coordinator_env(&launched[0], "https://api", "repo")
+            .unwrap();
+        let get = |name: &str| env.iter().find(|(n, _)| *n == name).map(|(_, v)| v.as_str());
+        // The assignment's default is the run's queue-class (not the first listed), and its
+        // selectors travel beside it.
+        assert_eq!(get("BIFFIX_QUEUE_CLASS"), Some("gpu"));
+        assert_eq!(get("BIFFIX_QUEUE_ASSIGNMENT"), Some(r#"{"by_label":{"process_high":"cpu"}}"#));
     }
 }

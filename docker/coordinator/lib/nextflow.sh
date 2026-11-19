@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # biffix coordinator: the Nextflow engine. Sourced by entrypoint.sh; defines functions only.
 #   Reads: WORK, SRC, STORE, PARAMS_JSON, RUNTIME_ROOT, NXF_HOME, NXF_PLUGINS_DIR, the run's BIFFIX_*
-#          env, the resolved SNAKEMAKE_AWS_BATCH_JOB_QUEUE / _ROLE and BIFFIX_JOB_DEFINITION_MAP_FILE.
+#          env, the resolved SNAKEMAKE_AWS_BATCH_JOB_QUEUE / _ROLE, BIFFIX_JOB_DEFINITION_MAP_FILE
+#          and QUEUE_SELECTORS_FILE.
 #   Sets:  rc (Nextflow's exit status); NXF_PLUGINS_DEFAULT, and NXF_UUID or
 #          NXF_IGNORE_RESUME_HISTORY.
 
@@ -16,6 +17,19 @@ groovy_str() {
   v=${v//"$bs"/"$bs$bs"}
   v=${v//"$q"/"$bs$q"}
   printf "'%s'" "$v"
+}
+
+# queue_selector_config: the -c config lines for the tasks the version sends to other queues, from
+# queue_selectors.py's lines on stdin (lib/tasks.sh QUEUE_SELECTORS_FILE): each
+# `withLabel|withName <TAB> <selector> <TAB> <queue>`, the selector an exact label or name (the
+# script checked it), becomes `process { withLabel: '<selector>' { queue = '<queue>' } }`, the
+# queue quoted by groovy_str.
+queue_selector_config() {
+  local kind selector queue
+  while IFS=$'\t' read -r kind selector queue; do
+    queue=$(groovy_str "$queue" "a worker queue")
+    echo "process { ${kind}: '${selector}' { queue = ${queue} } }"
+  done
 }
 
 # layer_plugin_version <id>: the version of the one <id> plugin the runtime layer carries
@@ -115,6 +129,11 @@ run_nextflow() {
     # pipeline's, so its selector applies last (verified on Nextflow 25.10 and 26.x).
     [ -z "${BIFFIX_DRY_RUN:-}" ] || echo "process { withName: '.*' { executor = 'local' } }"
     echo "process.queue = ${queue}"
+    # The tasks the version sends to other queues (lib/tasks.sh): withLabel/withName selectors,
+    # which outrank process.queue and a process's own `queue` directive, and, read after the
+    # pipeline's config, its `queue` under the same selector; a pipeline selector that is more
+    # specific (withName over withLabel) still wins, as Nextflow ranks them.
+    queue_selector_config <"$QUEUE_SELECTORS_FILE"
     [ -z "$image" ] || echo "process.container = ${image}"
     # Tag every task's Batch job with the run and project it belongs to (nf-amazon submits
     # resourceLabels as job tags): biffix accepts the plugin's task_submitted claim on a job only

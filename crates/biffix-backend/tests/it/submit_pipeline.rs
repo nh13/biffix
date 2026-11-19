@@ -56,6 +56,7 @@ fn version() -> WorkflowVersion {
             "warnings": []
         }),
         queue_classes: vec!["cpu-spot".into()],
+        queues: Default::default(),
         about_markdown: None,
         runtime_key: "rt".into(),
         runtime_recipe: serde_json::json!({"engine": "snakemake"}),

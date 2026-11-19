@@ -250,13 +250,15 @@ feature, a logger plugin, a richer parameter schema. biffix carries a local work
 the upstream change is in review.
 
 The one current exception is the Snakemake AWS Batch executor. The coordinator installs it from a
-fork pinned to an exact commit (`docker/coordinator/wheels.env`). The fork is upstream plus five
+fork pinned to an exact commit (`docker/coordinator/wheels.env`). The fork is upstream plus six
 open pull requests biffix depends on: job-state events that carry the Batch job id, a strict
 container image map in which a task naming an unmapped image fails instead of pulling it, a
 per-project task log group, a job definition map with which every job runs on a definition
-registered ahead of time and the executor registers none, and privileged containers made opt-in.
-Other features biffix uses, such as per-rule queues and spot retry attempts, are already upstream.
-The pin moves back to an upstream release once all five have merged.
+registered ahead of time and the executor registers none, privileged containers made opt-in, and
+a rule queue map that sends rules to job queues from the command line without replacing the
+workflow profile's `set-resources`. Other features biffix uses, such as a rule's own
+`batch_queue` resource and spot retry attempts, are already upstream. The pin moves back to an
+upstream release once all six have merged.
 
 ## The RunEvent contract
 

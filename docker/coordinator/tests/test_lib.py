@@ -23,11 +23,12 @@ LIB = Path(__file__).resolve().parents[1] / "lib"
 FAKES = Path(__file__).parent / "fakes" / "py"
 
 
-def bash(code: str, *libs: str, **env: str) -> subprocess.CompletedProcess[str]:
+def bash(code: str, *libs: str, stdin: str = "", **env: str) -> subprocess.CompletedProcess[str]:
     """`code` in bash under the entrypoint's options, with common.sh and `libs` sourced."""
     sources = "".join(f'. "$LIB_DIR/{lib}.sh"\n' for lib in ("common", *libs))
     return subprocess.run(
         ["bash", "-c", f"set -euo pipefail\n{sources}{code}"],
+        input=stdin,
         env={"PATH": os.environ["PATH"], "LIB_DIR": str(LIB), "PYTHONPATH": str(FAKES)} | env,
         capture_output=True,
         text=True,
@@ -417,6 +418,177 @@ def test_no_worker_queue_or_role_fails_with_ex_config() -> None:
     got = bash("resolve_worker_queue", "tasks", BIFFIX_QUEUE_CLASS_MAP=QUEUES)
     assert got.returncode == 78
     assert "SNAKEMAKE_AWS_BATCH_JOB_ROLE required" in got.stderr
+
+
+ASSIGNMENT = json.dumps(
+    {
+        "by_label": {"process_high": "cpu", "size=large": "spot"},
+        "by_name": {"ALIGN": "cpu", "WF:SUB:CALL": "spot"},
+    }
+)
+
+
+def selector_lines(
+    engine: str, assignment: str, queues: str = QUEUES, selectors: ModuleType | None = None
+) -> list[str]:
+    """queue_selectors.py's lines for `assignment` (in `selectors`, a loaded copy of the script)."""
+    selectors = selectors or module("queue_selectors")
+    lines: list[str] = selectors.settings(engine, *selectors.parse_assignment(assignment), queues)
+    return lines
+
+
+def test_a_nextflow_assignment_is_withlabel_then_withname_lines() -> None:
+    assert selector_lines("nextflow", ASSIGNMENT) == [
+        "withLabel\tprocess_high\tarn:q/cpu",
+        "withLabel\tsize=large\tarn:q/spot",
+        "withName\tALIGN\tarn:q/cpu",
+        "withName\tWF:SUB:CALL\tarn:q/spot",
+    ]
+
+
+def test_nextflow_s_lines_become_config_selectors_with_the_queue_quoted() -> None:
+    lines = selector_lines("nextflow", ASSIGNMENT, json.dumps({"cpu": "arn:q/'x\\", "spot": "s"}))
+    got = bash("queue_selector_config", "nextflow", stdin="\n".join(lines) + "\n")
+    assert got.returncode == 0, got.stderr
+    assert got.stdout.splitlines() == [
+        "process { withLabel: 'process_high' { queue = 'arn:q/\\'x\\\\' } }",
+        "process { withLabel: 'size=large' { queue = 's' } }",
+        "process { withName: 'ALIGN' { queue = 'arn:q/\\'x\\\\' } }",
+        "process { withName: 'WF:SUB:CALL' { queue = 's' } }",
+    ]
+    # No assignment, no selectors.
+    assert bash("queue_selector_config", "nextflow", stdin="").stdout == ""
+
+
+def test_a_snakemake_assignment_is_the_executor_s_rule_queue_map() -> None:
+    got = selector_lines("snakemake", json.dumps({"by_name": {"call": "spot", "align": "cpu"}}))
+    assert got == ['{"align": "arn:q/cpu", "call": "arn:q/spot"}']
+    # No rule named, no map.
+    assert selector_lines("snakemake", "{}") == []
+
+
+def test_a_snakemake_rule_name_is_any_name_snakemake_gives() -> None:
+    # A `name:` directive's string, or an unnamed rule's number: the map is matched exactly, and
+    # JSON quotes the name.
+    names = {"1": "cpu", "align-bwa-mem": "spot", "a:b (x)": "cpu", "a'b": "cpu"}
+    (got,) = selector_lines("snakemake", json.dumps({"by_name": names}))
+    assert json.loads(got) == {
+        "1": "arn:q/cpu",
+        "align-bwa-mem": "arn:q/spot",
+        "a:b (x)": "arn:q/cpu",
+        "a'b": "arn:q/cpu",
+    }
+
+
+SELECTOR_CASES = json.loads(
+    (Path(__file__).resolve().parents[3] / "schemas" / "queue-selector-cases.json").read_text()
+)
+
+
+@pytest.mark.parametrize(
+    "case", SELECTOR_CASES, ids=lambda c: f"{c['engine']}-{c['key']}-{c['selector']!r}"
+)
+def test_the_selector_grammars_agree_with_registration(case: dict[str, object]) -> None:
+    # biffix-workflow's cases (schemas/queue-selector-cases.json, from queues.rs's validation):
+    # this script accepts exactly the selectors registration does.
+    selectors = module("queue_selectors")
+    assignment = json.dumps({case["key"]: {case["selector"]: "cpu"}})
+    try:
+        selector_lines(str(case["engine"]), assignment, selectors=selectors)
+    except selectors.AssignmentError:
+        assert not case["accepted"], case
+    else:
+        assert case["accepted"], case
+
+
+@pytest.mark.parametrize(
+    ("engine", "assignment", "why"),
+    [
+        ("nextflow", '{"by_name": {"A": "gpu"}}', "queue-class 'gpu' (by_name.A) has no queue"),
+        ("snakemake", '{"by_label": {"x": "cpu"}}', "by_label applies only to Nextflow"),
+        ("nextflow", '{"by_label": {"pro.*": "cpu"}}', "'pro.*' is not a Nextflow label"),
+        ("nextflow", '{"by_name": {"A|B": "cpu"}}', "'A|B' is not a Nextflow process name"),
+        ("snakemake", '{"by_name": {"": "cpu"}}', "'' is not a Snakemake rule name"),
+        ("snakemake", '{"by_name": {"a\\nb": "cpu"}}', "'a\\nb' is not a Snakemake rule name"),
+        ("snakemake", '{"by_name": {"a\\u0085": "cpu"}}', "is not a Snakemake rule name"),
+        ("nextflow", '{"by_rule": {}}', "unknown keys: by_rule"),
+        ("nextflow", '{"by_name": ["A"]}', "by_name is not an object of strings"),
+        ("nextflow", "[1]", "BIFFIX_QUEUE_ASSIGNMENT is not a JSON object"),
+        ("nextflow", '{"by_name": {"A": 1}}', "by_name is not an object of strings"),
+        ("cromwell", "{}", "unknown engine 'cromwell'"),
+    ],
+)
+def test_an_assignment_that_cannot_be_applied_says_why(
+    engine: str, assignment: str, why: str
+) -> None:
+    got = helper(
+        "queue_selectors", engine, BIFFIX_QUEUE_ASSIGNMENT=assignment, BIFFIX_QUEUE_CLASS_MAP=QUEUES
+    )
+    assert got.returncode == 1
+    assert why in got.stderr, got.stderr
+
+
+@pytest.mark.parametrize(
+    ("queues", "why"),
+    [
+        ('{"cpu": "arn:q/\\ncpu"}', "the worker queue of 'cpu' has a control character"),
+        ('{"cpu": "arn:q/\\tcpu"}', "the worker queue of 'cpu' has a control character"),
+        ('{"cpu": ""}', "queue-class 'cpu' (by_name.A) has no queue in BIFFIX_QUEUE_CLASS_MAP"),
+        ("{not json", "BIFFIX_QUEUE_CLASS_MAP is not JSON"),
+        ('["arn:q/cpu"]', "BIFFIX_QUEUE_CLASS_MAP is not a JSON object"),
+    ],
+)
+def test_a_queue_class_map_that_cannot_be_applied_says_why(queues: str, why: str) -> None:
+    got = helper(
+        "queue_selectors",
+        "nextflow",
+        BIFFIX_QUEUE_ASSIGNMENT='{"by_name": {"A": "cpu"}}',
+        BIFFIX_QUEUE_CLASS_MAP=queues,
+    )
+    assert got.returncode == 1
+    assert why in got.stderr, got.stderr
+
+
+@pytest.mark.parametrize("engine", ["nextflow", "snakemake"])
+def test_no_assignment_selects_nothing(tmp_path: Path, engine: str) -> None:
+    got = bash(
+        'resolve_queue_selectors; cat "$QUEUE_SELECTORS_FILE"',
+        "tasks",
+        WORK=str(tmp_path),
+        ENGINE=engine,
+        BIFFIX_QUEUE_CLASS_MAP=QUEUES,
+    )
+    assert got.returncode == 0, got.stderr
+    assert got.stdout == ""
+
+
+def test_an_assignment_is_resolved_for_the_engine(tmp_path: Path) -> None:
+    got = bash(
+        'resolve_queue_selectors; cat "$QUEUE_SELECTORS_FILE"',
+        "tasks",
+        WORK=str(tmp_path),
+        ENGINE="snakemake",
+        BIFFIX_QUEUE_CLASS_MAP=QUEUES,
+        BIFFIX_QUEUE_ASSIGNMENT='{"by_name": {"align": "cpu", "call": "spot"}}',
+    )
+    assert got.returncode == 0, got.stderr
+    assert got.stdout == '{"align": "arn:q/cpu", "call": "arn:q/spot"}\n'
+    # Counted by selector, though Snakemake's map is one line.
+    assert "2 task selector(s) on other worker queues" in got.stderr
+
+
+def test_an_unresolvable_assignment_fails_with_ex_config(tmp_path: Path) -> None:
+    got = bash(
+        "resolve_queue_selectors",
+        "tasks",
+        WORK=str(tmp_path),
+        ENGINE="nextflow",
+        BIFFIX_QUEUE_CLASS_MAP=QUEUES,
+        BIFFIX_QUEUE_ASSIGNMENT='{"by_label": {"big": "gpu"}}',
+    )
+    assert got.returncode == 78
+    assert "queue-class 'gpu' (by_label.big) has no queue" in got.stderr
+    assert "could not resolve the run's queue assignment" in got.stderr
 
 
 def test_no_image_map_is_no_change() -> None:

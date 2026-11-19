@@ -65,6 +65,7 @@ async fn state_with_one_version() -> AppState {
                 target: None,
                 form_schema,
                 queue_classes: vec!["c7i".into()],
+                queues: Default::default(),
                 about_markdown: None,
                 runtime_key: testing::runtime_fields("snakemake", "9.27.0").0,
                 runtime_recipe: testing::runtime_fields("snakemake", "9.27.0").1,

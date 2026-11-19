@@ -122,7 +122,13 @@ function versionView(v) {
 // WorkflowVersionDetail = WorkflowVersionSummary + entrypoint/source/form_schema/target.
 function workflowDetail(v) {
   if (v.id === RNASEQ_VERSION_ID)
-    return { ...workflowDetailBase(v), form_schema: RNASEQ_FORM, about_markdown: RNASEQ_ABOUT };
+    return {
+      ...workflowDetailBase(v),
+      form_schema: RNASEQ_FORM,
+      about_markdown: RNASEQ_ABOUT,
+      // Its biffix.yaml sends nf-core's heavy processes to the on-demand queue-class.
+      queues: { default: 'cpu-spot', by_label: { process_high: 'cpu-ondemand' } },
+    };
   return workflowDetailBase(v);
 }
 // Its form declares the key results its analyses write (`reports:`, frozen with the form).

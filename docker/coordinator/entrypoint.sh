@@ -62,7 +62,11 @@
 #                             the engines name it in their own: Snakemake --aws-batch-log-group; see
 #                             "Project isolation" below)
 # Optional, from the backend: BIFFIX_QUEUE_CLASS (worker queue-class to submit child jobs to;
-#   default: the map's first), SNAKEMAKE_AWS_BATCH_JOB_ROLE (the project run base role, which child
+#   default: the map's first), BIFFIX_QUEUE_ASSIGNMENT (JSON {"by_label": {label: queue_class},
+#   "by_name": {name: queue_class}}: the tasks the version sends to another worker queue-class,
+#   from its biffix.yaml `queues:`; Nextflow: withLabel/withName `queue` selectors in the -c
+#   config; Snakemake: the executor's --aws-batch-rule-queues map; lib/tasks.sh),
+#   SNAKEMAKE_AWS_BATCH_JOB_ROLE (the project run base role, which child
 #   jobs assume; required, and handed to the engine, only without a job definition map, where the
 #   engine registers its own job definitions: the backend's carry it; the Nextflow path reads it
 #   too, as it does the worker queue resolved into the Snakemake executor's variable: the
@@ -195,6 +199,7 @@ STORE="${BIFFIX_OUTPUT_PREFIX:-s3://$BIFFIX_PROJECT_BUCKET/${BIFFIX_RUN_PREFIX}}
 
 track_staged_tree
 resolve_worker_queue
+resolve_queue_selectors
 
 echo "biffix-coordinator: worker queue=$SNAKEMAKE_AWS_BATCH_JOB_QUEUE image=${BIFFIX_WORKER_IMAGE:-<default>} store=$STORE" >&2
 

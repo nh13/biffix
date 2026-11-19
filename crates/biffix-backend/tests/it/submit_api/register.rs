@@ -360,3 +360,83 @@ async fn a_direct_registration_s_catalog_is_normalized_like_the_cli_s() {
     );
     assert_eq!(catalog["verified"], true);
 }
+
+#[tokio::test]
+async fn a_version_s_queue_assignment_is_checked_and_shown() {
+    let (state, _, _) = state();
+    let app = api::router(state);
+    let mut body = register_body();
+    body["engine"] = json!("nextflow");
+    body["engine_version"] = json!("25.10.4");
+    body["entrypoint"] = json!("main.nf");
+    body["queues"] = json!({"default": "cpu-spot", "by_label": {"process_high": "cpu-spot"}});
+    let res = app.clone().oneshot(post("/workflows", Some("developers"), &body)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED, "{}", text_body(res).await);
+    let detail =
+        json_body(app.clone().oneshot(get("/workflows/abc:hash:0", "viewers")).await.unwrap())
+            .await;
+    assert_eq!(
+        detail["queues"],
+        json!({"default": "cpu-spot", "by_label": {"process_high": "cpu-spot"}})
+    );
+
+    // A queue-class the version does not list is refused, naming where it is assigned.
+    let mut body = register_body();
+    body["git_sha"] = json!("def");
+    body["queues"] = json!({"by_name": {"align": "gpu"}});
+    let res = app.clone().oneshot(post("/workflows", Some("developers"), &body)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert!(text_body(res).await.contains("`gpu` (queues.by_name.align)"));
+
+    // A misspelled key is refused, not dropped (which would run every task on the default).
+    let mut body = register_body();
+    body["git_sha"] = json!("eee");
+    body["queues"] = json!({"default": "cpu-spot", "by_nmae": {"align": "cpu-spot"}});
+    let res = app.clone().oneshot(post("/workflows", Some("developers"), &body)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(text_body(res).await.contains("unknown field `by_nmae`"));
+
+    // A version with no assignment shows none.
+    let mut body = register_body();
+    body["git_sha"] = json!("fed");
+    let res = app.clone().oneshot(post("/workflows", Some("developers"), &body)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let detail =
+        json_body(app.oneshot(get("/workflows/fed:hash:0", "viewers")).await.unwrap()).await;
+    assert!(detail.get("queues").is_none(), "{detail}");
+}
+
+/// A version whose `queues:` sends tasks to other queue-classes needs a coordinator that applies
+/// them: its runtime names the coordinator contract that brought them, so it is built only on base
+/// images that implement it. A default alone needs none, and keys as a version without `queues:`.
+#[tokio::test]
+async fn queue_selectors_require_the_coordinator_contract_that_applies_them() {
+    let (state, _, _) = state();
+    let registry = state.registry.clone();
+    let app = api::router(state);
+    let mut recipes = Vec::new();
+    for (sha, queues) in [
+        ("aaa", None),
+        ("bbb", Some(json!({"default": "cpu-spot"}))),
+        ("ccc", Some(json!({"by_label": {"process_high": "cpu-spot"}}))),
+    ] {
+        let mut body = register_body();
+        body["git_sha"] = json!(sha);
+        body["engine"] = json!("nextflow");
+        body["engine_version"] = json!("25.10.4");
+        body["entrypoint"] = json!("main.nf");
+        if let Some(queues) = queues {
+            body["queues"] = queues;
+        }
+        let res = app.clone().oneshot(post("/workflows", Some("developers"), &body)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED, "{}", text_body(res).await);
+        let rec = registry.get_version(&format!("{sha}:hash:0")).await.unwrap();
+        let recipe: biffix_workflow::runtime::RuntimeRecipe =
+            serde_json::from_value(rec.version.runtime_recipe.clone()).unwrap();
+        recipes.push((rec.version.runtime_key.clone(), recipe.coordinator_contract()));
+    }
+    assert_eq!(recipes[0].1, 0);
+    assert_eq!(recipes[1], recipes[0], "a default alone keys as no assignment");
+    assert_eq!(recipes[2].1, biffix_workflow::runtime::QUEUE_ASSIGNMENT_CONTRACT);
+    assert_ne!(recipes[2].0, recipes[0].0);
+}

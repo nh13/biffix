@@ -585,6 +585,7 @@ async fn a_version_on_a_retired_release_is_refused_by_name() {
             },
             workflow_plugins: Vec::new(),
         },
+        coordinator_contract: 0,
     };
     let retired_key = runtime_key(&recipe);
     {
@@ -786,6 +787,23 @@ async fn a_nextflow_workflow_s_plugins_are_built_into_its_runtime() {
         again.nextflow_plugins,
         [plugin("nf-prov", "1.4.0", 'b'), plugin("nf-schema", "2.7.2", 'a')]
     );
+    // So does its queue assignment (none here).
+    assert_eq!(again.queues, None);
+    let mut assigned = rec.clone();
+    assigned.version.queues = biffix_workflow::queues::QueueAssignment {
+        default: Some("cpu-spot".into()),
+        by_label: [("process_high".into(), "cpu-spot".into())].into(),
+        by_name: [("ALIGN".into(), "cpu-spot".into())].into(),
+        unknown: Default::default(),
+    };
+    let again = biffix_backend::register::pipeline::reregister_request(&assigned, None).unwrap();
+    assert_eq!(again.queues, Some(assigned.version.queues.clone().into()));
+    // A key a newer biffix stored is refused, not dropped from the new version.
+    let mut newer = assigned.clone();
+    newer.version.queues.unknown.insert("by_resource".into(), json!({"gpus": "gpu"}));
+    let e = biffix_backend::register::pipeline::reregister_request(&newer, None).unwrap_err();
+    assert!(matches!(e, biffix_backend::error::ServiceError::Invalid(_)), "{e:?}");
+    assert!(e.to_string().contains("keys this biffix does not know (by_resource)"), "{e}");
     // A recipe that cannot be read is refused, not re-registered without its plugins.
     let mut broken = rec.clone();
     broken.version.runtime_recipe = json!({"engine": "nextflow", "pins": 7});

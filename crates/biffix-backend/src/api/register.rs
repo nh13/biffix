@@ -49,6 +49,7 @@ fn detail_of(rec: &RegisteredVersion) -> WorkflowVersionDetail {
         target: rec.version.target.clone(),
         form_schema: rec.version.form_schema.clone(),
         queue_classes: rec.version.queue_classes.clone(),
+        queues: (!rec.version.queues.is_empty()).then(|| rec.version.queues.clone().into()),
         about_markdown: rec.version.about_markdown.clone(),
         created_by: rec.created_by.clone(),
         created_by_label: rec.created_by_label.clone(),

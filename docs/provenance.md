@@ -31,7 +31,7 @@ run's S3 object, identified by its `s3://` URI. Nothing is copied.
 | `File` inputs | each input URI, with `version` = its S3 version id (else ETag) when the run was submitted |
 | `FormalParameter` + value | each parameter as submitted. One filled by input files (a URI, or a list of them, `multipleValues`) is realized by those `File`s, each `exampleOfWork` of it; any other by a `PropertyValue` whose `additionalType` is its data type (an S3 location that is not an input, such as an output directory, is `Text`). Secrets are the redacted placeholder, never the value |
 | `SoftwareApplication` + `HowToStep` | each rule (Snakemake) or process (Nextflow); steps are numbered so producers come before consumers |
-| `CreateAction` per task | each task (`task_key`): its winning attempt's times and status, the error for a failure, its outputs (intermediates included) as `result`, its resource usage, and `containerImage` when the run has one image (biffix does not record which image each task of a multi-image run used) |
+| `CreateAction` per task | each task (`task_key`): its winning attempt's times and status, the error for a failure, its outputs (intermediates included) as `result`, its resource usage (the job queue it ran on included), and `containerImage` when the run has one image (biffix does not record which image each task of a multi-image run used) |
 | `ControlAction` per task | links the task's step to its execution |
 | `OrganizeAction` | the engine run (Snakemake/Nextflow and its version), whose `result` is the run |
 | `File` events | the run's archived engine event stream (`events.jsonl`) |
@@ -54,6 +54,12 @@ How many AWS Batch attempts the task took (retries included).
 ### instancetype
 
 The EC2 instance type the task's winning attempt ran on.
+
+### jobqueue
+
+The AWS Batch job queue the task's winning attempt ran on, as AWS reported it. A biffix queue is
+named `biffix-<tenant>-<queue-class>`, so this is the queue-class the version's `queues:` (or its
+default) sent the task to. Its `propertyID` is `jobQueue`.
 
 ### estimatedcost
 

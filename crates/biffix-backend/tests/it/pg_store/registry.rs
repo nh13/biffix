@@ -26,6 +26,37 @@ async fn a_version_round_trips_with_its_about_page() {
 
 #[tokio::test]
 #[ignore = "requires --features pg + the Postgres harness"]
+async fn a_version_round_trips_with_its_queue_assignment() {
+    use biffix_backend::pg::registry::PgRegistryStore;
+    use biffix_backend::store::registry::RegistryStore;
+
+    let pool = migrated_pool("version_queues").await;
+    let registry = PgRegistryStore::new(pool);
+    let mut assigned = registered_version("abc:queues");
+    assigned.version.queue_classes = vec!["small".into(), "large".into()];
+    assigned.version.queues = biffix_workflow::queues::QueueAssignment {
+        default: Some("small".into()),
+        by_label: [("process_high".to_string(), "large".to_string())].into(),
+        by_name: [("ALIGN".to_string(), "large".to_string())].into(),
+        unknown: Default::default(),
+    };
+    registry.put_version(&assigned).await.unwrap();
+    registry.put_version(&registered_version("abc:none")).await.unwrap();
+    assert_eq!(registry.get_version("abc:queues").await.unwrap(), assigned);
+    assert!(registry.get_version("abc:none").await.unwrap().version.queues.is_empty());
+    // A key a newer backend stored is kept, so it still reaches the coordinator (which refuses an
+    // assignment it cannot apply).
+    let mut newer = registered_version("abc:newer");
+    newer.version.queues =
+        serde_json::from_value(serde_json::json!({"by_resource": {"gpus": "large"}})).unwrap();
+    registry.put_version(&newer).await.unwrap();
+    let got = registry.get_version("abc:newer").await.unwrap().version.queues;
+    assert_eq!(got.unknown["by_resource"], serde_json::json!({"gpus": "large"}));
+    assert!(!got.selectors().is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires --features pg + the Postgres harness"]
 async fn builds_of_a_source_record_their_inputs_and_never_share_a_build() {
     use biffix_backend::pg::registry::PgRegistryStore;
     use biffix_backend::store::registry::{RegistryStore, SourceBuild};
@@ -424,6 +455,7 @@ fn distinct_version(
             target: Some(format!("target-{id}")),
             form_schema: serde_json::json!({"fields": [], "warnings": [id]}),
             queue_classes: vec![format!("queue-a-{id}"), format!("queue-b-{id}")],
+            queues: Default::default(),
             about_markdown: Some(format!("about-{id}")),
             runtime_key: format!("runtime-key-{id}"),
             runtime_recipe: serde_json::json!({"recipe": id}),

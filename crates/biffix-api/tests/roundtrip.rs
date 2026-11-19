@@ -167,6 +167,7 @@ fn register_request_round_trips() {
         },
         images: Default::default(),
         nextflow_plugins: Vec::new(),
+        queues: None,
     });
     rt(RegisterRequest {
         name: "wf".into(),
@@ -227,6 +228,14 @@ fn register_request_round_trips() {
             version: "2.7.2".into(),
             sha256: "0".repeat(64),
         }],
+        queues: Some(biffix_api::QueuesRequest {
+            default: Some("cpu-spot".into()),
+            by_label: std::collections::BTreeMap::from([(
+                "process_high".into(),
+                "cpu-spot".into(),
+            )]),
+            by_name: std::collections::BTreeMap::from([("ALIGN".into(), "cpu-spot".into())]),
+        }),
     });
     // The minimal inputs: every override absent.
     rt(RegistrationInputs {
@@ -329,6 +338,7 @@ fn registered_version_views_round_trip() {
         target: Some("aws".into()),
         form_schema: serde_json::json!({"fields": [], "warnings": []}),
         queue_classes: vec!["default".into()],
+        queues: Some(VersionQueues { default: Some("default".into()), ..Default::default() }),
         created_by: Some("user".into()),
         created_by_label: Some("User Name".into()),
         created_at_micros: 42,

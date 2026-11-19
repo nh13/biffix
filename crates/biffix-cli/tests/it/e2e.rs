@@ -154,6 +154,7 @@ fn app_state(
         // verifier is covered by the backend's own auth tests).
         .with_deploy(DeployConfig {
             coordinator_queue: "coordinator".into(),
+            queue_classes: vec!["cpu-spot".into()],
             worker_image_repo: "123456789012.dkr.ecr.us-east-1.amazonaws.com/biffix-workers".into(),
             oauth_client: OAuthClient::Configured(Box::new(OAuthClientConfig {
                 authorization_endpoint: format!("{base}/oauth2/authorize"),
@@ -298,6 +299,7 @@ async fn seed_form(base: &str, git_sha: &str, engine: &str, form_schema: Value) 
         },
         images: Default::default(),
         nextflow_plugins: Vec::new(),
+        queues: None,
     };
     let resp = reqwest::Client::new()
         .post(format!("{base}/workflows"))
@@ -855,6 +857,46 @@ async fn e2e_refresh_submit_and_follow() {
             "{detail}"
         );
         assert_eq!(detail["form_schema"]["title"], "Alternate", "{detail}");
+
+        // biffix.yaml `queues:` is checked before anything is staged, sent, and recorded on the
+        // version (the CLI reads it back to make sure).
+        let queued = tempfile::tempdir().unwrap();
+        init_workflow_repo(queued.path());
+        std::fs::write(
+            queued.path().join("biffix.yaml"),
+            "queues:\n  default: cpu-spot\n  by_name: {all: cpu-spot}\n",
+        )
+        .unwrap();
+        crate::common::git_ok(queued.path(), &["add", "biffix.yaml"]);
+        crate::common::git_ok(queued.path(), &["commit", "-q", "-m", "queues"]);
+        let queued_opts = |queue_classes: Vec<String>| workflows::RegisterOpts {
+            name: Some("wf-queues".into()),
+            queue_classes,
+            wait: None,
+            ..opts(queued.path(), false)
+        };
+        let out = workflows::register(&mut session, queued_opts(vec![])).await;
+        assert!(
+            matches!(out, Err(CliError::InvalidInput(ref m))
+                if m.starts_with("biffix.yaml `queues` names queue-class(es) the version does not \
+                                  list: `cpu-spot` (queues.default), `cpu-spot` (queues.by_name.all)")),
+            "a register whose queues: names a queue-class it does not list: {out:?}"
+        );
+        let out = workflows::register(&mut session, queued_opts(vec!["cpu-spot".into()])).await;
+        assert!(out.is_ok(), "register with queues: {out:?}");
+        let queued: Vec<Value> = api_get::<Vec<Value>>(&base, "/workflows")
+            .await
+            .into_iter()
+            .filter(|v| v["name"] == "wf-queues")
+            .collect();
+        assert_eq!(queued.len(), 1, "the refused register registered nothing: {queued:?}");
+        let detail: Value =
+            api_get(&base, &format!("/workflows/{}", queued[0]["id"].as_str().unwrap())).await;
+        assert_eq!(
+            detail["queues"],
+            json!({"default": "cpu-spot", "by_name": {"all": "cpu-spot"}}),
+            "{detail}"
+        );
     }
 
     // workflows reregister: the newest `wf` on another engine release registers again as its next

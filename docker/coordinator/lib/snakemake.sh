@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # biffix coordinator: the Snakemake engine. Sourced by entrypoint.sh; defines functions only.
 #   Reads: WORK, SRC, CONFIG, STORE, LIB_DIR, SM_META_URI, SM_META_FINGERPRINT, the run's BIFFIX_*
-#          env, the resolved SNAKEMAKE_AWS_BATCH_JOB_QUEUE / _ROLE and BIFFIX_JOB_DEFINITION_MAP_FILE.
+#          env, the resolved SNAKEMAKE_AWS_BATCH_JOB_QUEUE / _ROLE, BIFFIX_JOB_DEFINITION_MAP_FILE
+#          and QUEUE_SELECTORS_FILE.
 #   Sets:  rc (Snakemake's exit status), SNAKEMAKE_AWS_BATCH_JOB_TAGS, SNAKEMAKE_OUTPUT_CACHE,
 #          SM_META_RESTORE_FAILED.
 
@@ -150,6 +151,11 @@ run_snakemake() {
       --aws-batch-log-group "$BIFFIX_TASK_LOG_GROUP"
     )
   fi
+  # The rules the version sends to other queues (lib/tasks.sh): the executor's rule queue map, a
+  # JSON object of rule to queue in QUEUE_SELECTORS_FILE, passed by its path. It outranks a rule's
+  # own `batch_queue` resource and, unlike --set-resources on the command line, leaves the
+  # workflow profile's set-resources in place (Snakemake would drop the profile's whole list).
+  [ ! -s "$QUEUE_SELECTORS_FILE" ] || ARGS+=(--aws-batch-rule-queues "$QUEUE_SELECTORS_FILE")
   [ -z "${BIFFIX_WORKER_IMAGE:-}" ] || ARGS+=(--container-image "$BIFFIX_WORKER_IMAGE")
   # Spot reclaims (see "Spot reclaims" in entrypoint.sh).
   local SPOT_ATTEMPTS="${BIFFIX_SPOT_ATTEMPTS:-5}"

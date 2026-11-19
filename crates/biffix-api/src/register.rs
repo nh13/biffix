@@ -59,6 +59,89 @@ pub struct RegisterRequest {
     /// workflow that declares none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nextflow_plugins: Vec<NextflowPluginRequest>,
+    /// Which worker queue-class each task runs on (`queues:` in `biffix.yaml`). Every queue-class
+    /// it names must be one of `queue_classes`. Absent: every task runs on the version's default
+    /// queue-class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queues: Option<QueuesRequest>,
+}
+
+/// The `queues:` block a registration sends ([`VersionQueues`] as a version records it). An
+/// unknown key, such as a misspelled `by_nmae`, is refused rather than dropped, which would run
+/// every task it meant to pick on the default queue-class.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct QueuesRequest {
+    /// The queue-class tasks run on when no selector picks one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// Nextflow only: process label → queue-class.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub by_label: std::collections::BTreeMap<String, String>,
+    /// Nextflow process or Snakemake rule name → queue-class.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub by_name: std::collections::BTreeMap<String, String>,
+}
+
+impl From<biffix_workflow::queues::QueueAssignment> for QueuesRequest {
+    /// The block as sent; a key the assignment carries that this biffix does not know
+    /// (`unknown`) has no field here, so a caller holding one refuses it first.
+    fn from(q: biffix_workflow::queues::QueueAssignment) -> Self {
+        Self { default: q.default, by_label: q.by_label, by_name: q.by_name }
+    }
+}
+
+impl From<QueuesRequest> for biffix_workflow::queues::QueueAssignment {
+    fn from(q: QueuesRequest) -> Self {
+        Self {
+            default: q.default,
+            by_label: q.by_label,
+            by_name: q.by_name,
+            unknown: Default::default(),
+        }
+    }
+}
+
+impl From<QueuesRequest> for VersionQueues {
+    fn from(q: QueuesRequest) -> Self {
+        Self { default: q.default, by_label: q.by_label, by_name: q.by_name }
+    }
+}
+
+/// A version's queue assignment, which worker queue-class each task runs on: `queues:` in
+/// `biffix.yaml`, as the API carries it (the domain type is `biffix_workflow::queues::
+/// QueueAssignment`). Values are queue-class names, resolved to the deployment's Batch queues
+/// when a run starts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct VersionQueues {
+    /// The queue-class tasks run on when no selector picks one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// Nextflow only: process label → queue-class.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub by_label: std::collections::BTreeMap<String, String>,
+    /// Nextflow process or Snakemake rule name → queue-class.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub by_name: std::collections::BTreeMap<String, String>,
+}
+
+impl From<biffix_workflow::queues::QueueAssignment> for VersionQueues {
+    fn from(q: biffix_workflow::queues::QueueAssignment) -> Self {
+        Self { default: q.default, by_label: q.by_label, by_name: q.by_name }
+    }
+}
+
+impl From<VersionQueues> for biffix_workflow::queues::QueueAssignment {
+    fn from(q: VersionQueues) -> Self {
+        Self {
+            default: q.default,
+            by_label: q.by_label,
+            by_name: q.by_name,
+            unknown: Default::default(),
+        }
+    }
 }
 
 /// One Nextflow plugin a workflow declares, at an exact version.
@@ -594,6 +677,10 @@ pub struct WorkflowVersionDetail {
     /// The normalized FormSchema (opaque JSON — the CLI/UI deserialize it via `biffix-workflow`).
     pub form_schema: serde_json::Value,
     pub queue_classes: Vec<String>,
+    /// Which worker queue-class each task runs on (`queues:` in `biffix.yaml`); absent when the
+    /// version assigns none, and every task runs on its default queue-class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queues: Option<VersionQueues>,
     /// The version's About page (Markdown), when it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub about_markdown: Option<String>,

@@ -8,8 +8,10 @@
 #   - biffix-coordinator (entrypoint.sh) and its helpers; python3 + boto3 for their S3 calls
 #   - git (git-sourced workflows), a JRE (Nextflow head node), unzip/procps
 #   - /opt/biffix/wheels/: the biffix-owned engine plugins the runtime build installs (the executor
-#     fork, the Snakemake logger, nf-biffix) + manifest.json. Built by build-wheels.sh; the runtime
-#     build reads them out of this image's digest, so they are never fetched from git at build time.
+#     fork, the Snakemake logger, nf-biffix) + manifest.json, which also records the coordinator
+#     contract this image implements (wheels.env COORDINATOR_CONTRACT). Built by build-wheels.sh;
+#     the runtime build reads them out of this image's digest, so they are never fetched from git
+#     at build time, and refuses an image whose contract is below what a runtime needs.
 # No aws CLI: Nextflow tasks stage S3 I/O with the one every Batch host installs
 # (infra/biffix_infra/host/), and the entrypoint uses boto3.
 #
@@ -53,6 +55,7 @@ COPY docker/coordinator/lib/common.sh \
      docker/coordinator/lib/stage_source.py \
      docker/coordinator/lib/image_map.py \
      docker/coordinator/lib/worker_queue.py \
+     docker/coordinator/lib/queue_selectors.py \
      docker/coordinator/lib/events_jsonl.py \
      docker/coordinator/lib/sm_metadata.py \
      docker/coordinator/lib/snakemake_cache_rules.py \
