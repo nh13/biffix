@@ -2,6 +2,7 @@
 only its own project."""
 
 import dataclasses
+import fnmatch
 import json
 from collections.abc import Iterable
 from pathlib import Path
@@ -347,18 +348,25 @@ def _expected_coordinator_batch_policy(project: str, queues: list[str]) -> Batch
         ("Deny", "batch:RegisterJobDefinition"): [(["*"], None)],
         ("Deny", "batch:DeregisterJobDefinition"): [(["*"], None)],
         # Jobs, and the queues a tagged submit names (Batch authorizes that tag-on-create on the
-        # queue too), only with this project's tag.
-        ("Allow", "batch:TagResource"): [
-            (sorted([BATCH_JOBS, *queues]), {"StringEquals": own}),
-        ],
+        # queue too), only with this project's tag; and the task definition it names (Batch
+        # authorizes it there too), only this project's, with this project's tag.
+        ("Allow", "batch:TagResource"): sorted(
+            [
+                (sorted([BATCH_JOBS, *queues]), {"StringEquals": own}),
+                ([task_revisions], {"StringEquals": {**own, **own_resource}}),
+            ],
+            key=json.dumps,
+        ),
         ("Deny", "batch:TagResource"): sorted(
             [
                 # The run tag is write-once: no job that carries one is re-tagged.
                 ([BATCH_JOBS], {"Null": {"aws:ResourceTag/biffix:run": "false"}}),
                 # No other project's job is tagged at all.
                 ([BATCH_JOBS], another),
-                # No job definition is tagged, so none is made this project's.
-                ([job_definitions], None),
+                # No job definition is made this project's: none not already this project's is
+                # tagged, nor any with a request that does not tag this project.
+                ([job_definitions], {"StringNotEquals": own_resource}),
+                ([job_definitions], {"StringNotEquals": own}),
             ],
             key=json.dumps,
         ),
@@ -450,6 +458,95 @@ def test_a_coordinator_cannot_move_a_job_s_tags_or_reach_another_project_s_jobs(
     batch = (aws / "batch.rs").read_text()
     assert f'pub(crate) const RUN_TAG: &str = "{batch_access.RUN_TAG}";' in batch
     assert f'pub(crate) const PROJECT_TAG: &str = "{batch_access.PROJECT_TAG}";' in batch
+
+
+def _batch_allowed(
+    statements: list[Json],
+    action: str,
+    resource: str,
+    request_tags: dict[str, str],
+    resource_tags: dict[str, str],
+) -> bool:
+    """Whether `statements` allow `action` on `resource`, IAM's way: some allow and no deny
+    matches. Knows only the condition operators the coordinator's Batch statements use, and
+    refuses any other rather than guess."""
+    context: dict[str, str | list[str]] = {
+        **{f"aws:RequestTag/{k}": v for k, v in request_tags.items()},
+        **{f"aws:ResourceTag/{k}": v for k, v in resource_tags.items()},
+        "aws:TagKeys": sorted(request_tags),
+    }
+
+    def holds(operator: str, key: str, wanted: object) -> bool:
+        values = wanted if isinstance(wanted, list) else [wanted]
+        have = context.get(key)
+        if operator == "StringEquals":
+            return have is not None and have in values
+        if operator == "StringNotEquals":  # true for an absent key
+            return have is None or have not in values
+        if operator == "Null":
+            return (have is None) == (values == ["true"])
+        if operator == "ForAnyValue:StringEquals":
+            return isinstance(have, list) and any(h in values for h in have)
+        raise AssertionError(f"unmodelled condition operator {operator}")
+
+    def matches(st: Json) -> bool:
+        if action not in _actions(st):
+            return False
+        if "NotResource" in st:
+            if any(fnmatch.fnmatchcase(resource, r) for r in _not_resources(st)):
+                return False
+        elif not any(fnmatch.fnmatchcase(resource, r) for r in _resources(st)):
+            return False
+        return all(
+            holds(op, key, wanted)
+            for op, clause in st.get("Condition", {}).items()
+            for key, wanted in clause.items()
+        )
+
+    matched = [st for st in statements if matches(st)]
+    return any(st["Effect"] == "Allow" for st in matched) and not any(
+        st["Effect"] == "Deny" for st in matched
+    )
+
+
+def test_a_coordinator_tags_a_task_definition_only_as_its_own_tagged_submit_does(
+    two_project_stacks: Stacks,
+) -> None:
+    # A tagged SubmitJob is authorized as TagResource on the job definition it names, so a
+    # coordinator may tag its own project's task definitions with its own project; no tag ever
+    # makes a definition its project's, and none is ever removed.
+    api = two_project_stacks["api"]
+    t = Template.from_stack(api)
+    pids = sorted(api.coordinator_roles)
+    for pid, role in api.coordinator_roles.items():
+        statements = _statements_for(t, api, role)
+        other = next(p for p in pids if p != pid)
+        task = f"{_BATCH}:job-definition/biffix-acme_task-sm-x:3"
+        coordinator = f"{_BATCH}:job-definition/biffix-acme_coordinator-x:1"
+        own = {"biffix:project": pid}
+        submit = {"biffix:project": pid, "biffix:run": "run-1"}
+
+        def tag(
+            resource: str,
+            request: dict[str, str],
+            tagged: dict[str, str],
+            statements: list[Json] = statements,
+        ) -> bool:
+            return _batch_allowed(statements, "batch:TagResource", resource, request, tagged)
+
+        # A tagged submit of its own task definition, with a workflow's own job tags too.
+        assert tag(task, submit, own), pid
+        assert tag(task, {**submit, "team": "x"}, own), pid
+        # Never another project's definition, nor an untagged one, nor one not a task's.
+        assert not tag(task, submit, {"biffix:project": other}), pid
+        assert not tag(task, submit, {}), pid
+        assert not tag(coordinator, submit, own), pid
+        # Never a request that would retag its own definition into another project, or that
+        # leaves the project out.
+        assert not tag(task, {"biffix:project": other}, own), pid
+        assert not tag(task, {"biffix:run": "run-1"}, own), pid
+        # Never an untag.
+        assert not _batch_allowed(statements, "batch:UntagResource", task, {}, own), pid
 
 
 def test_the_backend_reads_task_logs_from_the_shared_and_every_project_s_group(
