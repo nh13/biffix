@@ -87,7 +87,7 @@ pub struct SnakemakePins {
     /// `snakemake-storage-plugin-s3` release (task I/O goes through S3).
     pub storage_s3: String,
     /// Commit of the AWS Batch executor fork, built into a wheel in the base image. The fork
-    /// (branch `biffix-pin/2026-11-19-2`) is upstream (as of #54; a rule's own `batch_queue`
+    /// (branch `biffix-pin/2026-11-19-3`) is upstream (as of #54; a rule's own `batch_queue`
     /// resource is upstream's #40, `--aws-batch-spot-attempts` its #62) plus six open upstream
     /// PRs: #55
     /// (remote job-state events, with the job's image, and a pre-formatted log message), #60 (the
@@ -348,8 +348,11 @@ pub fn runtime_key(recipe: &RuntimeRecipe) -> String {
 /// its tasks would all fail at submit, so its versions are refused at launch until re-registered
 /// ([`RuntimeRecipe::runs_on_registered_job_definitions`]). Commits are not ordered, so each
 /// re-pin appends its own (a test requires the pin table's to be here).
-pub const JOB_DEFINITION_MAP_EXECUTORS: &[&str] =
-    &["240b612ce6ec22b44777449cab4156094b40eb19", "e4c5db79d8e7f952928c47914aeac9728e10f851"];
+pub const JOB_DEFINITION_MAP_EXECUTORS: &[&str] = &[
+    "240b612ce6ec22b44777449cab4156094b40eb19",
+    "e4c5db79d8e7f952928c47914aeac9728e10f851",
+    "0ac5ec4ea45a0c278876a598b17327213e964483",
+];
 
 /// The first nf-biffix release whose `awsbatch` executor runs every task on the task job
 /// definitions the backend registers (as [`JOB_DEFINITION_MAP_EXECUTORS`] for Snakemake).
