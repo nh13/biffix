@@ -3353,10 +3353,11 @@ export interface components {
       warnings: string[];
     };
     /**
-     * @description A run's single-job settings (`RunSubmitRequest.single_job`). Each field is optional and falls
-     *     back to the version's default; a size is either `instance` or both `cpus` and `memory_gib`
-     *     (the smallest instance type of the queue-class with at least that much is used). With no size
-     *     here or in the version, the queue-class's smallest instance type is used.
+     * @description A run's single-job settings (`RunSubmitRequest.single_job`). A size is either `instance` or
+     *     both `cpus` and `memory_gib` (the smallest qualifying type sizes the whole-host request).
+     *     Size overrides are atomic: a partial CPU/memory pair never inherits the missing field. With
+     *     no size here, the version's size applies unless a different queue-class is requested; then,
+     *     or when the version has no size, the queue-class's smallest type sizes the request.
      */
     SingleJobRequest: {
       /**
@@ -3364,7 +3365,10 @@ export interface components {
        * @description An instance type with at least this many vCPUs (with `memory_gib`).
        */
       cpus?: number | null;
-      /** @description An exact instance type of the queue-class (`c6id.8xlarge`): the run gets the whole host. */
+      /**
+       * @description An instance type of the queue-class (`c6id.8xlarge`) used to size the whole-host request.
+       *     Batch may place the run on another same-size type in that queue-class.
+       */
       instance?: string | null;
       /**
        * Format: int32

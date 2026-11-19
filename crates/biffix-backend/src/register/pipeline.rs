@@ -221,10 +221,16 @@ pub(crate) async fn prepare(
     // including one falling back to an older base's variant, can silently drop the selectors.
     let queues: biffix_workflow::queues::QueueAssignment =
         req.queues.clone().map(Into::into).unwrap_or_default();
-    let recipe = recipe.with_coordinator_contract(queues.coordinator_contract());
-    let runtime_key = biffix_workflow::runtime::runtime_key(&recipe);
     let mut form_schema = FormSchema::deserialize(&req.form_schema)
         .map_err(|e| ServiceError::Invalid(format!("invalid form_schema: {e}")))?;
+    let single_job_contract = if form_schema.single_job.is_some() {
+        biffix_workflow::runtime::SINGLE_JOB_CONTRACT
+    } else {
+        0
+    };
+    let recipe =
+        recipe.with_coordinator_contract(queues.coordinator_contract().max(single_job_contract));
+    let runtime_key = biffix_workflow::runtime::runtime_key(&recipe);
     // The catalog is held to the CLI's limits here too, so a direct API registration cannot
     // freeze a thousand tags or a multi-KB description (idempotent for a CLI-derived form).
     if let Some(catalog) = form_schema.catalog.take() {

@@ -86,6 +86,7 @@ fn ec2_interruption_key_shape() {
 
 fn smk(ts: f64, body: EngineBody) -> EngineEvent {
     EngineEvent {
+        coordinator_attempt: None,
         schema_version: 1,
         ts: Timestamp::from_epoch_seconds(ts),
         run_id: RunId::new("r1"),

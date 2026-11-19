@@ -167,6 +167,71 @@ async fn a_folded_run_reads_back_as_the_fold_says() {
     );
 }
 
+/// Real log dedup preserves image observations, and a host retry removes lost local SQL rows.
+#[tokio::test]
+#[ignore = "requires --features pg + the Postgres harness"]
+async fn single_job_generation_replaces_lost_work_through_the_log() {
+    use biffix_core::event::{RunSubmitted, SingleJobUse};
+    use biffix_core::source::EventSource;
+    use biffix_core::time::Timestamp;
+
+    let pool = migrated_pool("single_job_generation").await;
+    let run = RunId::new("single-job-generation");
+    let mut submitted = RunSubmitted::new("v1", "abc", "sha256:x", serde_json::json!({}), vec![]);
+    submitted.single_job = Some(SingleJobUse {
+        queue_class: "whole-host".into(),
+        instance_type: "r6id.4xlarge".into(),
+        vcpus: 16,
+        memory_mib: 120_000,
+    });
+    let anchor =
+        biffix_core::event::run_submitted(&run, Timestamp::from_epoch_seconds(1.0), submitted);
+    let wire = |mut value: serde_json::Value| {
+        value["run_id"] = run.as_str().into();
+        biffix_core::translate::from_engine_value(EventSource::Nextflow, value).unwrap()
+    };
+    let created = |image| {
+        wire(serde_json::json!({"kind": "task_created", "ts": 2.0,
+        "task_key": "align", "image": image}))
+    };
+    let initial = vec![
+        anchor,
+        created(None::<&str>),
+        created(Some("repo/b")),
+        created(Some("repo/a")),
+        wire(serde_json::json!({"kind": "task_cached", "ts": 3.0, "task_key": "align"})),
+        wire(serde_json::json!({"kind": "run_progress", "ts": 3.0, "completed": 1, "total": 2})),
+        wire(serde_json::json!({"kind": "task_outputs", "ts": 3.0, "task_key": "align",
+            "outputs": [{"s3_uri": "s3://b/lost"}]})),
+    ];
+    assert_eq!(biffix_db::log::append_and_advance(&pool, &initial).await.unwrap(), initial.len());
+    assert_eq!(biffix_db::log::append_and_advance(&pool, &initial).await.unwrap(), 0);
+    let got = PgStore::new(pool.clone()).get_run(&run).await.unwrap();
+    assert_eq!(got.tasks[0].image.as_deref(), Some("repo/a"));
+    assert_eq!(got.run.tasks_succeeded, 1);
+
+    let boundary =
+        wire(serde_json::json!({"kind": "run_started", "ts": 4.0, "coordinator_attempt": 2}));
+    biffix_db::log::append_and_advance(&pool, &[boundary]).await.unwrap();
+    let got = PgStore::new(pool.clone()).get_run(&run).await.unwrap();
+    assert!(got.tasks.is_empty());
+    assert_eq!((got.run.tasks_succeeded, got.run.tasks_cached), (0, 0));
+    assert_eq!((got.run.completed, got.run.total), (None, None));
+    let outputs: i64 = sqlx::query_scalar("SELECT count(*) FROM run_output WHERE run_id = $1")
+        .bind(run.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(outputs, 0);
+
+    let failed = wire(serde_json::json!({"kind": "task_failed", "ts": 5.0,
+        "task_key": "align", "coordinator_attempt": 2}));
+    biffix_db::log::append_and_advance(&pool, &[failed]).await.unwrap();
+    let got = PgStore::new(pool).get_run(&run).await.unwrap();
+    assert_eq!(got.tasks[0].state, "failed");
+    assert_eq!((got.run.tasks_failed, got.run.tasks_succeeded), (1, 0));
+}
+
 /// A cancelled run's task that was still running reads back `cancelled`, and the run's summary
 /// counts it under `tasks_cancelled`, not `tasks_failed`.
 #[tokio::test]

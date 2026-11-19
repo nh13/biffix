@@ -1652,7 +1652,7 @@ wheels = [
 
 [[package]]
 name = "snakemake-logger-plugin-biffix"
-version = "0.2.2"
+version = "0.2.3"
 source = { directory = "../../plugins/snakemake-logger-plugin-biffix" }
 dependencies = [
     { name = "snakemake-interface-logger-plugins" },

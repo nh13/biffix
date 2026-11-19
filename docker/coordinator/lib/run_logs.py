@@ -231,6 +231,8 @@ def main(argv: list[str]) -> int:
         uploader.report()
     except Exception as e:  # never fail the run on its logs
         print(f"biffix-coordinator: log upload failed (swallowed): {e}", file=sys.stderr)
+    finally:
+        timer.cancel()
     return 0
 
 

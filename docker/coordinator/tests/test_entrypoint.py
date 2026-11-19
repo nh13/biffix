@@ -1622,16 +1622,17 @@ def test_single_job_snakemake_runs_every_job_here_in_its_image(sm_single: Single
     argv = sm_single.job.argv
     scratch = sm_single.scratch
     assert _after(argv, "--cores") == "8"
-    # 64 GiB less Snakemake's 4 GiB reserve, as the one memory resource Snakemake 9.27 takes.
-    at = argv.index("--resources")
-    assert argv[at + 1 : at + 3] == ["mem_mb=64424", "--sdm"]
+    assert _after(argv, "--executor") == "local"
+    # The wrapper merges the memory budget after profile resolution, rather than overwriting
+    # the profile's other global resources on the command line.
+    assert "--resources" not in argv
     assert _after(argv, "--sdm") == "apptainer"
     assert _after(argv, "--apptainer-prefix") == str(scratch / "apptainer/snakemake")
     assert "--apptainer-args=--cleanenv" in argv
     assert _after(argv, "--local-storage-prefix") == str(scratch / "storage")
     assert _after(argv, "--default-storage-prefix") == "s3://bucket/runs/run-test/"
     assert "--retries" in argv and "--keep-going" in argv and "--logger" in argv
-    for batch_only in ("--executor", "--jobs", "--container-image", "--aws-batch-job-queue"):
+    for batch_only in ("--jobs", "--container-image", "--aws-batch-job-queue"):
         assert batch_only not in argv
     assert not any(a.startswith("--aws-batch") for a in argv)
     # Tasks start through biffix's apptainer wrapper.
@@ -1647,7 +1648,12 @@ def test_single_job_snakemake_sets_every_rule_s_image_in_a_wrapper_snakefile(
     wrapper = Path(_after(sm_single.job.argv, "--snakefile"))
     assert wrapper == sm_single.scratch / "run/src/.biffix-container.smk"
     text = (src / ".biffix-container.smk").read_text()
-    assert f'include: "{sm_single.scratch / "run/src/Snakefile"}"\n' in text
+    assert (
+        f'workflow.include("{sm_single.scratch / "run/src/Snakefile"}", '
+        "overwrite_default_target=True)\n"
+    ) in text
+    # 64 GiB less the engine's 4 GiB reserve reaches the effective-resource merger.
+    assert "configure_local_resources(workflow, 61440)\n" in text
     task_images = sm_single.scratch / "run/task-images.json"
     images = sm_single.scratch / "apptainer/images"
     map_file = sm_single.scratch / "run/images.json"
@@ -1700,7 +1706,7 @@ def test_snakemake_parses_the_command_line_of_a_single_job_run(sm_single: Single
     )  # fmt: skip
     assert parsed.returncode == 0, parsed.stderr
     assert parsed.stdout.split("\n")[0] == (
-        "['CODE', 'INPUT', 'MTIME', 'PARAMS'] ['mem_mb'] ['all'] ['APPTAINER']"
+        "['CODE', 'INPUT', 'MTIME', 'PARAMS'] [] ['all'] ['APPTAINER']"
     )
 
 

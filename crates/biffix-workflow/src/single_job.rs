@@ -41,7 +41,7 @@ pub struct SingleJobSpec {
 
 impl SingleJobSpec {
     /// Whether the spec names a size at all (any of `instance`, `cpus`, `memory_gib`).
-    pub fn has_size(&self) -> bool {
+    fn has_size(&self) -> bool {
         self.instance.is_some() || self.cpus.is_some() || self.memory_gib.is_some()
     }
 

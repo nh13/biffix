@@ -310,6 +310,11 @@ pub fn from_engine(source: EventSource, ev: &EngineEvent) -> RunEvent {
         // Both `completed` AND `total` identify a progress fact: a checkpoint can grow `total`
         // while `completed` is unchanged, and keying on `completed` alone dropped that update.
         EngineBody::RunProgress { completed, total } => Some(format!("{completed}:{total}")),
+        // Image observations are independent facts, including when a legacy image-less creation
+        // has already arrived. Keep that legacy key unchanged; redeliveries of one image dedupe.
+        EngineBody::TaskCreated { image: Some(image), .. } => {
+            Some(parts_disc(["image", image.as_str()]))
+        }
         // One batch of outputs is identified by its role and its set of URIs (order-independent),
         // so a redelivery dedupes while a second batch for the same attempt (a Nextflow publish
         // flush) is a distinct fact that unions in the fold. Hex, so the `:` invariant holds.
@@ -339,6 +344,14 @@ pub fn from_engine(source: EventSource, ev: &EngineEvent) -> RunEvent {
         | EngineBody::TaskFailed { execution_id, .. } => execution_id.clone(),
         _ => None,
     };
+    // Generation 1 keeps existing keys. Later coordinator starts and all their facts must reach
+    // the log independently, even when progress/task identities repeat after losing a host.
+    let disc = match ev.coordinator_attempt.map(std::num::NonZeroU32::get) {
+        Some(generation) if generation > 1 => {
+            Some(format!("coordinator-{generation}:{}", disc.unwrap_or_default()))
+        }
+        _ => disc,
+    };
     // The wire kind tag comes from the payload itself (`Kind::as_str`), never a parallel literal.
     let kind = data.kind();
     let dedup_key = dedup::engine(
@@ -353,6 +366,7 @@ pub fn from_engine(source: EventSource, ev: &EngineEvent) -> RunEvent {
         run_id: Some(ev.run_id.clone()),
         task_key,
         attempt,
+        coordinator_attempt: ev.coordinator_attempt,
         batch_job_id,
         ..RunEvent::new(dedup_key, ev.ts, source, data)
     }

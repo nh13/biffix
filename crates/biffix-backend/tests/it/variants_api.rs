@@ -743,6 +743,35 @@ async fn register_nf(h: &Harness, body: &Value) -> (String, BTreeMap<String, Str
 }
 
 #[tokio::test]
+async fn single_job_versions_require_a_coordinator_that_implements_the_mode() {
+    for engine in ["snakemake", "nextflow"] {
+        for selectors in [false, true] {
+            let h = harness();
+            let mut body = if engine == "nextflow" {
+                nf_register_body("single-job", &[])
+            } else {
+                register_body()
+            };
+            body["form_schema"]["single_job"] = json!({});
+            if selectors {
+                body["queues"] = json!({"by_name": {"align": "cpu-spot"}});
+            }
+            let (status, reply) =
+                call(&h.state, request("POST", "/workflows", "developers", Some(&body))).await;
+            assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
+            let rec = h.state.registry.get_version(reply["id"].as_str().unwrap()).await.unwrap();
+            assert_eq!(rec.version.runtime_recipe["coordinator_contract"], json!(2), "{engine}");
+            let builds = h.cloud.runtime_builds.lock().unwrap();
+            let build = builds
+                .iter()
+                .find(|b| b.env["BIFFIX_RT_KEY"] == rec.version.runtime_key)
+                .expect("a runtime requiring single-job support is built separately");
+            assert_eq!(build.env["BIFFIX_RT_COORDINATOR_CONTRACT"], "2");
+        }
+    }
+}
+
+#[tokio::test]
 async fn a_nextflow_workflow_s_plugins_are_built_into_its_runtime() {
     let h = harness();
     let (plain, plain_env) = register_nf(&h, &nf_register_body("a1", &[])).await;

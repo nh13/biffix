@@ -2,7 +2,7 @@ plugins {
     id 'io.nextflow.nextflow-plugin' version '1.0.0-beta.16'
 }
 
-version = '0.7.0'
+version = '0.8.0'
 
 // The Nextflow release (and the nf-amazon it defaults to) the plugin compiles against: the oldest
 // release biffix runs (engines.rs SUPPORTED), which is also the plugin's declared minimum

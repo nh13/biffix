@@ -7321,7 +7321,7 @@
       },
       "SingleJobRequest": {
         "type": "object",
-        "description": "A run's single-job settings (`RunSubmitRequest.single_job`). Each field is optional and falls\nback to the version's default; a size is either `instance` or both `cpus` and `memory_gib`\n(the smallest instance type of the queue-class with at least that much is used). With no size\nhere or in the version, the queue-class's smallest instance type is used.",
+        "description": "A run's single-job settings (`RunSubmitRequest.single_job`). A size is either `instance` or\nboth `cpus` and `memory_gib` (the smallest qualifying type sizes the whole-host request).\nSize overrides are atomic: a partial CPU/memory pair never inherits the missing field. With\nno size here, the version's size applies unless a different queue-class is requested; then,\nor when the version has no size, the queue-class's smallest type sizes the request.",
         "properties": {
           "cpus": {
             "type": [
@@ -7337,7 +7337,7 @@
               "string",
               "null"
             ],
-            "description": "An exact instance type of the queue-class (`c6id.8xlarge`): the run gets the whole host."
+            "description": "An instance type of the queue-class (`c6id.8xlarge`) used to size the whole-host request.\nBatch may place the run on another same-size type in that queue-class."
           },
           "memory_gib": {
             "type": [

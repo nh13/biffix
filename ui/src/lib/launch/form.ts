@@ -401,9 +401,9 @@ export function singleJobNote(singleJob: SingleJobRequest | null, resume: boolea
   if (!singleJob) return null;
   if (resume)
     return 'That run ran as one job on a whole host; a resume runs each step as its own job instead.';
-  const host = singleJob.instance ? `a whole ${singleJob.instance} host` : 'a whole host';
+  const sizing = singleJob.instance ? `, sized using ${singleJob.instance}` : '';
   const queue = singleJob.queue_class ? ` (queue-class ${singleJob.queue_class})` : '';
-  return `It runs as one job on ${host} again${queue}.`;
+  return `It runs as one job on a whole host again${sizing}${queue}. Batch may choose another permitted host type.`;
 }
 
 /**
