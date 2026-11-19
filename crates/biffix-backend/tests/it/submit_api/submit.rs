@@ -342,7 +342,10 @@ async fn a_submit_whose_launch_answer_was_lost_binds_its_job_or_parks_the_run() 
     assert!(out["coordinator_job_id"].is_null(), "{out}");
     assert_eq!(cloud.launched.lock().unwrap().len(), 2);
     let run_id = biffix_core::ids::RunId::new(out["run_id"].as_str().unwrap());
-    assert!(state.store.get_pending_launch(&run_id).await.unwrap().is_some());
+    let parked = state.store.get_pending_launch(&run_id).await.unwrap().expect("parked");
+    // The queue it tried, where the sweep looks for that coordinator even if a deploy moves it.
+    let tried = cloud.launched.lock().unwrap()[1].coordinator_queue.clone();
+    assert_eq!(parked.plan["attempted_queues"], json!([tried]), "{}", parked.plan);
     // Recorded as preparing, never as submitted.
     let kinds: Vec<_> = events
         .events

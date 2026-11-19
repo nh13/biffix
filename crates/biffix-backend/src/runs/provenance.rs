@@ -312,9 +312,16 @@ pub fn build_crate(input: &ProvenanceInput<'_>) -> Value {
 
     // ── the images tasks ran in ──
     let mut images = container_images(input);
-    // A task names the image its engine reported for it (`task_submitted.image`); a task with none
-    // recorded (an older plugin) names the default image only when it is the run's one image.
-    let single_image = images.run.first().filter(|_| images.run.len() == 1).cloned();
+    // A task names the image its engine reported for it (`task_submitted.image` for a Batch job,
+    // `task_created.image` for a task the engine ran itself, as in a single-job run); a task with
+    // none recorded (an older plugin) names the default image only when it is the run's one image.
+    // Not in a single-job run, whose plugins always report a task's image: a task there with none
+    // ran in the job itself (a Snakemake local rule, a rule with no image and no default one).
+    let single_image = images
+        .run
+        .first()
+        .filter(|_| images.run.len() == 1 && detail.single_job.is_none())
+        .cloned();
     let task_images: HashMap<&str, Value> = detail
         .tasks
         .iter()
@@ -575,6 +582,15 @@ pub fn build_crate(input: &ProvenanceInput<'_>) -> Value {
     });
     if let Some(agent) = agent {
         engine_run["agent"] = agent;
+    }
+    // A single-job run: the engine ran every task itself, on one host of this size.
+    let usage = input.detail.single_job.as_ref().map(single_job_usage).unwrap_or_default();
+    if !usage.is_empty() {
+        engine_run["resourceUsage"] =
+            json!(usage.iter().map(|u| json!({"@id": u["@id"]})).collect::<Vec<_>>());
+        for u in usage {
+            graph.add(u);
+        }
     }
     graph.add(engine_run);
 
@@ -1039,6 +1055,33 @@ fn task_error(task: &Task) -> Option<String> {
         parts.push(cat.replace('_', " "));
     }
     Some(if parts.is_empty() { "failed".into() } else { parts.join("; ") })
+}
+
+/// How a single-job run's engine ran (`#engine-run`'s resource usage): in single-job mode, on its
+/// queue-class, sized for its instance type, with the vCPUs and memory its one job was given.
+fn single_job_usage(single: &biffix_core::event::SingleJobUse) -> Vec<Value> {
+    [
+        ("executionMode", json!("single_job"), None),
+        ("queueClass", json!(single.queue_class), None),
+        ("instanceType", json!(single.instance_type), None),
+        ("vcpus", json!(single.vcpus.to_string()), None),
+        ("memory", json!(single.memory_mib.to_string()), Some("MiB")),
+    ]
+    .into_iter()
+    .map(|(name, value, unit): (&str, Value, Option<&str>)| {
+        let mut pv = json!({
+            "@id": format!("#usage/engine-run/{name}"),
+            "@type": "PropertyValue",
+            "name": name,
+            "propertyID": format!("{TERMS}{}", name.to_lowercase()),
+            "value": value,
+        });
+        if let Some(unit) = unit {
+            pv["unitText"] = json!(unit);
+        }
+        pv
+    })
+    .collect()
 }
 
 /// A task's resource usage: attempts, instance type, job queue, cost, and whether it was a cache

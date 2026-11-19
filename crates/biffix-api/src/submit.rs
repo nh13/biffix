@@ -98,6 +98,52 @@ pub struct RunSubmitRequest {
     /// birth (`RunSubmitted.experiment_id`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub experiment: Option<String>,
+    /// Execute the run as one AWS Batch job on one host (single-job mode) instead of one Batch job
+    /// per task: the engine runs every task locally, each in the image its Batch job would run,
+    /// with its working files on the host's local disk (a Nextflow run's work directory; a
+    /// Snakemake run still publishes every output to its output prefix). The version must allow it (`single_job:` in its
+    /// `biffix.yaml`); the fields given here override the version's default queue-class and size.
+    /// Absent ⇒ one Batch job per task. A single-job run cannot be a resume (`resume_from`): its
+    /// work directory would be on one host's local disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_job: Option<SingleJobRequest>,
+}
+
+/// A run's single-job settings (`RunSubmitRequest.single_job`). Each field is optional and falls
+/// back to the version's default; a size is either `instance` or both `cpus` and `memory_gib`
+/// (the smallest instance type of the queue-class with at least that much is used). With no size
+/// here or in the version, the queue-class's smallest instance type is used.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SingleJobRequest {
+    /// A single-job queue-class of the deploy; absent ⇒ the version's, else the deploy's first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_class: Option<String>,
+    /// An exact instance type of the queue-class (`c6id.8xlarge`): the run gets the whole host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
+    /// An instance type with at least this many vCPUs (with `memory_gib`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<u32>,
+    /// An instance type whose run's tasks get at least this much memory, in GiB (with `cpus`).
+    /// Compared with what the tasks get, not the type's nominal memory: the job is given the
+    /// host's memory less a reserve for the operating system and ECS (6% plus 256 MiB, rounded
+    /// down to 256 MiB), and the engine keeps a share of that for itself (Snakemake 1/16, 2 to 8
+    /// GiB; Nextflow its heap, 1/16 within 1 to 8 GiB, and 1/32 slack, at least 1 GiB). A 64 GiB
+    /// host leaves its tasks about 56 GiB under Snakemake, 54 GiB under Nextflow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_gib: Option<u32>,
+}
+
+impl From<&SingleJobRequest> for biffix_workflow::single_job::SingleJobSpec {
+    fn from(r: &SingleJobRequest) -> Self {
+        Self {
+            queue_class: r.queue_class.clone(),
+            instance: r.instance.clone(),
+            cpus: r.cpus,
+            memory_gib: r.memory_gib,
+        }
+    }
 }
 
 /// `POST /runs` response: the new run's id and state, plus its coordinator job / assumed role once

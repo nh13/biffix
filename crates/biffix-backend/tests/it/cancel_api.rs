@@ -357,8 +357,12 @@ async fn cancelling_a_submitted_run_without_a_coordinator_ends_it_at_once() {
     assert!(cloud.terminated.lock().unwrap().is_empty());
 }
 
+/// The cancel ends the run but leaves its parked launch to the launch sweep, which releases it
+/// (never launching a cancelled run): only the sweep looks on Batch for a coordinator an earlier
+/// launch of it may have left running, which a plan from before `attempted_queues` was recorded
+/// does not name, so no cancel can tell there is none.
 #[tokio::test]
-async fn cancelling_a_run_preparing_its_images_ends_it_and_drops_its_parked_launch() {
+async fn cancelling_a_run_preparing_its_images_ends_it_and_leaves_its_parked_launch_to_the_sweep() {
     let store = Arc::new(MemStore::new());
     park_launch(&store);
     let (app, events, cloud) = folding_app_over(store.clone());
@@ -368,8 +372,9 @@ async fn cancelling_a_run_preparing_its_images_ends_it_and_drops_its_parked_laun
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert_eq!(kinds(&events), vec!["run_preparing", "cancel_requested", "run_cancelled"]);
     assert_eq!(events.folded_state("r1"), Some(RunState::Cancelled));
-    assert!(store.pending.lock().unwrap().is_empty());
+    assert!(store.pending.lock().unwrap().contains_key("r1"));
     assert!(cloud.terminated.lock().unwrap().is_empty());
+    assert!(cloud.live_coordinator_queues.lock().unwrap().is_empty(), "no AWS call");
 }
 
 #[tokio::test]
@@ -451,9 +456,10 @@ async fn a_cancel_holds_the_launch_while_it_ends_a_preparing_run() {
     let (status, body) = cancel(app, "r1").await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert_eq!(kinds(&events), vec!["run_preparing", "cancel_requested", "run_cancelled"]);
-    assert!(store.pending.lock().unwrap().is_empty());
-    // The run was ended and its parked launch dropped while the cancel held the run's launch, so
-    // no sweep could launch it in between.
+    // Its parked launch is left for the sweep to release.
+    assert!(store.pending.lock().unwrap().contains_key("r1"));
+    // The run was ended while the cancel held the run's launch, so no sweep could launch it in
+    // between.
     assert_eq!(
         *events.recorded_under_claim.lock().unwrap(),
         vec![
@@ -462,7 +468,7 @@ async fn a_cancel_holds_the_launch_while_it_ends_a_preparing_run() {
             ("run_cancelled".to_string(), true),
         ]
     );
-    assert_eq!(*store.pending_deleted.lock().unwrap(), vec![("r1".to_string(), true)]);
+    assert!(store.pending_deleted.lock().unwrap().is_empty());
     // Released once the cancel is done.
     assert!(store.launch_claims.lock().unwrap().is_empty());
 }

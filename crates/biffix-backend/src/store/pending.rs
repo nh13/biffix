@@ -7,6 +7,11 @@ use super::{Claim, StoreError};
 
 /// A run waiting for its submit-time images: its launch request as given, parked until the sweep
 /// launches it (or the run fails or is cancelled). Not part of the event log; nothing folds it.
+///
+/// A run that will never launch while a coordinator an earlier launch of it may have left running
+/// cannot be stopped keeps its request, for cleanup only (`runs::launch`'s `release`, for up to
+/// `CLEANUP_GIVE_UP_AFTER` after it was parked): its plan is then scrubbed to what that cleanup
+/// reads, marked [`PENDING_CLEANUP_KEY`], so the run's params (secret values) are not kept with it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PendingLaunch {
     pub run_id: RunId,
@@ -14,7 +19,10 @@ pub struct PendingLaunch {
     pub created_at_micros: i64,
     /// The launch plan, verbatim (params unredacted: the coordinator needs them). Beside it, under
     /// [`PENDING_ORPHAN_KEY`], the coordinator a launch left unbound
-    /// ([`PendingLaunchStore::mark_pending_launch_orphan`]).
+    /// ([`PendingLaunchStore::mark_pending_launch_orphan`]). Once kept for cleanup only
+    /// ([`PendingLaunch::cleanup_only`]), only the queues its launches were submitted to
+    /// (`attempted_queues`), its single-job use (`single_job`, which names the deploy's queue for
+    /// it now) and that coordinator.
     pub plan: serde_json::Value,
 }
 
@@ -22,10 +30,20 @@ pub struct PendingLaunch {
 /// records a coordinator that launched but could not be recorded (or stopped).
 pub(crate) const PENDING_ORPHAN_KEY: &str = "orphan_coordinator_job_id";
 
+/// The key (`true`) of a parked launch's plan that marks it kept for cleanup only: the run will
+/// never launch (its end, or failure, is recorded), and the plan was scrubbed of all else.
+pub(crate) const PENDING_CLEANUP_KEY: &str = "cleanup_only";
+
 impl PendingLaunch {
     /// The coordinator a launch of this run left unbound, if one did.
     pub fn orphan_job_id(&self) -> Option<&str> {
         self.plan.get(PENDING_ORPHAN_KEY).and_then(|v| v.as_str())
+    }
+
+    /// Whether the request is kept for cleanup only ([`PENDING_CLEANUP_KEY`]): never launched,
+    /// nor failed again.
+    pub fn cleanup_only(&self) -> bool {
+        self.plan.get(PENDING_CLEANUP_KEY).and_then(serde_json::Value::as_bool) == Some(true)
     }
 }
 
@@ -65,9 +83,11 @@ pub trait PendingLaunchStore: Send + Sync {
     /// The sweep holds it from reading the run's state through the launch and its recording, so
     /// two sweeps cannot both launch it. A cancel of a run with no coordinator takes it too (retrying
     /// briefly while a sweep holds it), then re-reads the run: a coordinator the sweep bound
-    /// meanwhile is stopped, else the run ends and its parked launch is dropped while the claim is
-    /// held, so no sweep launches it after. In Postgres the claim pins one pooled connection (an
-    /// open transaction holding an advisory lock) for as long as it is held — the whole launch,
-    /// AWS calls included — which is bounded by the sweep handling its rows one at a time.
+    /// meanwhile is stopped, else the run ends while the claim is held, its parked launch left for
+    /// the sweep to release (stopping any coordinator an earlier launch of it may have left
+    /// running; it never launches a cancelled run). In Postgres the claim pins one pooled
+    /// connection (an open transaction holding an advisory lock) for as long as it is held — the
+    /// whole launch, AWS calls included — which is bounded by the sweep handling its rows one at a
+    /// time.
     async fn claim_run_launch(&self, run_id: &RunId) -> Result<Option<Claim>, StoreError>;
 }

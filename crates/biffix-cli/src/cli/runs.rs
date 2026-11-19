@@ -98,6 +98,39 @@ pub(crate) enum RunsCommand {
         /// Launch the run outside any experiment, even when resuming a run that is in one.
         #[arg(long)]
         no_experiment: bool,
+        /// Run the whole workflow as one AWS Batch job on one host (single-job mode): every task
+        /// runs on that host in the image its Batch job would run, its working files on the host's
+        /// local disk (a Snakemake run still publishes every output to its output prefix). The
+        /// version must allow it (`single_job:` in its biffix.yaml), which also sets the default
+        /// size; --instance or --cpus/--memory-gib override it. Cannot be combined with
+        /// --resume-from: a single-job run cannot be a resume, its work directory being on one
+        /// host's local disk.
+        #[arg(long, conflicts_with = "resume_from")]
+        single_job: bool,
+        /// Single-job: the exact instance type to run on (one of the queue-class's), e.g.
+        /// `c6id.8xlarge`; the run gets the whole host.
+        #[arg(
+            long,
+            value_name = "TYPE",
+            requires = "single_job",
+            conflicts_with_all = ["cpus", "memory_gib"]
+        )]
+        instance: Option<String>,
+        /// Single-job: at least this many vCPUs (with --memory-gib); the smallest instance type of
+        /// the queue-class with both is used.
+        #[arg(long, value_name = "N", requires_all = ["single_job", "memory_gib"])]
+        cpus: Option<u32>,
+        /// Single-job: at least this much memory for the run's tasks, in GiB (with --cpus). It is
+        /// compared with what the tasks get, not the instance type's nominal memory: the host's
+        /// memory less a reserve for the operating system and ECS (about 6%), less what the
+        /// engine keeps for itself (Snakemake 1/16 of the rest, 2 to 8 GiB; Nextflow its heap and
+        /// JVM slack, about 3/32, at least 2 GiB). A 64 GiB host leaves its tasks about 54-56 GiB.
+        #[arg(long, value_name = "GIB", requires_all = ["single_job", "cpus"])]
+        memory_gib: Option<u32>,
+        /// Single-job: the deploy's single-job queue-class to run on (default: the version's, else
+        /// the deploy's first).
+        #[arg(long, value_name = "NAME", requires = "single_job")]
+        single_job_queue_class: Option<String>,
         /// Follow the run to a terminal state (exit 0 on success, 8 failed, 9 cancelled, 1 a
         /// terminal state this biffix does not know).
         #[arg(long)]
@@ -178,6 +211,11 @@ impl RunsCommand {
                 image,
                 experiment,
                 no_experiment,
+                single_job,
+                instance,
+                cpus,
+                memory_gib,
+                single_job_queue_class,
                 follow,
             } => {
                 commands::runs::submit(
@@ -196,6 +234,12 @@ impl RunsCommand {
                         retention: retention.map(Into::into),
                         images: image,
                         experiment: commands::runs::ExperimentChoice::of(experiment, no_experiment),
+                        single_job: single_job.then_some(biffix_api::SingleJobRequest {
+                            queue_class: single_job_queue_class,
+                            instance,
+                            cpus,
+                            memory_gib,
+                        }),
                         follow,
                     },
                 )
@@ -239,6 +283,54 @@ mod tests {
         assert_eq!(keep_going_of(&["--no-keep-going"]), Some(false));
         assert_eq!(keep_going_of(&["--keep-going", "--no-keep-going"]), Some(false));
         assert_eq!(keep_going_of(&["--no-keep-going", "--keep-going"]), Some(true));
+    }
+
+    fn single_job_of(args: &[&str]) -> Result<Option<biffix_api::SingleJobRequest>, clap::Error> {
+        let mut argv = vec!["biffix", "runs", "submit", "v1"];
+        argv.extend_from_slice(args);
+        match Cli::try_parse_from(argv)?.command {
+            Command::Runs {
+                command:
+                    RunsCommand::Submit {
+                        single_job,
+                        instance,
+                        cpus,
+                        memory_gib,
+                        single_job_queue_class,
+                        ..
+                    },
+            } => Ok(single_job.then_some(biffix_api::SingleJobRequest {
+                queue_class: single_job_queue_class,
+                instance,
+                cpus,
+                memory_gib,
+            })),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn single_job_takes_an_instance_or_cpus_with_memory() {
+        assert_eq!(single_job_of(&[]).unwrap(), None);
+        assert_eq!(single_job_of(&["--single-job"]).unwrap(), Some(Default::default()));
+        let by_type = single_job_of(&["--single-job", "--instance", "c6id.8xlarge"]).unwrap();
+        assert_eq!(by_type.unwrap().instance.as_deref(), Some("c6id.8xlarge"));
+        let sized = single_job_of(&["--single-job", "--cpus", "32", "--memory-gib", "64"])
+            .unwrap()
+            .unwrap();
+        assert_eq!((sized.cpus, sized.memory_gib), (Some(32), Some(64)));
+        let named = single_job_of(&["--single-job", "--single-job-queue-class", "big"]).unwrap();
+        assert_eq!(named.unwrap().queue_class.as_deref(), Some("big"));
+        for bad in [
+            &["--instance", "c6id.8xlarge"][..],
+            &["--single-job", "--cpus", "32"],
+            &["--single-job", "--memory-gib", "64"],
+            &["--single-job", "--instance", "c6id.8xlarge", "--cpus", "32", "--memory-gib", "64"],
+            &["--single-job", "--resume-from", "run-1"],
+            &["--single-job-queue-class", "big"],
+        ] {
+            assert!(single_job_of(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

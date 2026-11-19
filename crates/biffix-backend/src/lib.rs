@@ -91,6 +91,9 @@ pub struct DeployConfig {
     pub retention_days: Option<u32>,
     /// The public OAuth client configuration `GET /auth/config` serves, or why there is none.
     pub oauth_client: auth::oauth_client::OAuthClient,
+    /// The deploy's single-job queue-classes, in deploy-config order (the first is the default;
+    /// `BIFFIX_SINGLE_JOB_QUEUES`). Empty: no run may execute as one job.
+    pub single_job_queues: Vec<config::single_job::SingleJobQueue>,
 }
 
 /// Shared application state handed to axum handlers.

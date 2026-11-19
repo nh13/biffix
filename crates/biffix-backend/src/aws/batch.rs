@@ -104,10 +104,15 @@ pub struct CoordinatorLaunch {
     /// `None` (a local composition with no project bucket): task images are not resolved through
     /// a map, and the engine registers its own task job definitions.
     pub maps: Option<RunMapUris>,
+    /// A single-job run: the whole host its one job is given (sent as the job's resource
+    /// requirements, overriding the template's, and as `BIFFIX_EXECUTION=single_job` with its
+    /// size). `None`: the coordinator submits one Batch job per task.
+    pub single_job: Option<super::ec2::Resources>,
 }
 
 /// Where a run's image map and its map of image to task job definition were written. A launch
-/// writes both (`crate::runs::launch`), so a run has both or neither.
+/// writes both for a tasks-mode run, and only the image map for a single-job run, whose tasks are
+/// no Batch jobs (`crate::runs::launch`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunMapUris {
     /// The image map (`images.json`, `s3://…`; see `crate::images::map`), handed to the
@@ -115,25 +120,28 @@ pub struct RunMapUris {
     pub image_map: String,
     /// The map of image to task job definition (`job-definitions.json`, `s3://…`; see
     /// [`crate::aws::task_definitions`]), handed to the coordinator as
-    /// `BIFFIX_JOB_DEFINITION_MAP_URI`.
-    pub job_definitions: String,
+    /// `BIFFIX_JOB_DEFINITION_MAP_URI`. `None` exactly for a single-job run.
+    pub job_definitions: Option<String>,
 }
 
 /// The image a run's tasks default to (`BIFFIX_WORKER_IMAGE`): the version's default image,
 /// `<repo>@<digest>` in its recorded repository (`repo_uri`, else the deploy's worker repository);
 /// for a Snakemake version without one, the coordinator variant (which carries the same pinned
-/// Snakemake); otherwise none. The run's image map names it too (`crate::images::map`), so both
-/// must spell it the same: this is the one place it is spelled.
+/// Snakemake), unless the run is `single_job`; otherwise none. A single-job run's tasks with no
+/// image of their own run in the job itself, which for a version with no default image is that
+/// variant: it is not converted to run nested in itself. The run's image map names it too
+/// (`crate::images::map`), so both must spell it the same: this is the one place it is spelled.
 pub(crate) fn worker_image(
     image_digest: &str,
     repo_uri: Option<&str>,
     fallback_repo: &str,
     engine: biffix_workflow::engines::Engine,
     variant_image: &str,
+    single_job: bool,
 ) -> Option<String> {
     if image_digest.starts_with("sha256:") {
         Some(format!("{}@{image_digest}", repo_uri.unwrap_or(fallback_repo)))
-    } else if engine == biffix_workflow::engines::Engine::Snakemake {
+    } else if engine == biffix_workflow::engines::Engine::Snakemake && !single_job {
         Some(variant_image.to_string())
     } else {
         None
@@ -168,6 +176,18 @@ pub(crate) const RUN_TAG: &str = "biffix:run";
 /// IAM conditions name the same key, which an infra test holds to this one.
 pub(crate) const PROJECT_TAG: &str = "biffix:project";
 
+/// The Batch tag a single-job run's coordinator job is born with ([`SINGLE_JOB_EXECUTION`]); a
+/// coordinator of a run one Batch job per task has none. IAM lets the control plane submit a job
+/// with it only to a single-job queue on a single-job variant, and one without it only to the
+/// coordinator queue on a coordinator variant, so a backend bug cannot put a single-job variant
+/// (the run role, `/dev/fuse`, the host's `/scratch`) on the shared coordinator hosts, nor a
+/// coordinator variant on the single-job hosts' relaxed seccomp profile. The infra IAM conditions
+/// name the same key and value (`infra/biffix_infra/constructs/batch_access.py`).
+pub(crate) const EXECUTION_TAG: &str = "biffix:execution";
+
+/// The [`EXECUTION_TAG`] value of a single-job run's coordinator job.
+pub(crate) const SINGLE_JOB_EXECUTION: &str = "single_job";
+
 /// The Batch job name of run `run_id`'s coordinator. A run's every launch uses it, so its
 /// coordinators can be found by name ([`BatchJobs::live_coordinators`]) when a launch cannot tell
 /// whether Batch accepted it.
@@ -183,6 +203,20 @@ pub struct BatchJobOwner {
     pub(crate) run: Option<RunId>,
     /// When Batch created the job (epoch microseconds), if Batch reports it.
     pub(crate) created_at_micros: Option<i64>,
+}
+
+/// A coordinator job definition template a variant is cloned from: a project's coordinator
+/// template, or its single-job template. The two kinds' variants are named with different prefixes
+/// (`BIFFIX_VARIANT_JOB_DEFINITION_PREFIX`, `BIFFIX_SINGLE_JOB_VARIANT_JOB_DEFINITION_PREFIX`), so
+/// IAM can let the control plane submit each only to its own queues: a single-job variant (run
+/// role, `/dev/fuse`, the host's `/scratch`) never to the shared coordinator queue, a coordinator
+/// variant never to a single-job host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VariantTemplate<'a> {
+    /// The template's revisioned ARN.
+    pub arn: &'a str,
+    /// Whether it is a single-job template.
+    pub single_job: bool,
 }
 
 /// The run's coordinator job on AWS Batch (see the module docs).
@@ -211,8 +245,14 @@ pub trait BatchJobs: Send + Sync {
     async fn live_coordinators(&self, queue: &str, run_id: &RunId)
         -> Result<Vec<String>, AwsError>;
 
+    /// Whether job queue `queue` (an ARN or name) is gone: Batch (DescribeJobQueues) knows no such
+    /// queue, or reports it DELETED or DELETING, which terminates its jobs. `false` for a queue in
+    /// any other state. What lets the launch sweep pass over an earlier launch's queue it cannot
+    /// list (`runs::launch`): only a positively gone one, never one whose listing was denied.
+    async fn job_queue_gone(&self, queue: &str) -> Result<bool, AwsError>;
+
     /// The job definition of the coordinator variant `image` (built from base `base_digest` with
-    /// runtime `runtime_key`) for the coordinator job definition `template_arn` (a project's
+    /// runtime `runtime_key`) for the coordinator job definition `template` (a project's
     /// template): the existing one, else a clone of the template with the image swapped. Returns
     /// its ARN. Its name is a function of all four, so the variant of one project's template is
     /// found again by name without being recorded.
@@ -221,11 +261,11 @@ pub trait BatchJobs: Send + Sync {
         runtime_key: &str,
         base_digest: &str,
         image: &str,
-        template_arn: &str,
+        template: VariantTemplate<'_>,
     ) -> Result<String, AwsError>;
 
     /// Whether `job_definition_arn`, recorded for the variant of `runtime_key` on `base_digest`,
-    /// was cloned from the coordinator template `template_arn` (the deployed one). A deploy that
+    /// was cloned from the coordinator template `template` (the deployed one). A deploy that
     /// changes only the template (queues, role, resources, env, retries) leaves the base image
     /// alone, so the recorded variant is then stale and [`Self::variant_job_definition`] must clone
     /// it again.
@@ -234,7 +274,7 @@ pub trait BatchJobs: Send + Sync {
         runtime_key: &str,
         base_digest: &str,
         job_definition_arn: &str,
-        template_arn: &str,
+        template: VariantTemplate<'_>,
     ) -> bool;
 
     /// The task job definition `definition` describes, as its revisioned ARN

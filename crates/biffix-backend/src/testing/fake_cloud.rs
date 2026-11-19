@@ -74,6 +74,9 @@ pub struct FakeCloud {
     pub variant_job_definitions: Mutex<Vec<(String, String, String)>>,
     /// The coordinator template of every variant job definition asked for, in the same order.
     pub variant_templates: Mutex<Vec<String>>,
+    /// Whether each variant job definition asked for was a single-job template's, in the same
+    /// order.
+    pub variant_single_job: Mutex<Vec<bool>>,
     /// Every task job definition asked for, in call order.
     pub task_job_definitions: Mutex<Vec<crate::aws::task_definitions::TaskJobDefinition>>,
     /// Make every `task_job_definition` fail with the error this makes (`AwsError` is not
@@ -114,8 +117,30 @@ pub struct FakeCloud {
     /// Every coordinator job launched, `(job id, run id)`: what `live_coordinators` lists (less
     /// the ones `terminate_job` stopped).
     pub coordinators: Mutex<Vec<(String, String)>>,
-    /// How many of the next `launch_coordinator` calls create their job (`coord-lost-<n>`) but
-    /// lose the reply: an unavailable AWS, as the caller sees it.
+    /// The queue each coordinator job was launched on, by job id: `live_coordinators` lists a
+    /// queue's own (as Batch's ListJobs does).
+    pub coordinator_queues: Mutex<BTreeMap<String, String>>,
+    /// Every queue `live_coordinators` was asked about, in call order.
+    pub live_coordinator_queues: Mutex<Vec<String>>,
+    /// Queues Batch deleted: `live_coordinators` refuses to list them (an opaque `Batch` error)
+    /// and `job_queue_gone` says they are gone.
+    pub missing_queues: Mutex<std::collections::BTreeSet<String>>,
+    /// Queues that exist but `live_coordinators` refuses to list with an opaque `Batch` error (as
+    /// a denied listing can read: a 400 `ClientException`); `job_queue_gone` says they are not
+    /// gone.
+    pub unlistable_queues: Mutex<std::collections::BTreeSet<String>>,
+    /// Make `job_queue_gone` fail (Batch unavailable).
+    pub fail_job_queue_gone: std::sync::atomic::AtomicBool,
+    /// Every queue `job_queue_gone` was asked about, in call order.
+    pub job_queue_gone_asks: Mutex<Vec<String>>,
+    /// Queues `live_coordinators` cannot list now (Batch unavailable for them alone).
+    pub unavailable_queues: Mutex<std::collections::BTreeSet<String>>,
+    /// Make `live_coordinators` still list a job `terminate_job` was sent, as Batch does until the
+    /// job ends.
+    pub list_terminated: std::sync::atomic::AtomicBool,
+    /// How many of the next `launch_coordinator` calls create their job (`coord-lost-<n>`, not
+    /// `coord-<n>`: `n` counts every job created) but lose the reply: an unavailable AWS, as the
+    /// caller sees it.
     pub lose_launch_replies: AtomicUsize,
     /// Make `live_coordinators` list nothing (Batch does not list a job it just created yet).
     pub hide_live_coordinators: std::sync::atomic::AtomicBool,
@@ -125,6 +150,27 @@ pub struct FakeCloud {
     pub build_event_asks: Mutex<Vec<String>>,
     /// Make `build_event` fail (CodeBuild unavailable).
     pub fail_build_event: std::sync::atomic::AtomicBool,
+    /// The instance types `describe_instance_types` knows (others are unknown to EC2): by default
+    /// [`fake_instance_types`].
+    pub instance_types: Mutex<BTreeMap<String, crate::aws::ec2::InstanceTypeInfo>>,
+}
+
+/// The instance types a [`FakeCloud`] knows by default, at EC2's sizes: plain x86_64 types, with no
+/// accelerator.
+pub fn fake_instance_types() -> BTreeMap<String, crate::aws::ec2::InstanceTypeInfo> {
+    [
+        ("c6id.4xlarge", 16, 32_768),
+        ("c6id.8xlarge", 32, 65_536),
+        ("c6id.16xlarge", 64, 131_072),
+        ("m6id.8xlarge", 32, 131_072),
+        ("r6id.8xlarge", 32, 262_144),
+    ]
+    .into_iter()
+    .map(|(kind, vcpus, memory_mib)| {
+        let size = crate::aws::ec2::Resources { vcpus, memory_mib };
+        (kind.to_string(), crate::aws::ec2::InstanceTypeInfo::x86_64(size))
+    })
+    .collect()
 }
 
 impl Default for FakeCloud {
@@ -158,6 +204,7 @@ impl FakeCloud {
             runtime_builds: Mutex::new(Vec::new()),
             variant_job_definitions: Mutex::new(Vec::new()),
             variant_templates: Mutex::new(Vec::new()),
+            variant_single_job: Mutex::new(Vec::new()),
             task_job_definitions: Mutex::new(Vec::new()),
             fail_task_job_definitions: Mutex::new(None),
             sessions: Mutex::new(Vec::new()),
@@ -176,11 +223,20 @@ impl FakeCloud {
             fail_coordinator_base: Mutex::new(None),
             fail_launch: Mutex::new(None),
             coordinators: Mutex::new(Vec::new()),
+            coordinator_queues: Mutex::new(BTreeMap::new()),
+            live_coordinator_queues: Mutex::new(Vec::new()),
+            missing_queues: Mutex::new(std::collections::BTreeSet::new()),
+            unlistable_queues: Mutex::new(std::collections::BTreeSet::new()),
+            fail_job_queue_gone: std::sync::atomic::AtomicBool::new(false),
+            job_queue_gone_asks: Mutex::new(Vec::new()),
+            unavailable_queues: Mutex::new(std::collections::BTreeSet::new()),
+            list_terminated: std::sync::atomic::AtomicBool::new(false),
             lose_launch_replies: AtomicUsize::new(0),
             hide_live_coordinators: std::sync::atomic::AtomicBool::new(false),
             fail_live_coordinators: std::sync::atomic::AtomicBool::new(false),
             build_event_asks: Mutex::new(Vec::new()),
             fail_build_event: std::sync::atomic::AtomicBool::new(false),
+            instance_types: Mutex::new(fake_instance_types()),
         }
     }
 
@@ -281,6 +337,20 @@ pub fn fake_project_variant_job_definition(
 }
 
 #[async_trait]
+impl crate::aws::ec2::InstanceTypes for FakeCloud {
+    async fn describe_instance_types(
+        &self,
+        instance_types: &[String],
+    ) -> Result<BTreeMap<String, crate::aws::ec2::InstanceTypeInfo>, AwsError> {
+        let known = self.instance_types.lock().unwrap();
+        Ok(instance_types
+            .iter()
+            .filter_map(|t| known.get(t).map(|info| (t.clone(), info.clone())))
+            .collect())
+    }
+}
+
+#[async_trait]
 impl BatchJobs for FakeCloud {
     async fn batch_job_owners(
         &self,
@@ -332,12 +402,20 @@ impl BatchJobs for FakeCloud {
                 |n| n.checked_sub(1),
             )
             .is_ok();
-        let job = if lost {
-            format!("coord-lost-{}", self.coordinators.lock().unwrap().len() + 1)
-        } else {
-            "coord-1".to_string()
+        // Each job its own id (`coord-<n>`, or `coord-lost-<n>`), numbered by every job created,
+        // so one launch's queue never overwrites another's. Numbered, recorded and given its
+        // queue in one critical section (the queues' lock, then the jobs', the order
+        // `live_coordinators` takes them in), so two concurrent launches never take the same
+        // number, and no listing sees the job before its queue (it would list it on every queue).
+        let job = {
+            let mut queues = self.coordinator_queues.lock().unwrap();
+            let mut coordinators = self.coordinators.lock().unwrap();
+            let n = coordinators.len() + 1;
+            let job = if lost { format!("coord-lost-{n}") } else { format!("coord-{n}") };
+            coordinators.push((job.clone(), launch.run_id.to_string()));
+            queues.insert(job.clone(), launch.coordinator_queue.clone());
+            job
         };
-        self.coordinators.lock().unwrap().push((job.clone(), launch.run_id.to_string()));
         if lost {
             return Err(AwsError::Unavailable("connection reset reading SubmitJob's reply".into()));
         }
@@ -346,24 +424,37 @@ impl BatchJobs for FakeCloud {
 
     async fn live_coordinators(
         &self,
-        _queue: &str,
+        queue: &str,
         run_id: &RunId,
     ) -> Result<Vec<String>, AwsError> {
         use std::sync::atomic::Ordering::SeqCst;
-        if self.fail_live_coordinators.load(SeqCst) {
+        self.live_coordinator_queues.lock().unwrap().push(queue.to_string());
+        if self.missing_queues.lock().unwrap().contains(queue) {
+            return Err(AwsError::Batch(format!("job queue {queue} does not exist")));
+        }
+        if self.unlistable_queues.lock().unwrap().contains(queue) {
+            return Err(AwsError::Batch(format!("ClientException: listing {queue} refused")));
+        }
+        if self.fail_live_coordinators.load(SeqCst)
+            || self.unavailable_queues.lock().unwrap().contains(queue)
+        {
             return Err(AwsError::Unavailable("batch throttled".into()));
         }
         if self.hide_live_coordinators.load(SeqCst) {
             return Ok(Vec::new());
         }
         let terminated = self.terminated.lock().unwrap();
+        let queues = self.coordinator_queues.lock().unwrap();
         Ok(self
             .coordinators
             .lock()
             .unwrap()
             .iter()
             .filter(|(job, run)| {
-                run == run_id.as_str() && !terminated.iter().any(|(t, _)| t == job)
+                run == run_id.as_str()
+                    && queues.get(job).is_none_or(|q| q == queue)
+                    && (self.list_terminated.load(SeqCst)
+                        || !terminated.iter().any(|(t, _)| t == job))
             })
             .map(|(job, _)| job.clone())
             .collect())
@@ -374,8 +465,10 @@ impl BatchJobs for FakeCloud {
         runtime_key: &str,
         base_digest: &str,
         image: &str,
-        template_arn: &str,
+        template: crate::aws::batch::VariantTemplate<'_>,
     ) -> Result<String, AwsError> {
+        let template_arn = template.arn;
+        self.variant_single_job.lock().unwrap().push(template.single_job);
         self.variant_job_definitions.lock().unwrap().push((
             runtime_key.to_string(),
             base_digest.to_string(),
@@ -402,12 +495,20 @@ impl BatchJobs for FakeCloud {
         runtime_key: &str,
         base_digest: &str,
         job_definition_arn: &str,
-        template_arn: &str,
+        template: crate::aws::batch::VariantTemplate<'_>,
     ) -> bool {
         // Like the provider: current iff it is the one this (runtime, base, template) names.
-        let template = *self.template_revision.lock().unwrap();
+        let revision = *self.template_revision.lock().unwrap();
         job_definition_arn
-            == fake_project_variant_job_definition(runtime_key, base_digest, template, template_arn)
+            == fake_project_variant_job_definition(runtime_key, base_digest, revision, template.arn)
+    }
+
+    async fn job_queue_gone(&self, queue: &str) -> Result<bool, AwsError> {
+        self.job_queue_gone_asks.lock().unwrap().push(queue.to_string());
+        if self.fail_job_queue_gone.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(AwsError::Unavailable("batch throttled".into()));
+        }
+        Ok(self.missing_queues.lock().unwrap().contains(queue))
     }
 
     async fn terminate_job(&self, job_id: &str, reason: &str) -> Result<(), AwsError> {
