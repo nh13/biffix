@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.1] - 2026-11-19
+
+### Bug Fixes
+
+- Register task job definitions in the backend, not the coordinator ([#74](https://github.com/nh13/biffix/pull/74))
+
+
 ## [0.2.0] - 2026-11-17
 
 ### Features
