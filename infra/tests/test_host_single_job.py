@@ -345,6 +345,7 @@ def test_several_disks_are_striped_with_device_mapper(tmp_path: Path) -> None:
         },
     )
     assert result.returncode == 0, result
+    assert "scratch mounted" in result.stdout
     length = 2 * (1_000_000_000 // 1024) * 1024
     table = f"0 {length} striped 2 1024 /dev/nvme1n1 0 /dev/nvme2n1 0"
     device = "/dev/mapper/biffix-scratch"

@@ -316,15 +316,20 @@ changes is where the tasks run, and the isolation that holds around them:
   environment through `/proc`, the run's capability token included. That token authorizes only the
   run's own event POSTs, and expires; a run of one Batch job per task does not have this exposure. A
   task with no image (a Snakemake local rule, a rule with no image when the version has no default
-  image, a Nextflow `exec:` process) and the Python of a Snakemake `run:` block run in the engine's
-  own environment, as they would on the coordinator in a run of one Batch job per task, and get no
-  raised OOM score.
+  image, a Nextflow `exec:` process) runs in the job's own environment. Snakemake's Python `run:`
+  blocks also execute in the engine's environment, so a non-local `run:` rule assigned a task image
+  is rejected before execution; use `script:` to execute in that image. Local `run:` rules and
+  rules assigned no image remain allowed. These in-process blocks get no raised OOM score.
 - **Cancel tears everything down.** Stopping the job ends its PID namespace, so no nested
   process or FUSE mount outlives it.
 - **Failure.** A lost host re-runs the whole run (Batch's retry, a second attempt with a clean
-  work directory). There is no work-directory checkpointing: it would bring back the S3 traffic
-  the mode removes. A single-job run cannot itself be a resume, and a Nextflow one cannot be
-  resumed (its work directory was on the host).
+  work directory). Engine events carry the coordinator's Batch attempt number. For single-job
+  runs, the fold uses only the latest generation's local task, output and progress facts: a
+  replacement coordinator's start invalidates successful work lost with the previous host. The
+  old events remain in the log; AWS and control-plane facts remain authoritative. There is no
+  work-directory checkpointing: it would bring back the S3 traffic the mode removes. A single-job
+  run cannot itself be a resume, and a Nextflow one cannot be resumed (its work directory was on
+  the host).
 
 ### Fix it upstream, not in a fork
 

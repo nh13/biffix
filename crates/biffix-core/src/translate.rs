@@ -322,8 +322,10 @@ pub fn from_engine(source: EventSource, ev: &EngineEvent) -> RunEvent {
         // reaches the fold's set-union instead of being dropped as a redelivery.
         EngineBody::RunDag { dag } => Some(run_dag_disc(dag)),
         // A local task can name another image on a retry/restart. Keep every distinct image so
-        // the fold's existing conflict rule sees the complete set, not just the first arrival.
-        // Image-less registrations retain their historical key (including Batch producers).
+        // the fold's existing conflict rule sees the complete set, not just the first arrival:
+        // each image is its own fact (redeliveries of one dedupe), apart from an image-less
+        // creation, which keeps its historical, discriminator-free key (including Batch
+        // producers'). Both keys are unchanged, so a redelivery across an upgrade still dedupes.
         EngineBody::TaskCreated { image, .. } => {
             image.as_deref().map(|image| parts_disc(std::iter::once(image)))
         }
@@ -346,6 +348,14 @@ pub fn from_engine(source: EventSource, ev: &EngineEvent) -> RunEvent {
         | EngineBody::TaskFailed { execution_id, .. } => execution_id.clone(),
         _ => None,
     };
+    // Generation 1 keeps existing keys. Later coordinator starts and all their facts must reach
+    // the log independently, even when progress/task identities repeat after losing a host.
+    let disc = match ev.coordinator_attempt.map(std::num::NonZeroU32::get) {
+        Some(generation) if generation > 1 => {
+            Some(format!("coordinator-{generation}:{}", disc.unwrap_or_default()))
+        }
+        _ => disc,
+    };
     // The wire kind tag comes from the payload itself (`Kind::as_str`), never a parallel literal.
     let kind = data.kind();
     let dedup_key = dedup::engine(
@@ -360,6 +370,7 @@ pub fn from_engine(source: EventSource, ev: &EngineEvent) -> RunEvent {
         run_id: Some(ev.run_id.clone()),
         task_key,
         attempt,
+        coordinator_attempt: ev.coordinator_attempt,
         batch_job_id,
         ..RunEvent::new(dedup_key, ev.ts, source, data)
     }

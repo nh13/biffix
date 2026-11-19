@@ -9,9 +9,9 @@ There is a builder for every kind the Snakemake handler emits: ``run_started``, 
 ``run_dag``, ``task_created``, ``task_submitted``, ``task_retrying``, ``task_succeeded``,
 ``task_failed``, ``task_outputs``, ``engine_task_verdict``. The other schema kinds are not emitted
 by this plugin:
-``run_succeeded``/``run_failed`` (the coordinator that wraps the Snakemake invocation emits the run
-terminal) and ``task_cached`` (the logger records carry no cache-hit signal: the cache decision
-happens inside the executor, decoupled from the log events, so a cached rule is reported as
+``run_succeeded``/``run_failed`` (AWS Batch reports the coordinator's terminal state) and
+``task_cached`` (the logger records carry no cache-hit signal: the cache decision happens inside the
+executor, decoupled from the log events, so a cached rule is reported as
 ``task_succeeded``). The conformance guard (``test_schema_conformance.py``) makes every schema kind
 either have a builder here or be listed there as not emitted, so a new kind cannot slip through.
 """

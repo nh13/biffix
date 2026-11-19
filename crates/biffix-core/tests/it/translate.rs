@@ -145,6 +145,7 @@ fn ec2_spot_warning_maps_to_spot_reclaim() {
 #[test]
 fn snakemake_task_submitted_carries_binding_fields() {
     let w = EngineEvent {
+        coordinator_attempt: None,
         schema_version: 1,
         ts: ts(),
         run_id: RunId::new("r1"),
@@ -240,6 +241,7 @@ fn snakemake_local_task_terminal_carries_no_batch_binding() {
     // A local rule's engine terminal maps to an attribution-carrying RunEvent (run_id + task_key)
     // with NO batch_job_id/attempt, so the reducer records it as a task-level engine terminal.
     let w = EngineEvent {
+        coordinator_attempt: None,
         schema_version: 1,
         ts: ts(),
         run_id: RunId::new("r1"),
@@ -257,6 +259,7 @@ fn snakemake_local_task_terminal_carries_no_batch_binding() {
     assert!(re.attempt.is_none());
 
     let f = EngineEvent {
+        coordinator_attempt: None,
         schema_version: 1,
         ts: ts(),
         run_id: RunId::new("r1"),
@@ -281,6 +284,7 @@ fn a_retried_local_rule_s_terminals_are_distinct_facts() {
         translate::from_engine(
             EventSource::Snakemake,
             &EngineEvent {
+                coordinator_attempt: None,
                 schema_version: 1,
                 ts: ts(),
                 run_id: RunId::new("r1"),
@@ -339,11 +343,50 @@ fn a_local_terminal_re_run_at_the_same_attempt_is_a_distinct_fact() {
 }
 
 #[test]
+fn coordinator_generation_is_positive_preserved_and_deduped_independently() {
+    for kind in [
+        "run_started",
+        "run_succeeded",
+        "run_failed",
+        "task_created",
+        "task_cached",
+        "run_progress",
+    ] {
+        let mut wire = serde_json::json!({"ts": 1.0, "run_id": "r1", "kind": kind,
+            "task_key": "align", "completed": 0, "total": 2});
+        let legacy = translate::from_engine_value(EventSource::Nextflow, wire.clone()).unwrap();
+        wire["coordinator_attempt"] = 1.into();
+        let first = translate::from_engine_value(EventSource::Nextflow, wire.clone()).unwrap();
+        assert_eq!(first.dedup_key, legacy.dedup_key, "{kind} generation 1 compatibility");
+        wire["coordinator_attempt"] = 2.into();
+        let second = translate::from_engine_value(EventSource::Nextflow, wire.clone()).unwrap();
+        assert_ne!(second.dedup_key, first.dedup_key, "{kind}");
+        assert_eq!(second.coordinator_attempt.unwrap().get(), 2);
+        assert_eq!(serde_json::to_value(&second).unwrap()["coordinator_attempt"], 2);
+        wire["ts"] = 2.0.into();
+        assert_eq!(
+            second.dedup_key,
+            translate::from_engine_value(EventSource::Nextflow, wire.clone()).unwrap().dedup_key
+        );
+        for invalid in [
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("2"),
+        ] {
+            wire["coordinator_attempt"] = invalid;
+            assert!(translate::from_engine_value(EventSource::Nextflow, wire.clone()).is_err());
+        }
+    }
+}
+
+#[test]
 fn from_engine_stamps_the_supplied_source_and_dedup_key() {
     // The engine wire shape is engine-agnostic; the same event folds under whichever engine source
     // the ingest handler resolves. A Nextflow run's event must record EventSource::Nextflow (and a
     // nextflow-prefixed dedup key), not the Snakemake default.
     let ev = EngineEvent {
+        coordinator_attempt: None,
         schema_version: 1,
         ts: ts(),
         run_id: RunId::new("r1"),
@@ -447,6 +490,12 @@ fn task_created_distinct_images_survive_dedup_and_fold_identically_in_any_arriva
         // Preserve the pre-image key for old plugins and image-less Batch registrations.
         assert_eq!(bare.dedup_key, format!("{}:r1:align::task_created", source.as_str()));
         let a = fact(Some("repo/a:1"), 3.0);
+        // The key an image-bearing creation has always had (the image's `parts_disc`), so a
+        // redelivery across an upgrade still dedupes.
+        assert_eq!(
+            a.dedup_key,
+            format!("{}:r1:align::task_created:c66d60edc04a98e6", source.as_str())
+        );
         let b = fact(Some("repo/b:2"), 2.0);
         assert_ne!(a.dedup_key, b.dedup_key);
         assert_ne!(bare.dedup_key, a.dedup_key);
@@ -925,6 +974,7 @@ fn no_non_engine_kind_is_in_the_engine_namespace() {
 fn a_regrown_dag_is_a_distinct_fact() {
     use biffix_core::event::{Dag, DagNode};
     let dag_event = |ids: &[&str]| EngineEvent {
+        coordinator_attempt: None,
         schema_version: 1,
         ts: ts(),
         run_id: RunId::new("r1"),

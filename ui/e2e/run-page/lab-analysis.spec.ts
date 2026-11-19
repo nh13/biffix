@@ -322,7 +322,7 @@ test.describe('Lab analysis page', () => {
       await expect(dialog).toContainText(
         resume
           ? 'That run ran as one job on a whole host; a resume runs each step as its own job instead.'
-          : 'It runs as one job on a whole c6id.8xlarge host again (queue-class single).',
+          : 'It runs as one job on a whole host again, sized using c6id.8xlarge (queue-class single). Batch may choose another permitted host type.',
       );
       await dialog.getByRole('button', { name: resume ? 'Resume' : 'Run again' }).click();
       await expect(page).toHaveURL(/\/runs\/run_01HGW2wgs30x$/);

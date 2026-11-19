@@ -107,8 +107,9 @@ pub(crate) enum RunsCommand {
         /// host's local disk.
         #[arg(long, conflicts_with = "resume_from")]
         single_job: bool,
-        /// Single-job: the exact instance type to run on (one of the queue-class's), e.g.
-        /// `c6id.8xlarge`; the run gets the whole host.
+        /// Single-job: the instance type used to size the whole-host resource request (one of the
+        /// queue-class's), e.g. `c6id.8xlarge`. Batch may place the run on another same-size type
+        /// in that queue-class.
         #[arg(
             long,
             value_name = "TYPE",
