@@ -216,6 +216,12 @@ pub(crate) async fn prepare(
     let recipe = recipe
         .with_workflow_plugins(req.nextflow_plugins.iter().map(Into::into).collect())
         .map_err(|e| ServiceError::Invalid(e.to_string()))?;
+    // A version whose `queues:` sends tasks elsewhere runs only on a coordinator that applies it:
+    // the runtime is built only on base images that implement that contract, so no launch,
+    // including one falling back to an older base's variant, can silently drop the selectors.
+    let queues: biffix_workflow::queues::QueueAssignment =
+        req.queues.clone().map(Into::into).unwrap_or_default();
+    let recipe = recipe.with_coordinator_contract(queues.coordinator_contract());
     let runtime_key = biffix_workflow::runtime::runtime_key(&recipe);
     let mut form_schema = FormSchema::deserialize(&req.form_schema)
         .map_err(|e| ServiceError::Invalid(format!("invalid form_schema: {e}")))?;
@@ -266,7 +272,7 @@ pub(crate) async fn prepare(
         target: req.target.clone(),
         form_schema,
         queue_classes: req.queue_classes.clone().unwrap_or_default(),
-        queues: req.queues.clone().map(Into::into).unwrap_or_default(),
+        queues,
         about_markdown: req.about_markdown.clone().filter(|a| !a.trim().is_empty()),
         runtime_key: runtime_key.clone(),
         runtime_recipe: serde_json::to_value(&recipe)

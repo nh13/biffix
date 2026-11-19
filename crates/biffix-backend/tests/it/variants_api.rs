@@ -585,6 +585,7 @@ async fn a_version_on_a_retired_release_is_refused_by_name() {
             },
             workflow_plugins: Vec::new(),
         },
+        coordinator_contract: 0,
     };
     let retired_key = runtime_key(&recipe);
     {

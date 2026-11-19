@@ -405,3 +405,38 @@ async fn a_version_s_queue_assignment_is_checked_and_shown() {
         json_body(app.oneshot(get("/workflows/fed:hash:0", "viewers")).await.unwrap()).await;
     assert!(detail.get("queues").is_none(), "{detail}");
 }
+
+/// A version whose `queues:` sends tasks to other queue-classes needs a coordinator that applies
+/// them: its runtime names the coordinator contract that brought them, so it is built only on base
+/// images that implement it. A default alone needs none, and keys as a version without `queues:`.
+#[tokio::test]
+async fn queue_selectors_require_the_coordinator_contract_that_applies_them() {
+    let (state, _, _) = state();
+    let registry = state.registry.clone();
+    let app = api::router(state);
+    let mut recipes = Vec::new();
+    for (sha, queues) in [
+        ("aaa", None),
+        ("bbb", Some(json!({"default": "cpu-spot"}))),
+        ("ccc", Some(json!({"by_label": {"process_high": "cpu-spot"}}))),
+    ] {
+        let mut body = register_body();
+        body["git_sha"] = json!(sha);
+        body["engine"] = json!("nextflow");
+        body["engine_version"] = json!("25.10.4");
+        body["entrypoint"] = json!("main.nf");
+        if let Some(queues) = queues {
+            body["queues"] = queues;
+        }
+        let res = app.clone().oneshot(post("/workflows", Some("developers"), &body)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED, "{}", text_body(res).await);
+        let rec = registry.get_version(&format!("{sha}:hash:0")).await.unwrap();
+        let recipe: biffix_workflow::runtime::RuntimeRecipe =
+            serde_json::from_value(rec.version.runtime_recipe.clone()).unwrap();
+        recipes.push((rec.version.runtime_key.clone(), recipe.coordinator_contract()));
+    }
+    assert_eq!(recipes[0].1, 0);
+    assert_eq!(recipes[1], recipes[0], "a default alone keys as no assignment");
+    assert_eq!(recipes[2].1, biffix_workflow::runtime::QUEUE_ASSIGNMENT_CONTRACT);
+    assert_ne!(recipes[2].0, recipes[0].0);
+}

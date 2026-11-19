@@ -83,7 +83,9 @@ The keys, grouped as in [the example](../infra/biffix-deploy.example.yaml):
   renaming or removing one breaks the versions that name it (registration checks the names
   against the menu as it is then).
   `coordinator_image_tag` names the coordinator base image; leave it unset when deploying a
-  release. `host_aws_cli` overrides the pinned AWS CLI every Batch host installs.
+  release. An older base than the release's cannot run a version that uses a coordinator feature
+  it predates (`queues:` selectors): its engine runtime fails to build, saying so, rather than
+  run those tasks on the default queue. `host_aws_cli` overrides the pinned AWS CLI every Batch host installs.
 - **Projects.** `projects` (required) lists the isolation boundaries. Each has an `id`, and
   optionally `key_arn` (your own KMS key), `bucket_name` (an existing bucket to use instead of
   creating one), `uploads_cors_applied` and `viewer_cors_applied` (for an existing bucket, once its

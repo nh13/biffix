@@ -34,6 +34,24 @@ use pins::{nextflow, snakemake_9};
 /// is stored as its own image (`runtime-<key12>-<arch>`) so task images can be derived from it.
 pub const RECIPE_VERSION: u32 = 2;
 
+/// The coordinator contract this source's coordinator image implements: a number bumped whenever
+/// the coordinator (`docker/coordinator`) gains a launch feature a version may depend on, which an
+/// older coordinator would ignore rather than refuse. The base image records it in
+/// `/opt/biffix/wheels/manifest.json` (`COORDINATOR_CONTRACT` in `docker/coordinator/wheels.env`,
+/// which a test keeps equal to this), and a recipe that needs a feature names the contract that
+/// brought it ([`RuntimeRecipe::with_coordinator_contract`]): the runtime build refuses a base
+/// whose contract is lower, so every variant of that runtime, including an older base's a launch
+/// falls back to, has the feature.
+///
+/// 1: `BIFFIX_QUEUE_ASSIGNMENT`, the tasks a version sends to other queue-classes
+/// ([`QUEUE_ASSIGNMENT_CONTRACT`]).
+pub const COORDINATOR_CONTRACT: u32 = 1;
+
+/// The coordinator contract that applies a version's `queues:` selectors
+/// (`BIFFIX_QUEUE_ASSIGNMENT`): a coordinator from before it ignores them, and every selected task
+/// would run on the default queue.
+pub const QUEUE_ASSIGNMENT_CONTRACT: u32 = 1;
+
 /// Tag prefix of a stored runtime layer image in the coordinator repository: the runtime build
 /// (`codebuild/runtime/build.sh`) tags each layer `runtime-<key12>-<arch>`, and a test ties the
 /// script's spelling to this constant. The repository's tags are immutable, so it is pushed once.
@@ -69,8 +87,9 @@ pub struct SnakemakePins {
     /// `snakemake-storage-plugin-s3` release (task I/O goes through S3).
     pub storage_s3: String,
     /// Commit of the AWS Batch executor fork, built into a wheel in the base image. The fork
-    /// (branch `biffix-pin/2026-11-19-2`) is upstream (as of #54; per-rule queues are
-    /// upstream's #40, `--aws-batch-spot-attempts` its #62) plus six open upstream PRs: #55
+    /// (branch `biffix-pin/2026-11-19-2`) is upstream (as of #54; a rule's own `batch_queue`
+    /// resource is upstream's #40, `--aws-batch-spot-attempts` its #62) plus six open upstream
+    /// PRs: #55
     /// (remote job-state events, with the job's image, and a pre-formatted log message), #60 (the
     /// strict container image map), #61 (`--aws-batch-log-group`), #64
     /// (`--aws-batch-job-definition-map`: each job runs on the pre-registered definition of its
@@ -258,15 +277,35 @@ pub struct PluginPin {
     pub sha256: String,
 }
 
-/// Every input of one runtime build. Serialized (and hashed) as-is.
+/// Every input of one runtime build. Serialized (and hashed) as-is; `coordinator_contract` is left
+/// out when 0, so a recipe that needs no coordinator feature keeps the key it had before the field
+/// existed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 // A recipe is built once per registration and never stored in bulk, so the Snakemake variant's
 // size is immaterial; boxing it would only complicate the internally-tagged serde derivation.
 #[allow(clippy::large_enum_variant)]
 #[serde(tag = "engine", rename_all = "snake_case")]
 pub enum RuntimeRecipe {
-    Snakemake { recipe_version: u32, engine_version: String, pins: SnakemakePins },
-    Nextflow { recipe_version: u32, engine_version: String, pins: NextflowPins },
+    Snakemake {
+        recipe_version: u32,
+        engine_version: String,
+        pins: SnakemakePins,
+        /// The lowest [`COORDINATOR_CONTRACT`] a base image must implement to carry this runtime.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        coordinator_contract: u32,
+    },
+    Nextflow {
+        recipe_version: u32,
+        engine_version: String,
+        pins: NextflowPins,
+        /// The lowest [`COORDINATOR_CONTRACT`] a base image must implement to carry this runtime.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        coordinator_contract: u32,
+    },
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// The runtime recipe for `engine` at `version`, or `None` when biffix cannot build one (an
@@ -284,12 +323,14 @@ pub fn recipe_for(engine: &str, version: EngineVersion) -> Option<RuntimeRecipe>
             recipe_version: RECIPE_VERSION,
             engine_version,
             pins: snakemake_9(),
+            coordinator_contract: 0,
         }),
         // The range above and the exact-release pin table gate Nextflow, not its major.
         ("nextflow", _) => nextflow(&engine_version).map(|pins| RuntimeRecipe::Nextflow {
             recipe_version: RECIPE_VERSION,
             engine_version,
             pins,
+            coordinator_contract: 0,
         }),
         _ => None,
     }
@@ -359,10 +400,31 @@ impl RuntimeRecipe {
             Self::Snakemake { .. } => {
                 Err(WorkflowPluginError("Nextflow plugins apply only to Nextflow workflows".into()))
             }
-            Self::Nextflow { recipe_version, engine_version, mut pins } => {
+            Self::Nextflow { recipe_version, engine_version, mut pins, coordinator_contract } => {
                 pins.workflow_plugins = validate_workflow_plugins(plugins)?;
-                Ok(Self::Nextflow { recipe_version, engine_version, pins })
+                Ok(Self::Nextflow { recipe_version, engine_version, pins, coordinator_contract })
             }
+        }
+    }
+
+    /// The recipe requiring a base image that implements at least coordinator contract `min`
+    /// ([`COORDINATOR_CONTRACT`]), for a version that uses a feature it brought. Never lowers it;
+    /// 0 is a no-op.
+    pub fn with_coordinator_contract(mut self, min: u32) -> Self {
+        match &mut self {
+            Self::Snakemake { coordinator_contract, .. }
+            | Self::Nextflow { coordinator_contract, .. } => {
+                *coordinator_contract = (*coordinator_contract).max(min);
+            }
+        }
+        self
+    }
+
+    /// The lowest coordinator contract a base image must implement to carry this runtime.
+    pub fn coordinator_contract(&self) -> u32 {
+        match self {
+            Self::Snakemake { coordinator_contract, .. }
+            | Self::Nextflow { coordinator_contract, .. } => *coordinator_contract,
         }
     }
 
@@ -418,6 +480,7 @@ impl RuntimeRecipe {
             ("BIFFIX_RT_KEY", runtime_key(self)),
             ("BIFFIX_RT_ENGINE", self.engine().to_string()),
             ("BIFFIX_RT_ENGINE_VERSION", self.engine_version().to_string()),
+            ("BIFFIX_RT_COORDINATOR_CONTRACT", self.coordinator_contract().to_string()),
         ]);
         match self {
             Self::Snakemake { pins, .. } => env.extend([

@@ -195,6 +195,18 @@ impl QueueAssignment {
         self.check_listed(listed)
     }
 
+    /// The lowest coordinator contract a coordinator must implement to apply the block
+    /// ([`crate::runtime::COORDINATOR_CONTRACT`]): the selectors need
+    /// [`crate::runtime::QUEUE_ASSIGNMENT_CONTRACT`]; a default alone travels as the run's
+    /// queue-class, which every coordinator reads.
+    pub fn coordinator_contract(&self) -> u32 {
+        if self.selectors().is_empty() {
+            0
+        } else {
+            crate::runtime::QUEUE_ASSIGNMENT_CONTRACT
+        }
+    }
+
     /// The selectors alone (`default` left out): what the coordinator writes into the engine's
     /// config, the default being sent as the run's queue-class.
     pub fn selectors(&self) -> QueueAssignment {
@@ -323,6 +335,7 @@ mod tests {
         );
         let only_unknown: QueueAssignment = serde_json::from_str(r#"{"by_x": 1}"#).unwrap();
         assert!(!only_unknown.is_empty() && !only_unknown.selectors().is_empty());
+        assert_eq!(only_unknown.coordinator_contract(), crate::runtime::QUEUE_ASSIGNMENT_CONTRACT);
         // Registration refuses it.
         assert_eq!(
             check(&only_unknown, Engine::Nextflow),

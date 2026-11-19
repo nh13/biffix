@@ -91,10 +91,12 @@ pub(crate) fn runtime_of(version: &WorkflowVersion) -> Result<(&str, RuntimeReci
 ///
 /// The check is on the recipe, which every variant a launch may pick shares: a variant is the
 /// runtime of `runtime_key` (the recipe's hash) on some base image, and the runtime build checks
-/// the base carries exactly the executor and nf-biffix the recipe pins. So a refused recipe is
-/// refused on every variant, the current base's or the older base's a launch falls back to
-/// (including a run submitted between a deploy's `cdk deploy` and its variant builds), and a
-/// runnable one's variants all run the engine that uses the backend's job definitions.
+/// the base carries exactly the executor and nf-biffix the recipe pins, and implements at least
+/// the coordinator contract it names (`biffix_workflow::runtime::COORDINATOR_CONTRACT`). So a
+/// refused recipe is refused on every variant, the current base's or the older base's a launch
+/// falls back to (including a run submitted between a deploy's `cdk deploy` and its variant
+/// builds), and a runnable one's variants all run the engine that uses the backend's job
+/// definitions, on a coordinator with every feature the version uses (its `queues:` selectors).
 pub(crate) fn runnable_runtime(
     version: &WorkflowVersion,
 ) -> Result<(&str, RuntimeRecipe), NotRunnable> {

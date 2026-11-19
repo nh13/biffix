@@ -37,6 +37,9 @@
 #     each checked against its sha256: the coordinator runs Nextflow offline. A layer with workflow
 #     plugins lists them in /opt/biffix/nf/workflow-plugins, which tells the coordinator how to
 #     enable biffix's own plugins (see run_nextflow in docker/coordinator/lib/nextflow.sh).
+# Every variant, a later base image's too, also needs a base that implements the coordinator
+# contract the recipe names (BIFFIX_RT_COORDINATOR_CONTRACT, the base's manifest
+# coordinator_contract): a version's feature an older coordinator would ignore is never dropped.
 # The x86_64 build host installs the arm64 packages without running them, and smoke-tests the amd64
 # layer, which is native here.
 #
@@ -79,11 +82,34 @@ layers_pushed() {
 
 # ── the biffix-owned plugins, from the base image ──
 WHEELS="$WORK/base/opt/biffix/wheels"
-verify_base_wheels() {
+fetch_base() {
   mkdir -p "$WORK/base"
-  # The wheels, and the coordinator's Snakemake helper (smoke-tested against the runtime below).
+  # The wheels and their manifest, and the coordinator's Snakemake helper (smoke-tested against the
+  # runtime below).
   crane export --platform linux/amd64 "$BIFFIX_BASE_IMAGE" - |
     tar -x -C "$WORK/base" opt/biffix/wheels usr/local/lib/biffix
+}
+
+# The base image must implement the coordinator contract the recipe needs
+# (BIFFIX_RT_COORDINATOR_CONTRACT; runtime/mod.rs COORDINATOR_CONTRACT): an older coordinator would
+# ignore a feature the version uses (its queue selectors) rather than refuse it. Checked for every
+# variant, a later base's too, so every variant of a runtime has the feature.
+check_coordinator_contract() {
+  python3 - "$WHEELS" <<'PY'
+import json, os, pathlib, sys
+
+manifest = json.loads((pathlib.Path(sys.argv[1]) / "manifest.json").read_text())
+have = int(manifest.get("coordinator_contract", 0))
+need = int(os.environ["BIFFIX_RT_COORDINATOR_CONTRACT"])
+if have < need:
+    sys.exit(
+        f"base image implements coordinator contract {have}, but this runtime needs {need} (the "
+        "version uses a coordinator feature this base predates): deploy a newer coordinator base"
+    )
+PY
+}
+
+verify_base_wheels() {
   python3 - "$WHEELS" <<'PY'
 import hashlib, json, os, pathlib, sys
 
@@ -449,6 +475,9 @@ build_nextflow_layers() {
   # The layer is architecture-independent (a JVM launcher and plugin jars).
   cp -a "$stage" "$WORK/layer-arm64"
 }
+
+fetch_base
+check_coordinator_contract || die "the base image predates the coordinator contract this runtime needs"
 
 # ── the layer images: installed once per runtime ──
 if layers_pushed; then

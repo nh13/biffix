@@ -85,6 +85,7 @@ fn fixed_snakemake() -> RuntimeRecipe {
             logger_version: "0.1.0".into(),
             exclude_newer: "2026-01-01T00:00:00Z".into(),
         },
+        coordinator_contract: 0,
     }
 }
 
@@ -109,6 +110,7 @@ fn the_runtime_key_is_pinned() {
             },
             workflow_plugins: Vec::new(),
         },
+        coordinator_contract: 0,
     };
     // A workflow that declares no plugins of its own keys as the release's runtime.
     assert_eq!(
@@ -264,13 +266,18 @@ fn the_runtime_names_its_own_plugin_versions() {
 #[test]
 fn any_pin_change_changes_the_key() {
     let base = recipe("snakemake", "9.27.0").unwrap();
-    let RuntimeRecipe::Snakemake { recipe_version, engine_version, pins } = base.clone() else {
+    let RuntimeRecipe::Snakemake { recipe_version, engine_version, pins, .. } = base.clone() else {
         unreachable!()
     };
     let with = |f: &dyn Fn(&mut SnakemakePins)| {
         let mut pins = pins.clone();
         f(&mut pins);
-        RuntimeRecipe::Snakemake { recipe_version, engine_version: engine_version.clone(), pins }
+        RuntimeRecipe::Snakemake {
+            recipe_version,
+            engine_version: engine_version.clone(),
+            pins,
+            coordinator_contract: 0,
+        }
     };
     let mut changed = vec![
         with(&|p| p.python.release = "x".into()),
@@ -287,11 +294,13 @@ fn any_pin_change_changes_the_key() {
             recipe_version: recipe_version + 1,
             engine_version: engine_version.clone(),
             pins: pins.clone(),
+            coordinator_contract: 0,
         },
         RuntimeRecipe::Snakemake {
             recipe_version,
             engine_version: "9.27.1".into(),
             pins: pins.clone(),
+            coordinator_contract: 0,
         },
     ];
     // Swapping the two Python digests is a change too.
@@ -303,6 +312,7 @@ fn any_pin_change_changes_the_key() {
         recipe_version: nf_recipe,
         engine_version: nf_version,
         pins: nf_pins,
+        ..
     } = nf.clone()
     else {
         unreachable!()
@@ -312,16 +322,19 @@ fn any_pin_change_changes_the_key() {
             recipe_version: nf_recipe,
             engine_version: nf_version.clone(),
             pins: NextflowPins { nf_biffix_version: "x".into(), ..nf_pins.clone() },
+            coordinator_contract: 0,
         },
         RuntimeRecipe::Nextflow {
             recipe_version: nf_recipe + 1,
             engine_version: nf_version.clone(),
             pins: nf_pins.clone(),
+            coordinator_contract: 0,
         },
         RuntimeRecipe::Nextflow {
             recipe_version: nf_recipe,
             engine_version: "25.10.5".into(),
             pins: nf_pins,
+            coordinator_contract: 0,
         },
     ];
     let mut keys = std::collections::BTreeSet::from([runtime_key(&base), runtime_key(&nf)]);
@@ -347,6 +360,7 @@ fn the_build_env_carries_the_key_and_every_pin() {
         ("BIFFIX_RT_KEY", runtime_key(&r)),
         ("BIFFIX_RT_ENGINE", "snakemake".into()),
         ("BIFFIX_RT_ENGINE_VERSION", "9.1.0".into()),
+        ("BIFFIX_RT_COORDINATOR_CONTRACT", "0".into()),
         ("BIFFIX_RT_PYTHON_RELEASE", "r".into()),
         ("BIFFIX_RT_PYTHON_VERSION", "3.12.0".into()),
         ("BIFFIX_RT_PYTHON_SHA256_X86_64", "px".into()),
@@ -365,6 +379,7 @@ fn the_build_env_carries_the_key_and_every_pin() {
         ("BIFFIX_RT_KEY", runtime_key(&nf)),
         ("BIFFIX_RT_ENGINE", "nextflow".into()),
         ("BIFFIX_RT_ENGINE_VERSION", "25.10.4".into()),
+        ("BIFFIX_RT_COORDINATOR_CONTRACT", "0".into()),
         ("BIFFIX_RT_NF_BIFFIX_VERSION", "0.7.0".into()),
         (
             "BIFFIX_RT_NF_SHA256",
@@ -438,6 +453,11 @@ fn the_pin_tables_match_what_the_base_image_ships() {
     };
     let sm = snakemake_9();
     has_line("docker/coordinator/wheels.env", format!("EXECUTOR_SHA={}", sm.executor_sha));
+    // The coordinator contract the base image records is the one this source implements.
+    has_line(
+        "docker/coordinator/wheels.env",
+        format!("COORDINATOR_CONTRACT={COORDINATOR_CONTRACT}"),
+    );
     has_line(
         "plugins/snakemake-logger-plugin-biffix/pyproject.toml",
         format!("version = \"{}\"", sm.logger_version),
@@ -506,9 +526,14 @@ fn only_runtimes_on_the_job_definition_map_run_on_registered_job_definitions() {
     }
     // The executor pinned before the job definition map, and any commit not listed.
     let older = |sha: &str| match sm.clone() {
-        RuntimeRecipe::Snakemake { recipe_version, engine_version, mut pins } => {
+        RuntimeRecipe::Snakemake {
+            recipe_version,
+            engine_version,
+            mut pins,
+            coordinator_contract,
+        } => {
             pins.executor_sha = sha.into();
-            RuntimeRecipe::Snakemake { recipe_version, engine_version, pins }
+            RuntimeRecipe::Snakemake { recipe_version, engine_version, pins, coordinator_contract }
         }
         RuntimeRecipe::Nextflow { .. } => unreachable!(),
     };
@@ -516,9 +541,14 @@ fn only_runtimes_on_the_job_definition_map_run_on_registered_job_definitions() {
     assert!(!older("").runs_on_registered_job_definitions());
     // nf-biffix before 0.7.0, and a version that does not parse; 0.7.0 and later do.
     let nf = |version: &str| match recipe("nextflow", "26.10.5").unwrap() {
-        RuntimeRecipe::Nextflow { recipe_version, engine_version, mut pins } => {
+        RuntimeRecipe::Nextflow {
+            recipe_version,
+            engine_version,
+            mut pins,
+            coordinator_contract,
+        } => {
             pins.nf_biffix_version = version.into();
-            RuntimeRecipe::Nextflow { recipe_version, engine_version, pins }
+            RuntimeRecipe::Nextflow { recipe_version, engine_version, pins, coordinator_contract }
         }
         RuntimeRecipe::Snakemake { .. } => unreachable!(),
     };
@@ -528,4 +558,36 @@ fn only_runtimes_on_the_job_definition_map_run_on_registered_job_definitions() {
     for version in ["0.7.0", "0.7.1", "0.10.0", "1.0.0"] {
         assert!(nf(version).runs_on_registered_job_definitions(), "{version}");
     }
+}
+
+/// A recipe that needs no coordinator feature serializes (and keys) as it did before the
+/// contract existed; one that needs one keys differently, never lowers it, and hands it to the
+/// runtime build.
+#[test]
+fn the_coordinator_contract_is_part_of_the_key_only_when_needed() {
+    let plain = fixed_snakemake();
+    assert!(!serde_json::to_string(&plain).unwrap().contains("coordinator_contract"));
+    assert_eq!(plain.clone().with_coordinator_contract(0), plain);
+    assert_eq!(plain.coordinator_contract(), 0);
+    assert_eq!(plain.build_env()["BIFFIX_RT_COORDINATOR_CONTRACT"], "0");
+
+    let needs = plain.clone().with_coordinator_contract(QUEUE_ASSIGNMENT_CONTRACT);
+    assert_eq!(needs.coordinator_contract(), QUEUE_ASSIGNMENT_CONTRACT);
+    assert_ne!(runtime_key(&needs), runtime_key(&plain));
+    assert!(serde_json::to_string(&needs)
+        .unwrap()
+        .contains(&format!("\"coordinator_contract\":{QUEUE_ASSIGNMENT_CONTRACT}")));
+    assert_eq!(
+        needs.build_env()["BIFFIX_RT_COORDINATOR_CONTRACT"],
+        QUEUE_ASSIGNMENT_CONTRACT.to_string()
+    );
+    // Never lowered, and read back from a stored recipe.
+    assert_eq!(needs.clone().with_coordinator_contract(0), needs);
+    let stored: RuntimeRecipe =
+        serde_json::from_str(&serde_json::to_string(&needs).unwrap()).unwrap();
+    assert_eq!(stored, needs);
+    let nf = recipe("nextflow", "25.10.4").unwrap().with_coordinator_contract(1);
+    assert_eq!(nf.coordinator_contract(), 1);
+    // This source's coordinator implements every contract a recipe can ask of it.
+    const { assert!(QUEUE_ASSIGNMENT_CONTRACT <= COORDINATOR_CONTRACT) };
 }

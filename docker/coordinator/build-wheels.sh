@@ -4,7 +4,8 @@
 #   - the Snakemake AWS Batch executor fork at EXECUTOR_SHA (wheels.env), as a wheel
 #   - the biffix Snakemake logger plugin, as a wheel
 #   - the nf-biffix Nextflow plugin zip (build it first: plugins/nf-biffix `./gradlew assemble`)
-#   - manifest.json: the versions the runtime build checks against its recipe, and each file's sha256
+#   - manifest.json: the versions the runtime build checks against its recipe, the coordinator
+#     contract (wheels.env COORDINATOR_CONTRACT), and each file's sha256
 #
 # The runtime build installs these rather than fetching them from git, so a runtime's inputs are
 # fixed by the base image digest.
@@ -31,7 +32,7 @@ python3 -m pip wheel --quiet --no-deps --wheel-dir "$OUT" \
 cp "$NF_ZIP" "$OUT/"
 
 EXECUTOR_SHA="$EXECUTOR_SHA" LOGGER_VERSION="$LOGGER_VERSION" NF_BIFFIX_VERSION="$NF_BIFFIX_VERSION" \
-  python3 - "$OUT" <<'PY'
+  COORDINATOR_CONTRACT="$COORDINATOR_CONTRACT" python3 - "$OUT" <<'PY'
 import hashlib, json, os, pathlib, sys
 
 out = pathlib.Path(sys.argv[1])
@@ -41,6 +42,7 @@ files = {
     if p.is_file()
 }
 manifest = {
+    "coordinator_contract": int(os.environ["COORDINATOR_CONTRACT"]),
     "executor_sha": os.environ["EXECUTOR_SHA"],
     "logger_version": os.environ["LOGGER_VERSION"],
     "nf_biffix_version": os.environ["NF_BIFFIX_VERSION"],
