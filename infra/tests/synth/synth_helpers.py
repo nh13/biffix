@@ -126,10 +126,16 @@ def _render(value: object) -> str:
     return json.dumps(value, sort_keys=True)
 
 
-def _resources(statement: Json) -> list[str]:
-    """Each of a statement's resources, rendered (see `_render`)."""
-    r = statement["Resource"]
+def _resources(statement: Json, key: str = "Resource") -> list[str]:
+    """Each of a statement's resources, rendered (see `_render`); none for a statement written
+    with `NotResource` instead (`_not_resources`), which names what it does NOT apply to."""
+    r = statement.get(key, [])
     return [_render(x) for x in (r if isinstance(r, list) else [r])]
+
+
+def _not_resources(statement: Json) -> list[str]:
+    """Each of a statement's `NotResource` entries, rendered."""
+    return _resources(statement, "NotResource")
 
 
 def _statements_for(template: Template, stack: cdk.Stack, role: iam.IRole | None) -> list[Json]:

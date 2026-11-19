@@ -17,9 +17,11 @@ from biffix_infra.constructs.script_project import COMMON_SCRIPT, bundled_script
 from biffix_infra.rbac import RBAC_GROUP_ROLES
 from biffix_infra.stacks.api_stack import ApiStack
 from biffix_infra.stacks.build_stack import RUNTIME_BUILD_SCRIPT
+from biffix_infra.stacks.project_stack import ProjectStack
 from tests.deploy_config_file import write_config
 from tests.helpers import REPO_ROOT
 from tests.synth.synth_helpers import (
+    _BATCH,
     BATCH_JOBS,
     CONFIG,
     VARIANT_JOB_DEFINITIONS,
@@ -329,15 +331,18 @@ def test_backend_and_sweep_can_build_and_register_coordinator_variants(
     statements = [
         statement
         for statement in _statements(t)
-        # The coordinator role's own grant (the executor registers child job definitions) differs.
+        # The task definitions' grant (`test_backend_and_sweep_register_only_safe_task_
+        # definitions`) is conditioned; the variants' is not.
         if _actions(statement) == {"batch:RegisterJobDefinition", "batch:TagResource"}
+        and "Condition" not in statement
     ]
     assert len(statements) == 2  # backend + sweep
     for statement in statements:
         assert _resources(statement) == [VARIANT_JOB_DEFINITIONS], statement
-    # A clone passes only a project template's roles (its job and execution roles).
-    expected = _template_roles(api)
-    assert len(expected) == 2  # the one project's
+    # A clone passes only a project template's roles (its job and execution roles); a task
+    # definition, the project's run role.
+    expected = _template_roles(api) | _run_roles(api, default_stacks["projects"])
+    assert len(expected) == 3  # the one project's
     for fn in (api.backend_lambda, api.sweep_lambda):
         passes = [st for st in _statements_for(t, api, fn.role) if _grants(st, "iam:PassRole")]
         assert {r for st in passes for r in _resources(st)} == expected, passes
@@ -366,22 +371,81 @@ def _template_roles(api: ApiStack) -> set[str]:
     }
 
 
-def test_backend_and_sweep_pass_every_project_s_template_roles_and_no_run_role(
+def _run_roles(api: ApiStack, projects: list[ProjectStack]) -> set[str]:
+    """Every project's run base role, rendered as the api stack imports it."""
+    return {_render(api.resolve(p.run_base_role.role_arn)) for p in projects}
+
+
+def test_backend_and_sweep_pass_every_project_s_template_and_run_roles_only(
     two_project_stacks: Stacks,
 ) -> None:
     # A launch clones the run's project's template, so both Lambdas pass every project's
-    # coordinator and execution roles; never a run role (Batch delivers it to the child jobs the
-    # coordinator registers, which passes it itself).
+    # coordinator and execution roles, and registers the run's task job definitions, which run
+    # as the project's run role: each project's run role too, and no other role.
     stacks = two_project_stacks
     api = stacks["api"]
     t = Template.from_stack(api)
-    expected = _template_roles(api)
-    assert len(expected) == 2 * len(stacks["projects"]) == 6
+    runs = _run_roles(api, stacks["projects"])
+    assert all("RunBaseRole" in r for r in runs), runs
+    expected = _template_roles(api) | runs
+    assert len(expected) == 3 * len(stacks["projects"]) == 9
     for fn in (api.backend_lambda, api.sweep_lambda):
         passes = [st for st in _statements_for(t, api, fn.role) if _grants(st, "iam:PassRole")]
         passed = {r for st in passes for r in _resources(st)}
         assert passed == expected, passed
-        assert not any("RunBaseRole" in r for r in passed), passed
+
+
+def test_backend_and_sweep_register_only_safe_task_definitions(
+    two_project_stacks: Stacks,
+) -> None:
+    # A launch registers the task job definitions its child jobs run on (coordinators register
+    # none). IAM bounds what the backend may register: the task prefix, tagged with one of this
+    # deploy's projects and no other tag, logging to a project's task log group, never
+    # privileged, and only images from the tenant's own registry.
+    stacks = two_project_stacks
+    api = stacks["api"]
+    t = Template.from_stack(api)
+    pids = [p.project_id for p in stacks["projects"]]
+    tasks = f"{_BATCH}:job-definition/biffix-acme_task-*"
+    job_definitions = f"{_BATCH}:job-definition/*"
+    by_fn = []
+    for fn in (api.backend_lambda, api.sweep_lambda):
+        statements = _statements_for(t, api, fn.role)
+        assert _lambda_env(api, fn)["BIFFIX_TASK_JOB_DEFINITION_PREFIX"] == "biffix-acme_task-"
+        (register,) = [
+            st
+            for st in statements
+            if st["Effect"] == "Allow" and tasks in _resources(st) and "Condition" in st
+        ]
+        assert _actions(register) == {"batch:RegisterJobDefinition", "batch:TagResource"}
+        assert _resources(register) == [tasks]
+        assert register["Condition"] == {
+            "StringEquals": {"aws:RequestTag/biffix:project": pids},
+            "ForAllValues:StringEquals": {"aws:TagKeys": ["biffix:project"]},
+            "StringEqualsIfExists": {
+                "batch:AWSLogsGroup": [f"/biffix/project-{pid}/batch" for pid in pids]
+            },
+        }
+        denies = [
+            st
+            for st in statements
+            if st["Effect"] == "Deny" and _actions(st) == {"batch:RegisterJobDefinition"}
+        ]
+        assert all(_resources(st) == [job_definitions] for st in denies), denies
+        conditions = [st["Condition"] for st in denies]
+        assert {"Bool": {"batch:Privileged": "true"}} in conditions, conditions
+        (image,) = [c for c in conditions if "StringNotLike" in c]
+        (registry,) = image["StringNotLike"].values()
+        assert _render(registry) == (
+            "{Ref:AWS::AccountId}.dkr.ecr.{Ref:AWS::Region}.{Ref:AWS::URLSuffix}/*"
+        ), registry
+        assert set(image["StringNotLike"]) == {"batch:Image"}
+        assert len(denies) == 2
+        # Finding a definition registered before needs DescribeJobDefinitions.
+        assert "batch:DescribeJobDefinitions" in _actions_for_role(t, api, fn.role)
+        by_fn.append((register, denies))
+    # Both from the one `ControlPlaneGrants.launch`.
+    assert by_fn[0] == by_fn[1]
 
 
 def test_the_runtime_build_project_runs_the_repo_build_script(default_stacks: Stacks) -> None:

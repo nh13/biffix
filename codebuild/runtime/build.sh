@@ -238,8 +238,8 @@ EOF
 
 # ── Nextflow ──
 
-# Smoke: in the layer, `awsbatch` is nf-biffix's executor (which tags every job definition it
-# registers with the run's project; the coordinator IAM refuses an untagged one), not stock
+# Smoke: in the layer, `awsbatch` is nf-biffix's executor (which runs every task on the job
+# definition biffix registered for its image; the coordinator IAM refuses any other), not stock
 # nf-amazon's. That proves offline that nf-biffix's Plugin-Dependencies resolve to the layer's
 # nf-amazon, that nf-amazon's classes load through them, and that nf-biffix's executor wins the
 # name. A local workDir makes the AWS Batch executor abort in register(), before any AWS call, so
@@ -258,7 +258,7 @@ check_nf_awsbatch_executor() {
   mkdir -p "$dir"
   nflog="$dir/.nextflow.log"
   printf 'process A {\n  container "ubuntu:24.04"\n  script: "true"\n}\nworkflow { A() }\n' >"$dir/main.nf"
-  local -a vars=(NXF_HOME="$dir/nxf-home" NXF_PLUGINS_DIR="$nf/plugins" NXF_OFFLINE=true BIFFIX_PROJECT=smoke)
+  local -a vars=(NXF_HOME="$dir/nxf-home" NXF_PLUGINS_DIR="$nf/plugins" NXF_OFFLINE=true)
   if [ "$#" -gt 0 ]; then
     printf "process.executor = 'awsbatch'\n" >"$dir/awsbatch.config"
     {

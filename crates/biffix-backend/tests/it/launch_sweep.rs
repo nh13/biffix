@@ -12,6 +12,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+use biffix_backend::aws::AwsError;
 use biffix_backend::images::build_follow::{fold_build_event, BuildEventError, BuildEventFold};
 use biffix_backend::runs::launch;
 use biffix_backend::store::{EventSink, StoreError};
@@ -709,6 +710,83 @@ async fn a_launch_that_may_pass_waits_and_one_that_will_not_fails() {
     let (reason, stage) = h.failure().unwrap();
     assert_eq!(stage, "launch");
     assert!(reason.starts_with("writing the run's image map failed: "), "{reason}");
+    assert!(h.cloud.launched.lock().unwrap().is_empty());
+}
+
+/// A run parked across an upgrade whose version's runtime predates the task job definitions biffix
+/// registers (its engine would register its own, which no coordinator may): failed at launch with
+/// why, never launched to have every task fail at submit.
+#[tokio::test]
+async fn a_parked_run_whose_runtime_predates_registered_job_definitions_fails() {
+    let h = parked().await;
+    h.images_ready();
+    {
+        let mut versions = h.registry.versions.lock().unwrap();
+        let version = &mut versions.get_mut("abc:hash:0").unwrap().version;
+        version.runtime_recipe["pins"]["executor_sha"] =
+            json!("a0aaf7a725bfb5120721413afc920f4a21737c53");
+    }
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+    let (reason, stage) = h.failure().unwrap();
+    assert_eq!(stage, "launch");
+    assert!(reason.contains("re-register it on the current pins"), "{reason}");
+    assert!(!h.parked());
+    assert!(h.cloud.launched.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_run_whose_task_job_definitions_cannot_be_prepared_waits_or_fails() {
+    // AWS unavailable: parked, and the next sweep launches it.
+    let h = parked().await;
+    h.images_ready();
+    *h.cloud.fail_task_job_definitions.lock().unwrap() =
+        Some(|| AwsError::Unavailable("batch throttled".into()));
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.waiting, 1, "{report:?}");
+    assert!(h.parked());
+    assert!(h.failure().is_none());
+    assert!(h.cloud.launched.lock().unwrap().is_empty());
+    *h.cloud.fail_task_job_definitions.lock().unwrap() = None;
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.launched, 1, "{report:?}");
+    assert!(!h.parked());
+
+    // Refused: failed, at launch, naming the image.
+    let h = parked().await;
+    h.images_ready();
+    *h.cloud.fail_task_job_definitions.lock().unwrap() =
+        Some(|| AwsError::Forbidden("RegisterJobDefinition denied".into()));
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+    let (reason, stage) = h.failure().unwrap();
+    assert_eq!(stage, "launch");
+    assert!(
+        reason.starts_with(
+            "preparing the run's task job definitions failed: the definition of image `"
+        ),
+        "{reason}"
+    );
+    assert!(reason.contains("RegisterJobDefinition denied"), "{reason}");
+    assert!(!h.parked());
+    assert!(h.cloud.launched.lock().unwrap().is_empty());
+
+    // Their map cannot be written (an S3 refusal): failed too, and no coordinator runs.
+    let h = parked().await;
+    h.images_ready();
+    let map_uri = biffix_backend::aws::task_definitions::uri_for("test-bucket", h.run_id.as_str());
+    h.cloud.fail_puts.lock().unwrap().insert(map_uri.clone());
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+    let (reason, stage) = h.failure().unwrap();
+    assert_eq!(stage, "launch");
+    assert!(
+        reason.starts_with(&format!(
+            "preparing the run's task job definitions failed: writing their map {map_uri}: "
+        )),
+        "{reason}"
+    );
+    assert!(!h.parked());
     assert!(h.cloud.launched.lock().unwrap().is_empty());
 }
 

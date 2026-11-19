@@ -116,7 +116,8 @@ async fn a_snakemake_image_gets_the_runtime_before_it_runs() {
     let pinned = h.registry.versions.lock().unwrap()[&id].images[0].source_ref.clone();
     assert!(pinned.starts_with(&format!("{SAMTOOLS}@sha256:")), "{pinned}");
     let uri = format!("s3://test-bucket/biffix/runs/{}/inputs/images.json", run_id.as_str());
-    assert_eq!(launched[0].image_map_uri.as_deref(), Some(uri.as_str()));
+    let maps = launched[0].maps.clone().unwrap();
+    assert_eq!(maps.image_map, uri);
     let written: BTreeMap<String, String> =
         serde_json::from_slice(&h.cloud.objects.lock().unwrap()[&uri]).unwrap();
     assert_eq!(written, image_map);
@@ -127,9 +128,50 @@ async fn a_snakemake_image_gets_the_runtime_before_it_runs() {
             (pinned, derived.clone()),
             ("default".to_string(), derived.clone()),
             (derived.clone(), derived.clone()),
-            ("$default".to_string(), derived),
+            ("$default".to_string(), derived.clone()),
         ])
     );
+
+    // Its tasks run on the job definition biffix registered for that image (the only one the map
+    // names), in the run's project, and the coordinator gets their map beside the image map.
+    let definitions = h.cloud.task_job_definitions.lock().unwrap().clone();
+    assert_eq!(definitions.len(), 1, "{definitions:?}");
+    let definition = &definitions[0];
+    assert_eq!(definition.image, derived);
+    assert_eq!(definition.engine, biffix_workflow::engines::Engine::Snakemake);
+    assert_eq!(definition.project, launched[0].project.id);
+    assert_eq!(definition.job_role_arn, launched[0].project.run_role_arn);
+    assert_eq!(definition.log_group, launched[0].project.task_log_group);
+    let uri =
+        format!("s3://test-bucket/biffix/runs/{}/inputs/job-definitions.json", run_id.as_str());
+    assert_eq!(maps.job_definitions, uri);
+    let written: BTreeMap<String, String> =
+        serde_json::from_slice(&h.cloud.objects.lock().unwrap()[&uri]).unwrap();
+    assert_eq!(written, BTreeMap::from([(derived, testing::fake_task_job_definition(definition))]));
+}
+
+#[tokio::test]
+async fn a_run_whose_task_job_definitions_cannot_be_registered_does_not_launch() {
+    let h = harness();
+    let (_, view) = register(&h, &snakemake_body("abc", SAMTOOLS, false)).await;
+    let id = view["id"].as_str().unwrap().to_string();
+    set_runtime_layer(&h, &runtime_key(&h, &id));
+    let done = imported("bash=1,libc=glibc");
+    set_import(&h, &content_key(&h, &id, "default"), BuildState::Succeeded, 1, &outputs(&done));
+    sweep_ok(&h).await;
+    let derives = h.cloud.image_derives.lock().unwrap().clone();
+    set_derive(&h, &derives[0].subject, BuildState::Succeeded);
+    sweep_ok(&h).await;
+    *h.cloud.fail_task_job_definitions.lock().unwrap() =
+        Some(|| biffix_backend::aws::AwsError::Forbidden("RegisterJobDefinition denied".into()));
+    let submit = json!({"workflow_version_id": id, "params": {}});
+    let (status, body) = call(&h.state, "POST", "/runs", "operators", Some(&submit)).await;
+    // A denied registration is the deploy's fault, and says which image's definition it was.
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(body.to_string().contains("task job definitions"), "{body}");
+    assert!(body.to_string().contains("the definition of image `"), "{body}");
+    // No coordinator ran without them.
+    assert!(h.cloud.launched.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -179,4 +221,44 @@ async fn a_snakemake_image_without_glibc_is_refused_before_any_derive() {
     assert_eq!(d["state"], "failed");
     assert!(d["not_ready"][0].as_str().unwrap().contains("no glibc (it is musl)"), "{d}");
     assert!(h.cloud.image_derives.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_nextflow_run_s_tasks_run_on_nextflow_job_definitions_of_each_image() {
+    let h = harness();
+    let (_, view) = register(&h, &register_body("abc")).await;
+    let id = view["id"].as_str().unwrap().to_string();
+    let done = imported("bash=1,libc=glibc,snakemake=");
+    for name in ["default", "fastqc"] {
+        set_import(&h, &content_key(&h, &id, name), BuildState::Succeeded, 1, &outputs(&done));
+    }
+    sweep_ok(&h).await;
+    let submit = json!({"workflow_version_id": id, "params": {}});
+    let (status, body) = call(&h.state, "POST", "/runs", "operators", Some(&submit)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+
+    // One Nextflow definition (which mounts the host AWS CLI nf-amazon stages files with) per
+    // tenant image the run's image map names (the fake imports both images to one), and the map
+    // the coordinator gets sends each image to its own.
+    let launched = h.cloud.launched.lock().unwrap().clone();
+    let maps = launched[0].maps.clone().unwrap();
+    let objects = h.cloud.objects.lock().unwrap().clone();
+    let image_map: BTreeMap<String, String> =
+        serde_json::from_slice(&objects[&maps.image_map]).unwrap();
+    let written: BTreeMap<String, String> =
+        serde_json::from_slice(&objects[&maps.job_definitions]).unwrap();
+    let definitions = h.cloud.task_job_definitions.lock().unwrap().clone();
+    let images: std::collections::BTreeSet<&String> = image_map.values().collect();
+    assert!(!images.is_empty(), "{image_map:?}");
+    assert_eq!(definitions.len(), images.len(), "{definitions:?}");
+    assert!(
+        definitions.iter().all(|d| d.engine == biffix_workflow::engines::Engine::Nextflow),
+        "{definitions:?}"
+    );
+    let expected: BTreeMap<String, String> = definitions
+        .iter()
+        .map(|d| (d.image.clone(), testing::fake_task_job_definition(d)))
+        .collect();
+    assert_eq!(written, expected);
+    assert_eq!(written.keys().collect::<std::collections::BTreeSet<_>>(), images);
 }

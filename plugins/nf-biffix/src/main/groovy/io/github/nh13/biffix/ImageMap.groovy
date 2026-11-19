@@ -21,9 +21,12 @@ class ImageMap {
 
     static final String DOCKER_HUB = 'docker.io'
 
+    private final Map<String, String> entries
+
     private final Map<String, String> mapping = [:]
 
     ImageMap(Map<String, String> entries) {
+        this.entries = Collections.unmodifiableMap(new LinkedHashMap<String, String>(entries))
         entries.each { ref, image -> mapping[ref] = image }
         // Normalized spellings too, unless the map names that spelling itself (or the key is a bare name).
         entries.each { ref, image ->
@@ -32,15 +35,22 @@ class ImageMap {
         }
     }
 
-    /** Read a JSON object of reference to reference. Throws on a missing or malformed file. */
+    /**
+     * Read a JSON object of non-empty reference to non-empty reference. Every map a run hands
+     * Nextflow is read with it (the image map, and the job definition map
+     * {@link BiffixAwsBatchExecutor} reads), each caller naming its own map when it reports a
+     * failure. Throws on a missing or malformed file.
+     */
     static ImageMap fromFile(String path) {
         def data = new JsonSlurper().parse(new File(path))
         if( !(data instanceof Map) )
-            throw new IllegalArgumentException("$path: an image map is a JSON object")
+            throw new IllegalArgumentException("$path: the map is not a JSON object")
         Map<String, String> entries = [:]
         (data as Map).each { k, v ->
+            if( !k )
+                throw new IllegalArgumentException("$path: an entry has an empty key")
             if( !(v instanceof String) || !v )
-                throw new IllegalArgumentException("$path: entry `$k` is not an image reference")
+                throw new IllegalArgumentException("$path: entry `$k` is not a non-empty string")
             entries[k as String] = v as String
         }
         return new ImageMap(entries)
@@ -61,6 +71,9 @@ class ImageMap {
     String resolveExact(String ref) {
         return ref ? mapping[ref] : null
     }
+
+    /** The entries as written (without the normalized spellings). */
+    Map<String, String> getEntries() { entries }
 
     int size() { mapping.size() }
 

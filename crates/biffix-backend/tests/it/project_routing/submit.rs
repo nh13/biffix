@@ -18,7 +18,9 @@ async fn a_version_of_project_b_launches_with_b_s_context() {
     let prefix = launched.output_prefix.unwrap();
     assert!(prefix.starts_with(&format!("s3://{BUCKET_B}/biffix/runs/")), "{prefix}");
     // The image map is written into B's bucket too.
-    assert!(launched.image_map_uri.unwrap().starts_with(&format!("s3://{BUCKET_B}/")));
+    let maps = launched.maps.unwrap();
+    assert!(maps.image_map.starts_with(&format!("s3://{BUCKET_B}/")));
+    assert!(maps.job_definitions.starts_with(&format!("s3://{BUCKET_B}/")));
     // The coordinator runs on B's own clone of the variant (B's template, so B's coordinator
     // role), found by name; the recorded variant stays the default project's.
     let runtime_key = h.registry.versions.lock().unwrap()[&version].version.runtime_key.clone();

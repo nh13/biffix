@@ -62,9 +62,10 @@ RUN chmod +x /usr/local/bin/biffix-coordinator
 WORKDIR /work
 
 # Deliberately NO ENTRYPOINT. A Snakemake variant also runs every child job that declares no image
-# of its own, and the engine's AWS Batch executor registers child job definitions that carry their
-# own `python -m snakemake` command. A coordinator ENTRYPOINT would be prepended to those commands
-# and hijack them (the child would re-run the coordinator script and die on its BIFFIX_RUN_ID guard).
+# of its own. Its tasks run on the task job definitions the backend registers, which take each
+# job's command (`python -m snakemake …`) from that job's SubmitJob container overrides. A
+# coordinator ENTRYPOINT would be prepended to those commands and hijack them (the child would
+# re-run the coordinator script and die on its BIFFIX_RUN_ID guard).
 # Being the coordinator is therefore expressed by the COORDINATOR JOB DEFINITION's command
 # (`biffix-coordinator`, set in infra/biffix_infra/constructs/coordinator.py), not baked into the
 # image.

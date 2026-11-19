@@ -4,7 +4,6 @@ roles. The Lambda, CodeBuild and Batch instance roles, which run only biffix's c
 
 from __future__ import annotations
 
-from aws_cdk import Stack
 from aws_cdk import aws_iam as iam
 from constructs import Construct
 
@@ -72,19 +71,9 @@ class PermissionsBoundary(iam.ManagedPolicy):
                 iam.PolicyStatement(
                     effect=iam.Effect.DENY, actions=_IAM_ESCALATION, resources=["*"]
                 ),
-                # The coordinator passes a job role to the child jobs it registers with Batch
-                # (the Snakemake AWS Batch executor sets jobRoleArn). PassRole is a ceiling
-                # here, scoped to biffix-managed roles so a bounded role can never pass an
-                # arbitrary (e.g. admin) role to a service.
-                iam.PolicyStatement(
-                    effect=iam.Effect.ALLOW,
-                    actions=["iam:PassRole"],
-                    resources=[
-                        Stack.of(scope).format_arn(
-                            service="iam", region="", resource="role", resource_name="biffix-*"
-                        )
-                    ],
-                ),
+                # No IAM action is allowed, iam:PassRole included: no bounded role passes a role
+                # (a coordinator submits the backend's task job definitions, which already name
+                # the run role, and registers none), so none can ever hand a role to a service.
                 iam.PolicyStatement(effect=iam.Effect.ALLOW, actions=_SERVICES, resources=["*"]),
             ],
         )

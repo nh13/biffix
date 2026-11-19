@@ -26,12 +26,12 @@ cross-stack resource references — there are no manual `add_dependency` calls i
 | `biffix-<tenant>-network` | VPC, subnets, NAT (see **Network posture**) |
 | `biffix-<tenant>-data` | Shared reference S3 bucket and its KMS key, the image archive bucket and its KMS key, ECR repos (coordinator, workflow, builds) |
 | `biffix-<tenant>-identity` | Cognito user pool + clients, the permissions boundary, the GitHub-OIDC roles |
-| `biffix-<tenant>-compute` | AWS Batch compute environments + queues (with the host launch template) |
+| `biffix-<tenant>-compute` | AWS Batch compute environments + queues (with the host launch template; every host's ECS agent refuses privileged containers) |
 | `biffix-<tenant>-build` | The CodeBuild projects: `runtime-build` (coordinator variants: base image + engine runtime), `image-import` (import, probe, derive and archive workflow images), and `image-build-amd64` / `image-build-arm64` (build workflow images from a Dockerfile or pixi recipe) |
 | `biffix-<tenant>-project-<id>` | Per-project S3 bucket, KMS key, run role (one per `projects[]` entry) |
 | `biffix-<tenant>-persistence` | Aurora (event store) + the capability-token signing secret |
 | `biffix-<tenant>-ingest` | Ingest SQS queue + DLQ, the ingest + reconcile Rust Lambdas, the reconcile schedule |
-| `biffix-<tenant>-api` | The backend Rust Lambda, HTTP API + Cognito authorizer, one coordinator role + job definition template per project (`biffix-<tenant>-coordinator-<project>`), each project's SSM context parameter (`/biffix/<tenant>/projects/<id>`), the scheduled backend sweep (run provenance crates, image and runtime builds and their retries, launching runs parked while their images are prepared) |
+| `biffix-<tenant>-api` | The backend Rust Lambda, HTTP API + Cognito authorizer, one coordinator role + job definition template per project (`biffix-<tenant>-coordinator-<project>`), each project's SSM context parameter (`/biffix/<tenant>/projects/<id>`), the scheduled backend sweep (run provenance crates, image and runtime builds and their retries, launching runs parked while their images are prepared). A launch registers the task job definitions the run's child jobs run on (see **Task job definitions**) |
 | `biffix-<tenant>-edge` | CloudFront + the private UI bucket |
 
 `<tenant>` comes from `tenant:` in the deploy config and is prefixed with `biffix-` for you — so
@@ -183,7 +183,12 @@ the **coordinator variant**. What to know when operating it:
   `GET /workflows/{id}` shows the state under `runtime`, and `biffix workflows register` waits for
   it by default (`--wait-minutes N`, or `--no-wait` to return at once).
 - **Upgrading biffix** can change the pin tables
-  (`crates/biffix-workflow/src/runtime/pins.rs`). Existing versions keep their recorded recipe.
+  (`crates/biffix-workflow/src/runtime/pins.rs`). Existing versions keep their recorded recipe,
+  except across the upgrade to the release where the backend registers task job definitions (see
+  **Task job definitions**): there `biffix workflows reregister --all` is a required step. A recipe
+  from before it pins an executor or nf-biffix that registers its own job definitions, which IAM
+  now denies coordinators, so its versions read `failed` and are refused at submit and launch until
+  re-registered (and the sweep builds no variant for them).
   Re-registering gives a new build with the new pins.
   `biffix workflows reregister --all --dry-run` lists what re-registering every workflow's newest
   version would do; drop `--dry-run` to do it (`reregister <name>` for one, with
@@ -390,7 +395,7 @@ it); without either a release deploy skips it with a warning.
 ### The fast path: `infra/deploy.sh`
 
 `infra/deploy.sh` wires the whole manual flow together — account guard → UI build → all four
-Lambda builds → host AWS CLI staging → `cdk deploy` → image retention → coordinator variant builds → `biffix health` verify — and
+Lambda builds → host AWS CLI staging → `cdk deploy` → image retention → task job-definition retention → engine job-definition cleanup → coordinator variant builds → `biffix health` verify — and
 is idempotent. The deploy config is required (`--config`, see **Config file**), and so is the
 target account: pass `--account`, or set `account: "<12-digit id>"` in the deploy config (both
 must agree when both are given). It always refuses the AWS Organizations management account.
@@ -424,14 +429,72 @@ instead (see **Releases**). Run it rather than its steps by hand: besides buildi
 verifying, it stages the host AWS CLI into the reference bucket (see **Host AWS CLI**; without it
 every Batch host's install fails and Nextflow tasks fail), provisions the Google client secret and
 the ACM certificate when the config needs them (see **Google Workspace federation** and **Custom
-app domain**), runs the image-retention step (`python -m biffix_infra.image_retention`), and
-builds the coordinator variants of the deployed base image (see **Engine runtimes and coordinator
+app domain**), runs the image-retention step (`python -m biffix_infra.image_retention`), the
+task job-definition retention and the engine job-definition cleanup (see **Task job definitions**), and builds the coordinator variants of the deployed base image (see **Engine runtimes and coordinator
 variants**).
 `deploy.sh --help` lists every flag; `--exclusively` (`--stack`) deploys only the named stack
 (skips its dependencies), for a targeted api/compute redeploy once the rest of the graph is up.
 Never use it to apply an upgrade: a release can change the backend and the build projects
 together (the image-build script reports a Dockerfile build's target and build args back to the
 backend), so deploy an upgrade with a full `deploy.sh` run (no `--stack`), not `--stack biffix-<tenant>-api` alone.
+
+### Task job definitions
+
+A run's child jobs (Snakemake rules, Nextflow processes) run on **task job definitions** the
+backend registers when it launches the run: one per (project, tenant image, engine), named
+`biffix-<tenant>_task-<sm|nf>-<hash>` (the backend reads the prefix from
+`BIFFIX_TASK_JOB_DEFINITION_PREFIX`), tagged `biffix:project=<id>` and reused across runs. Each runs
+as its project's run base role and logs to the project's task log group. The engines submit them
+by `name:revision` and register none of their own. IAM holds both sides to that:
+
+- The backend and sweep Lambdas may register (and tag) only `biffix-<tenant>_task-*` definitions
+  tagged with one of the deploy's projects and nothing else; never a privileged one, and never one
+  whose image is outside the tenant's own ECR registry (`<account>.dkr.ecr.<region>…`). They may
+  pass each project's run role (and the coordinator template roles), no other.
+- A coordinator role may submit only its own project's task definitions, and is explicitly denied
+  every other job definition (the coordinator definitions, anything else) and registering,
+  deregistering, tagging or untagging any job definition. It passes no role, and the permissions
+  boundary allows no `iam:PassRole` at all.
+- Every Batch host sets `ECS_DISABLE_PRIVILEGED=true` in its ECS agent config, so a privileged
+  container cannot start on the shared compute environments whatever its job definition says.
+
+The `_` ends the tenant in the prefix: a tenant is letters, digits and `-`, so a sibling tenant
+`<tenant>-task` in the same account cannot share it.
+
+**Retention.** Nothing deregisters a task definition when a run ends (the next run of its project
+and image reuses it), and an account holds a bounded number of ACTIVE job definitions. So after
+the deploy `deploy.sh` deregisters each ACTIVE `biffix-<tenant>_task-*` definition whose image is
+gone from the tenant's ECR (`python -m biffix_infra.task_job_definitions`): ECR answers
+`ImageNotFoundException`, or `RepositoryNotFoundException` for its repository. A definition whose
+image is outside the tenant's registry, or one ECR could not answer for, is left alone and counted.
+A later launch naming that image again registers a new definition. It is idempotent and
+best-effort (a failure warns), and a `--stack` deploy skips it. By hand:
+
+```sh
+cd infra
+uv run python -m biffix_infra.task_job_definitions --prefix biffix-<tenant>_task- \
+  --registry <account>.dkr.ecr.<region>.amazonaws.com --dry-run
+```
+
+**Cleaning up the engines' old definitions.** Before this, coordinators registered their child
+jobs' definitions themselves: `snakejob-def-<rule>-<uuid>` (the Snakemake AWS Batch executor) and
+`nf-<image>` (nf-amazon, never deregistered). Coordinators can no longer submit them, so after the
+deploy `deploy.sh` deregisters the ACTIVE ones its tenant's coordinators made
+(`python -m biffix_infra.legacy_job_definitions`): an `nf-` or `snakejob-def-` name, a
+`biffix:project` or `biffix:run` tag, and a job role that is one of this tenant's run roles (read
+from the project contexts in SSM). Anything else (another tenant's in the same account, or a
+definition that is not biffix's) is left alone and only counted. It is idempotent and best-effort
+(a failure warns; the deploy is still good), and a `--stack` deploy skips it. Runs still in flight
+on a coordinator from before the upgrade fail at their next child job submit, so upgrade while no
+runs are active. It is a one-time migration, kept in every full deploy because an operator may
+skip releases; it will be removed after the next minor release. To run it by hand (as the
+deploying role, in the tenant's account and region):
+
+```sh
+cd infra
+uv run python -m biffix_infra.legacy_job_definitions --projects-path /biffix/<tenant>/projects/ --dry-run
+uv run python -m biffix_infra.legacy_job_definitions --projects-path /biffix/<tenant>/projects/
+```
 
 ### Lambda artifacts and their guards
 

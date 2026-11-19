@@ -1,10 +1,11 @@
 # shellcheck shell=bash
 # biffix coordinator: what the engine's child (task) jobs run with: their images, queue and role.
 # Sourced by entrypoint.sh; defines functions only.
-#   Reads: WORK, LIB_DIR, BIFFIX_IMAGE_MAP_URI, BIFFIX_QUEUE_CLASS, BIFFIX_QUEUE_CLASS_MAP,
-#          SNAKEMAKE_AWS_BATCH_JOB_QUEUE, SNAKEMAKE_AWS_BATCH_JOB_ROLE.
+#   Reads: WORK, LIB_DIR, BIFFIX_IMAGE_MAP_URI, BIFFIX_JOB_DEFINITION_MAP_URI, BIFFIX_QUEUE_CLASS,
+#          BIFFIX_QUEUE_CLASS_MAP, SNAKEMAKE_AWS_BATCH_JOB_QUEUE, SNAKEMAKE_AWS_BATCH_JOB_ROLE.
 #   Sets:  SNAKEMAKE_AWS_BATCH_JOB_QUEUE; with an image map, SNAKEMAKE_AWS_BATCH_CONTAINER_IMAGE_MAP
-#          and BIFFIX_IMAGE_MAP_FILE.
+#          and BIFFIX_IMAGE_MAP_FILE, and SNAKEMAKE_AWS_BATCH_JOB_DEFINITION_MAP and
+#          BIFFIX_JOB_DEFINITION_MAP_FILE.
 
 # fetch_image_map: the run's image map, when it has one; every task image resolves through it
 # (strict). Exit 78 when it cannot be read.
@@ -19,7 +20,27 @@ fetch_image_map() {
   export SNAKEMAKE_AWS_BATCH_CONTAINER_IMAGE_MAP="$image_map" BIFFIX_IMAGE_MAP_FILE="$image_map"
 }
 
-# resolve_worker_queue: the worker queue ARN the engine submits child jobs to, and the role they
+# fetch_job_definition_map: the run's map of image to task job definition, which the backend writes
+# beside the image map (crates/biffix-backend/src/aws/task_definitions.rs). Every task runs on the
+# job definition biffix registered for its image; the engines register none (IAM denies the
+# coordinator every job-definition write). The backend writes the two together, so it is read only
+# with an image map (without one, a local composition, the engine registers its own), and is
+# required with one: exit 78 without it, or when it cannot be read.
+fetch_job_definition_map() {
+  [ -n "${BIFFIX_IMAGE_MAP_URI:-}" ] || return 0
+  [ -n "${BIFFIX_JOB_DEFINITION_MAP_URI:-}" ] \
+    || runtime_error "BIFFIX_IMAGE_MAP_URI is set without BIFFIX_JOB_DEFINITION_MAP_URI: tasks would have no job definitions (deploy the backend at the same release as this coordinator image)"
+  local definitions="$WORK/job-definitions.json"
+  python3 "$LIB_DIR/image_map.py" "$BIFFIX_JOB_DEFINITION_MAP_URI" "$definitions" "job definition map" \
+    || runtime_error "could not read the job definition map $BIFFIX_JOB_DEFINITION_MAP_URI"
+  echo "biffix-coordinator: tasks run on the job definitions in $BIFFIX_JOB_DEFINITION_MAP_URI" >&2
+  # Snakemake: the AWS Batch executor's job_definition_map setting (read from its env var).
+  # Nextflow: nf-biffix's task handler.
+  export SNAKEMAKE_AWS_BATCH_JOB_DEFINITION_MAP="$definitions" BIFFIX_JOB_DEFINITION_MAP_FILE="$definitions"
+}
+
+# resolve_worker_queue: the worker queue ARN the engine submits child jobs to, and, for an engine
+# that registers its own task job definitions (a run without a job definition map), the role they
 # assume (exit 78 without either). The engine's AWS Batch executor wants a queue ARN;
 # BIFFIX_QUEUE_CLASS names which queue-class from the deploy menu to use, and defaults to the FIRST
 # entry in the map (map insertion order == the deploy config order, which lists the intended default
@@ -32,5 +53,5 @@ resolve_worker_queue() {
   fi
   [ -n "${SNAKEMAKE_AWS_BATCH_JOB_QUEUE:-}" ] \
     || runtime_error "no worker queue resolved (BIFFIX_QUEUE_CLASS='${BIFFIX_QUEUE_CLASS:-}')"
-  require_env SNAKEMAKE_AWS_BATCH_JOB_ROLE "child-job role"
+  [ -n "${BIFFIX_JOB_DEFINITION_MAP_FILE:-}" ] || require_env SNAKEMAKE_AWS_BATCH_JOB_ROLE "child-job role"
 }

@@ -125,8 +125,8 @@ class ProjectStack(Stack):
             )
 
         # The per-project run base role a run's child jobs run as. Batch delivers it to each task
-        # (the coordinator registers the child job definitions with it); nothing assumes it with
-        # STS, so only ECS tasks are trusted.
+        # (the backend registers the project's task job definitions with it); nothing assumes it
+        # with STS, so only ECS tasks are trusted.
         self.run_base_role = iam.Role(
             self,
             "RunBaseRole",
@@ -135,14 +135,13 @@ class ProjectStack(Stack):
         )
         self._grant_read_write(self.run_base_role)
 
-        # The log group this project's task jobs write to (the coordinator passes it, from the
-        # BIFFIX_TASK_LOG_GROUP its job definition carries, as Nextflow's `aws.batch.logsGroup`
-        # and Snakemake's `--aws-batch-log-group`), so one project's coordinator cannot read
-        # another project's task logs. Named after the stack (`biffix-<tenant>-project-<id>`), so
-        # tenants sharing an account never collide. Hosts write it with their instance role (the
-        # ECS agent's awslogs driver; the managed AmazonEC2ContainerServiceforEC2Role allows
-        # CreateLogStream/PutLogEvents). Every coordinator logs to the shared `/aws/batch/job`
-        # (compute stack).
+        # The log group this project's task jobs write to (the backend names it in the project's
+        # task job definitions; the coordinator also gets it as BIFFIX_TASK_LOG_GROUP), so one
+        # project's coordinator cannot read another project's task logs. Named after the stack
+        # (`biffix-<tenant>-project-<id>`), so tenants sharing an account never collide. Hosts
+        # write it with their instance role (the ECS agent's awslogs driver; the managed
+        # AmazonEC2ContainerServiceforEC2Role allows CreateLogStream/PutLogEvents). Every
+        # coordinator logs to the shared `/aws/batch/job` (compute stack).
         self.task_log_group_name = f"/biffix/{self.stack_name}/batch"
         self.task_log_group = logs.LogGroup(
             self,

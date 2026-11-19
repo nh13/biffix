@@ -35,7 +35,9 @@ pub(crate) const PROJECT_BUCKET: &str = "BIFFIX_PROJECT_BUCKET";
 pub(crate) const PROJECT: &str = "BIFFIX_PROJECT";
 /// The run's key prefix in the project bucket.
 pub(crate) const RUN_PREFIX: &str = "BIFFIX_RUN_PREFIX";
-/// The job role child jobs run as (the project's run role).
+/// The project's run role, which child jobs run as: the coordinator passes it to an engine that
+/// registers its own task job definitions, which it does only without a
+/// [`JOB_DEFINITION_MAP_URI`] (whose definitions carry the role).
 pub(crate) const SNAKEMAKE_JOB_ROLE: &str = "SNAKEMAKE_AWS_BATCH_JOB_ROLE";
 /// The tags the Snakemake executor puts on every child job.
 pub(crate) const SNAKEMAKE_JOB_TAGS: &str = "SNAKEMAKE_AWS_BATCH_JOB_TAGS";
@@ -47,6 +49,8 @@ pub(crate) const RUNTIME_KEY: &str = "BIFFIX_RUNTIME_KEY";
 pub(crate) const WORKER_IMAGE: &str = "BIFFIX_WORKER_IMAGE";
 /// The run's image map (`images.json`).
 pub(crate) const IMAGE_MAP_URI: &str = "BIFFIX_IMAGE_MAP_URI";
+/// The run's map of image to task job definition (`job-definitions.json`).
+pub(crate) const JOB_DEFINITION_MAP_URI: &str = "BIFFIX_JOB_DEFINITION_MAP_URI";
 /// The worker queue-class child jobs are submitted to.
 pub(crate) const QUEUE_CLASS: &str = "BIFFIX_QUEUE_CLASS";
 /// The target to build.
@@ -89,6 +93,7 @@ pub(crate) const FIXED: &[&str] = &[
 pub(crate) const OPTIONAL: &[&str] = &[
     WORKER_IMAGE,
     IMAGE_MAP_URI,
+    JOB_DEFINITION_MAP_URI,
     QUEUE_CLASS,
     TARGET,
     OUTPUT_PREFIX,
@@ -149,8 +154,10 @@ pub(crate) fn coordinator_env(
         // may submit only jobs of its own project.
         (PROJECT, launch.project.id.clone()),
         (RUN_PREFIX, biffix_core::s3_layout::run_prefix(launch.run_id.as_str())),
-        // The engine's AWS Batch executor registers child job definitions with this job role, so
-        // worker tasks get the project-scoped run role (so a task's blast radius is one project).
+        // The project-scoped run role (so a task's blast radius is one project). The task job
+        // definitions the backend registers carry it; the coordinator hands it to an engine only
+        // when the run has no job definition map (a local composition with no project bucket),
+        // where the engine registers its own.
         (SNAKEMAKE_JOB_ROLE, launch.project.run_role_arn.clone()),
         // The Snakemake executor tags every worker job with these (the Nextflow path tags them
         // itself, from BIFFIX_RUN_ID): the engine ingest route accepts a task_submitted claim on a
@@ -175,7 +182,10 @@ pub(crate) fn coordinator_env(
                 &launch.variant.image,
             ),
         ),
-        (IMAGE_MAP_URI, launch.image_map_uri.clone()),
+        (IMAGE_MAP_URI, launch.maps.as_ref().map(|m| m.image_map.clone())),
+        // Every task runs on the job definition the backend registered for its image, which
+        // carries the project's run role and task log group.
+        (JOB_DEFINITION_MAP_URI, launch.maps.as_ref().map(|m| m.job_definitions.clone())),
         // The first declared worker queue-class selects the child-job queue.
         (QUEUE_CLASS, launch.queue_classes.first().cloned()),
         (TARGET, launch.target.clone()),
@@ -247,6 +257,7 @@ mod tests {
                 id: "demo".into(),
                 bucket: "proj".into(),
                 run_role_arn: "arn:aws:iam::123:role/run".into(),
+                task_log_group: "/biffix/t/demo/tasks".into(),
             },
             coordinator_queue: "coordinator".into(),
             image_digest: String::new(),
@@ -271,7 +282,7 @@ mod tests {
                 engine_version: "25.10.4".into(),
                 runtime_key: "rk".into(),
             },
-            image_map_uri: None,
+            maps: None,
         }
     }
 
@@ -322,13 +333,20 @@ mod tests {
             engine_session_id: Some("sess".into()),
             resume: true,
             output_cache: Some("s3://proj/biffix/cache/snakemake/".into()),
-            image_map_uri: Some("s3://proj/biffix/runs/run-1/inputs/images.json".into()),
+            maps: Some(crate::aws::batch::RunMapUris {
+                image_map: "s3://proj/biffix/runs/run-1/inputs/images.json".into(),
+                job_definitions: "s3://proj/biffix/runs/run-1/inputs/job-definitions.json".into(),
+            }),
             ..minimal_launch()
         };
         let env = env_map(&launch);
         let optional: BTreeMap<&str, &str> = [
             ("BIFFIX_WORKER_IMAGE", "123.dkr.ecr.us-east-1.amazonaws.com/wf@sha256:img"),
             ("BIFFIX_IMAGE_MAP_URI", "s3://proj/biffix/runs/run-1/inputs/images.json"),
+            (
+                "BIFFIX_JOB_DEFINITION_MAP_URI",
+                "s3://proj/biffix/runs/run-1/inputs/job-definitions.json",
+            ),
             ("BIFFIX_QUEUE_CLASS", "gpu"),
             ("BIFFIX_TARGET", "all"),
             ("BIFFIX_OUTPUT_PREFIX", "s3://proj/out/"),
@@ -378,7 +396,10 @@ mod tests {
             engine_session_id: Some("sess".into()),
             resume: true,
             output_cache: Some("s3://proj/biffix/cache/snakemake/".into()),
-            image_map_uri: Some("s3://proj/images.json".into()),
+            maps: Some(crate::aws::batch::RunMapUris {
+                image_map: "s3://proj/images.json".into(),
+                job_definitions: "s3://proj/job-definitions.json".into(),
+            }),
             ..minimal_launch()
         }
     }
@@ -437,6 +458,7 @@ mod tests {
                 id: "imported".into(),
                 bucket: "acme-imported".into(),
                 run_role_arn: "arn:aws:iam::123:role/imported-run".into(),
+                task_log_group: "/biffix/t/imported/tasks".into(),
             },
             ..minimal_launch()
         };

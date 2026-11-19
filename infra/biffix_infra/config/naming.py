@@ -69,6 +69,24 @@ class DeployNames:
         return f"biffix/{self.tenant}/google-oidc" if self.google_oidc is not None else None
 
     @property
+    def projects_path(self) -> str:
+        """The SSM path holding each project's context parameter (`<path><project id>`), which the
+        api stack writes and the backend and deploy.sh's job-definition cleanup read."""
+        return f"/biffix/{self.tenant}/projects/"
+
+    @property
+    def task_job_definition_prefix(self) -> str:
+        """The name prefix of every task job definition the backend registers for this deploy
+        (`BIFFIX_TASK_JOB_DEFINITION_PREFIX`; each is `<prefix><sm|nf>-<32 hex>`): the only job
+        definitions a coordinator may submit, and the only ones the backend may register besides
+        the coordinator variants. The `_` ends the tenant: a tenant is letters, digits and `-`
+        (`parse_tenant`), so no sibling tenant `<tenant>-task` in the account can share it (a
+        `biffix-<tenant>-task-` would match all of its task definitions). Batch job definition
+        names allow `_`. `_task-` also keeps them apart from the coordinator definitions
+        (`biffix-<tenant>-coordinator…`), which no coordinator may submit."""
+        return f"biffix-{self.tenant}_task-"
+
+    @property
     def alarm_prefix(self) -> str:
         """The name prefix of this deploy's CloudWatch alarms (each is named `<prefix><id>`); the
         status probe lists the alarms by it. The `/` ends the tenant: a tenant is part of every

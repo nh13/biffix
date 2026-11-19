@@ -1,7 +1,8 @@
 //! The AWS boundary, behind one trait per concern so the backend is unit-testable without AWS:
 //!
 //! - [`batch::BatchJobs`]: the run's session, its coordinator's launch and variant job
-//!   definitions, cancel, and the owners of the jobs a coordinator submits (Batch);
+//!   definitions, its tasks' job definitions ([`task_definitions`]), cancel, and the owners of
+//!   the jobs a coordinator submits (Batch);
 //! - [`builds::BuildService`]: runtime builds and workflow image imports, builds, indexes and
 //!   derives (CodeBuild);
 //! - [`registry::ImageRegistry`]: the base coordinator image and the digest an image names (ECR,
@@ -41,6 +42,7 @@ pub(crate) mod provider;
 pub mod registry;
 #[cfg(feature = "aws")]
 pub(crate) mod ssm_projects;
+pub mod task_definitions;
 pub(crate) mod uploads;
 
 use alerts::AlertTopic;

@@ -23,7 +23,7 @@ pub(super) fn snakemake_9() -> SnakemakePins {
                 .into(),
         },
         storage_s3: "0.3.6".into(),
-        executor_sha: "a0aaf7a725bfb5120721413afc920f4a21737c53".into(),
+        executor_sha: "240b612ce6ec22b44777449cab4156094b40eb19".into(),
         logger_version: "0.2.2".into(),
         exclude_newer: "2026-09-26T00:00:00Z".into(),
     }
@@ -62,5 +62,5 @@ pub(super) fn nextflow(release: &str) -> Option<NextflowPins> {
         ),
         _ => return None,
     };
-    Some(NextflowPins { nf_biffix_version: "0.6.2".into(), release, workflow_plugins: Vec::new() })
+    Some(NextflowPins { nf_biffix_version: "0.7.0".into(), release, workflow_plugins: Vec::new() })
 }

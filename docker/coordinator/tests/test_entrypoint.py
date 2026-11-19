@@ -38,7 +38,9 @@ _ENGINE = r"""#!/usr/bin/env bash
 case "${1:-}" in --version|-v) echo "$FAKE_ENGINE_OUTPUT"; exit 0 ;; esac
 printf '%s\n' "$@" > "$FAKE_ARGV"
 for v in SNAKEMAKE_AWS_BATCH_JOB_TAGS SNAKEMAKE_AWS_BATCH_CONTAINER_IMAGE_MAP NXF_UUID \
-  NXF_IGNORE_RESUME_HISTORY NXF_PLUGINS_DEFAULT BIFFIX_IMAGE_MAP_FILE PWD; do
+  NXF_IGNORE_RESUME_HISTORY NXF_PLUGINS_DEFAULT BIFFIX_IMAGE_MAP_FILE \
+  SNAKEMAKE_AWS_BATCH_JOB_DEFINITION_MAP BIFFIX_JOB_DEFINITION_MAP_FILE \
+  SNAKEMAKE_AWS_BATCH_JOB_ROLE PWD; do
   printf '%s=%s\n' "$v" "${!v-<unset>}"
 done > "$FAKE_ENV"
 ls .snakemake/metadata > "$FAKE_SEEN" 2>/dev/null || true
@@ -317,7 +319,10 @@ def test_snakemake_tasks_get_spot_attempts_and_the_project_s_log_group(sm_job: J
     got = sm_job.run()
     assert got.returncode == 0, got.stderr
     assert _after(sm_job.argv, "--aws-batch-spot-attempts") == "5"
+    # Without a job definition map (a local run) the executor registers its own definitions, with
+    # the project's log group and run role.
     assert _after(sm_job.argv, "--aws-batch-log-group") == GROUP
+    assert _after(sm_job.argv, "--aws-batch-job-role") == "arn:role/run"
     assert "WARNING" not in got.stderr
     # BIFFIX_SPOT_ATTEMPTS overrides the default.
     got = sm_job.run(BIFFIX_SPOT_ATTEMPTS="2")
@@ -733,11 +738,19 @@ def test_nextflow_retry_defaults_rank_below_the_pipeline_s_own_config(nf_job: Jo
 
 
 MAP_URI = "s3://bucket/runs/run-test/images.json"
+DEFINITIONS_URI = "s3://bucket/runs/run-test/job-definitions.json"
+DEFINITIONS = {"reg/tool@sha256:1": "arn:aws:batch:us-test-1:1:job-definition/biffix-t_task-sm-a:1"}
+
+
+def _put_maps(job: Job) -> dict[str, str]:
+    """The run's image map and job definition map in the fake S3, and the env naming them."""
+    job.put("bucket", "runs/run-test/images.json", b'{"tool:1": "reg/tool@sha256:1"}')
+    job.put("bucket", "runs/run-test/job-definitions.json", json.dumps(DEFINITIONS).encode())
+    return {"BIFFIX_IMAGE_MAP_URI": MAP_URI, "BIFFIX_JOB_DEFINITION_MAP_URI": DEFINITIONS_URI}
 
 
 def test_the_image_map_is_handed_to_the_executor(sm_job: Job) -> None:
-    sm_job.put("bucket", "runs/run-test/images.json", b'{"tool:1": "reg/tool@sha256:1"}')
-    got = sm_job.run(BIFFIX_IMAGE_MAP_URI=MAP_URI)
+    got = sm_job.run(**_put_maps(sm_job))
     assert got.returncode == 0, got.stderr
     path = sm_job.engine_env["SNAKEMAKE_AWS_BATCH_CONTAINER_IMAGE_MAP"]
     assert path == str(sm_job.work / "images.json")
@@ -745,20 +758,95 @@ def test_the_image_map_is_handed_to_the_executor(sm_job: Job) -> None:
 
 
 def test_the_image_map_is_handed_to_nf_biffix(nf_job: Job) -> None:
-    nf_job.put("bucket", "runs/run-test/images.json", b'{"tool:1": "reg/tool@sha256:1"}')
-    got = nf_job.run(BIFFIX_IMAGE_MAP_URI=MAP_URI)
+    got = nf_job.run(**_put_maps(nf_job))
     assert got.returncode == 0, got.stderr
     assert nf_job.engine_env["BIFFIX_IMAGE_MAP_FILE"] == str(nf_job.work / "images.json")
 
 
 @pytest.mark.parametrize("body", [None, b'["tool:1"]', b"not json"])
 def test_an_unreadable_image_map_fails_with_ex_config(sm_job: Job, body: bytes | None) -> None:
+    env = _put_maps(sm_job)
+    (sm_job.s3 / "bucket/runs/run-test/images.json").unlink()
     if body is not None:
         sm_job.put("bucket", "runs/run-test/images.json", body)
-    got = sm_job.run(BIFFIX_IMAGE_MAP_URI="s3://bucket/runs/run-test/images.json")
+    got = sm_job.run(**env)
     assert got.returncode == 78
     assert "could not read the image map" in got.stderr
     assert not (sm_job.out / "argv").exists()
+
+
+def test_snakemake_runs_every_job_on_biffix_s_job_definitions(sm_job: Job) -> None:
+    got = sm_job.run(**_put_maps(sm_job))
+    assert got.returncode == 0, got.stderr
+    path = sm_job.engine_env["SNAKEMAKE_AWS_BATCH_JOB_DEFINITION_MAP"]
+    assert path == str(sm_job.work / "job-definitions.json")
+    assert json.loads(Path(path).read_text()) == DEFINITIONS
+    # The definitions carry the job role and the task log group, and the executor refuses either
+    # beside the map: neither is passed, and the role's env var (which it reads too) is cleared.
+    assert "--aws-batch-job-role" not in sm_job.argv
+    assert "--aws-batch-log-group" not in sm_job.argv
+    assert sm_job.engine_env["SNAKEMAKE_AWS_BATCH_JOB_ROLE"] == "<unset>"
+    # Nor is a privileged container ever asked for.
+    assert "--aws-batch-privileged" not in sm_job.argv
+
+
+def test_nextflow_runs_every_task_on_biffix_s_job_definitions(nf_job: Job) -> None:
+    got = nf_job.run(**_put_maps(nf_job))
+    assert got.returncode == 0, got.stderr
+    path = nf_job.engine_env["BIFFIX_JOB_DEFINITION_MAP_FILE"]
+    assert path == str(nf_job.work / "job-definitions.json")
+    assert json.loads(Path(path).read_text()) == DEFINITIONS
+    config = (nf_job.work / "nextflow.config").read_text()
+    # The job role is the definitions'; the log group is still where nf-amazon reads task logs.
+    assert "aws.batch.jobRole" not in config
+    assert f"aws.batch.logsGroup = '{GROUP}'" in config
+
+
+def test_an_image_map_without_a_job_definition_map_fails_with_ex_config(sm_job: Job) -> None:
+    env = _put_maps(sm_job)
+    del env["BIFFIX_JOB_DEFINITION_MAP_URI"]
+    got = sm_job.run(**env)
+    assert got.returncode == 78
+    assert "without BIFFIX_JOB_DEFINITION_MAP_URI" in got.stderr
+    assert "deploy the backend at the same release as this coordinator image" in got.stderr
+    assert not (sm_job.out / "argv").exists()
+
+
+@pytest.mark.parametrize("body", [None, b'["arn:jd"]', b"not json"])
+def test_an_unreadable_job_definition_map_fails_with_ex_config(
+    sm_job: Job, body: bytes | None
+) -> None:
+    env = _put_maps(sm_job)
+    (sm_job.s3 / "bucket/runs/run-test/job-definitions.json").unlink()
+    if body is not None:
+        sm_job.put("bucket", "runs/run-test/job-definitions.json", body)
+    got = sm_job.run(**env)
+    assert got.returncode == 78
+    assert "could not read the job definition map" in got.stderr
+    assert not (sm_job.out / "argv").exists()
+
+
+def test_with_job_definitions_no_child_job_role_is_needed(sm_job: Job) -> None:
+    got = sm_job.run(**_put_maps(sm_job), SNAKEMAKE_AWS_BATCH_JOB_ROLE="")
+    assert got.returncode == 0, got.stderr
+
+
+def test_with_job_definitions_nextflow_needs_no_child_job_role(nf_job: Job) -> None:
+    got = nf_job.run(**_put_maps(nf_job), SNAKEMAKE_AWS_BATCH_JOB_ROLE="")
+    assert got.returncode == 0, got.stderr
+    assert "aws.batch.jobRole" not in (nf_job.work / "nextflow.config").read_text()
+
+
+def test_a_job_definition_map_without_an_image_map_is_not_read(sm_job: Job) -> None:
+    # The backend writes the two together; a definition map alone (no image map to resolve task
+    # images through) leaves the executor registering its own definitions, as a local run does.
+    env = _put_maps(sm_job)
+    del env["BIFFIX_IMAGE_MAP_URI"]
+    got = sm_job.run(**env)
+    assert got.returncode == 0, got.stderr
+    assert sm_job.engine_env["SNAKEMAKE_AWS_BATCH_JOB_DEFINITION_MAP"] == "<unset>"
+    assert sm_job.engine_env["BIFFIX_JOB_DEFINITION_MAP_FILE"] == "<unset>"
+    assert _after(sm_job.argv, "--aws-batch-job-role") == "arn:role/run"
 
 
 def test_the_child_job_role_is_required(sm_job: Job) -> None:

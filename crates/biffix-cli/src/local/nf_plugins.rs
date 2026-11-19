@@ -543,7 +543,7 @@ mod tests {
     fn the_pipeline_s_plugins_are_listed_without_biffix_s_own() {
         assert_eq!(
             pipeline_plugins(
-                &["nf-schema@2.7.2", "nf-amazon@3.4.4", "nf-prov@1.4.0", "nf-biffix@0.6.2"],
+                &["nf-schema@2.7.2", "nf-amazon@3.4.4", "nf-prov@1.4.0", "nf-biffix@0.7.0"],
                 Some("25.10.4")
             )
             .unwrap(),
@@ -670,7 +670,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nf = fake_nextflow(
             dir.path(),
-            Some(r#"{"plugins": ["nf-schema@2.8.0", "nf-amazon", "nf-biffix@0.6.2"]}"#),
+            Some(r#"{"plugins": ["nf-schema@2.8.0", "nf-amazon", "nf-biffix@0.7.0"]}"#),
         );
         let check = |l: &[(&str, &str)]| {
             check_declared_with(&nf, dir.path(), "main.nf", &listed(l), "25.10.4")

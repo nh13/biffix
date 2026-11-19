@@ -151,8 +151,8 @@ class BiffixContainerResolverSpec extends Specification {
         path                               | why
         '/nonexistent/images.json'         | 'Unable to process file'
         mapFile('{not json')               | 'JsonException'
-        mapFile('["a list"]')              | 'an image map is a JSON object'
-        mapFile('{"ubuntu": 3}')           | 'entry `ubuntu` is not an image reference'
+        mapFile('["a list"]')              | 'the map is not a JSON object'
+        mapFile('{"ubuntu": 3}')           | 'entry `ubuntu` is not a non-empty string'
     }
 
     def 'references normalize the way Docker (and biffix-workflow) read them'() {

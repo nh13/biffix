@@ -80,6 +80,29 @@ Tasks run on AWS Batch with S3 as storage. Write workflows so their inputs and o
 the engine resolves against its default storage; biffix sets that to the run's output prefix in
 the project bucket.
 
+Each task runs on an AWS Batch job definition biffix registers for its image, not one the
+workflow chooses. Its container is not privileged and sees nothing of the host but what the engine
+needs, so a few engine settings that would change the job definition are refused rather than
+silently dropped:
+
+- Snakemake: a rule's `aws_batch_job_definition` or `aws_batch_privileged` resource fails that
+  job. `/dev/shm` is 256 GiB for every task (what a task writes there counts against its own
+  memory), so a rule's `shared_memory_size_mb` resource is accepted up to that. Tools that need a
+  privileged container, such as Apptainer inside the task container, do not run.
+- Nextflow: a task fails when its `containerOptions` set anything nf-amazon would put in the job
+  definition (`--privileged`, `-e`/`--env`, `-u`/`--user`, `--read-only`, `--ulimit`,
+  `--shm-size`, `--tmpfs`, `--memory-swap`, `--memory-swappiness`, `--init`), when the config sets
+  `aws.batch.volumes` or `aws.batch.executionRole`, with Fusion or Fargate, or with the
+  `awsbatch/consumableResources` hint (the
+  [nf-biffix README](../plugins/nf-biffix/README.md#what-it-does) keeps the list). A
+  `container 'job-definition://…'` is refused too.
+
+Because the job definition is shared, each Snakemake job's command and environment travel in its
+`SubmitJob` container overrides rather than in a definition of its own, and AWS limits the size of
+those overrides (8,192 characters of overrides in all). A very large group job, whose command names
+many rules and files, can be refused at submit; split the group (a smaller `group-components`, or
+fewer rules per group) if one is.
+
 ### The `biffix.yaml` manifest
 
 `biffix.yaml` at the workflow's root describes what the engine's own files cannot. Every key is

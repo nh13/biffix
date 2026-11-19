@@ -94,7 +94,7 @@ class ApiStack(Stack):
                 if name != config.coordinator_queue_class.name
             }
         )
-        self.projects_path = f"/biffix/{config.tenant}/projects/"
+        self.projects_path = config.projects_path
         coordinators = {
             project.project_id: Coordinator(
                 self,
@@ -124,6 +124,7 @@ class ApiStack(Stack):
             projects=projects,
             coordinators=coordinators,
             projects_path=self.projects_path,
+            task_prefix=config.task_job_definition_prefix,
             default_project_id=self.default_project_id,
             compute=compute,
             build=build,

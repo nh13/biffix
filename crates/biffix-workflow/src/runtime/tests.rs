@@ -251,7 +251,7 @@ fn the_runtime_names_its_own_plugin_versions() {
     let nf = recipe("nextflow", "25.10.4").unwrap();
     assert_eq!(nf.runtime_plugin_version("nf-amazon"), Some("3.4.4"));
     assert_eq!(nf.runtime_plugin_version("nf-cloudcache"), Some("0.5.0"));
-    assert_eq!(nf.runtime_plugin_version("nf-biffix"), Some("0.6.2"));
+    assert_eq!(nf.runtime_plugin_version("nf-biffix"), Some("0.7.0"));
     assert_eq!(nf.runtime_plugin_version("nf-schema"), None);
     let sm = recipe("snakemake", "9.27.0").unwrap();
     assert_eq!(sm.runtime_plugin_version("nf-biffix"), None);
@@ -365,7 +365,7 @@ fn the_build_env_carries_the_key_and_every_pin() {
         ("BIFFIX_RT_KEY", runtime_key(&nf)),
         ("BIFFIX_RT_ENGINE", "nextflow".into()),
         ("BIFFIX_RT_ENGINE_VERSION", "25.10.4".into()),
-        ("BIFFIX_RT_NF_BIFFIX_VERSION", "0.6.2".into()),
+        ("BIFFIX_RT_NF_BIFFIX_VERSION", "0.7.0".into()),
         (
             "BIFFIX_RT_NF_SHA256",
             "60db869a7618783e3ee60183a2b0c6c50ffc67221eabec60800b904991786aaa".into(),
@@ -493,4 +493,39 @@ fn the_build_scripts_use_the_crate_s_names() {
 #[test]
 fn the_coordinator_subject_joins_key_and_base() {
     assert_eq!(coordinator_subject("abc", "sha256:def"), "coordinator:abc@sha256:def");
+}
+
+/// Every runtime biffix pins now runs its tasks on the backend's job definitions, and one recorded
+/// on an executor or nf-biffix from before (which registers its own) does not.
+#[test]
+fn only_runtimes_on_the_job_definition_map_run_on_registered_job_definitions() {
+    let sm = recipe("snakemake", "9.27.0").unwrap();
+    assert!(sm.runs_on_registered_job_definitions(), "the executor pin must be listed");
+    for release in crate::engines::NEXTFLOW_RELEASES {
+        assert!(recipe("nextflow", release).unwrap().runs_on_registered_job_definitions());
+    }
+    // The executor pinned before the job definition map, and any commit not listed.
+    let older = |sha: &str| match sm.clone() {
+        RuntimeRecipe::Snakemake { recipe_version, engine_version, mut pins } => {
+            pins.executor_sha = sha.into();
+            RuntimeRecipe::Snakemake { recipe_version, engine_version, pins }
+        }
+        RuntimeRecipe::Nextflow { .. } => unreachable!(),
+    };
+    assert!(!older("a0aaf7a725bfb5120721413afc920f4a21737c53").runs_on_registered_job_definitions());
+    assert!(!older("").runs_on_registered_job_definitions());
+    // nf-biffix before 0.7.0, and a version that does not parse; 0.7.0 and later do.
+    let nf = |version: &str| match recipe("nextflow", "26.10.5").unwrap() {
+        RuntimeRecipe::Nextflow { recipe_version, engine_version, mut pins } => {
+            pins.nf_biffix_version = version.into();
+            RuntimeRecipe::Nextflow { recipe_version, engine_version, pins }
+        }
+        RuntimeRecipe::Snakemake { .. } => unreachable!(),
+    };
+    for version in ["0.6.2", "0.6.10", "0.1.0", "x", ""] {
+        assert!(!nf(version).runs_on_registered_job_definitions(), "{version}");
+    }
+    for version in ["0.7.0", "0.7.1", "0.10.0", "1.0.0"] {
+        assert!(nf(version).runs_on_registered_job_definitions(), "{version}");
+    }
 }

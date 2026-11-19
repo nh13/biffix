@@ -65,7 +65,7 @@ async fn a_pixi_default_is_built_per_architecture_indexed_and_run() {
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     let launched = h.cloud.launched.lock().unwrap().clone();
     assert_eq!(launched[0].image_digest, "sha256:imp");
-    let map_uri = launched[0].image_map_uri.clone().unwrap();
+    let map_uri = launched[0].maps.clone().unwrap().image_map;
     let written: BTreeMap<String, String> =
         serde_json::from_slice(&h.cloud.objects.lock().unwrap()[&map_uri]).unwrap();
     let built = format!("{}@sha256:imp", testing::FAKE_WORKFLOW_REPO);

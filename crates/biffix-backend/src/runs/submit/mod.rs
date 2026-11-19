@@ -94,9 +94,11 @@ pub struct SubmitRequest {
     /// When `version.image_digest` is the default image derived with the engine runtime: the
     /// digest it was derived from (the imported image), recorded on the anchor.
     pub image_source_digest: Option<String>,
-    /// The run's image map and where it was written (`crate::images::map`); recorded on the anchor
-    /// and handed to the coordinator.
-    pub image_map: Option<(String, std::collections::BTreeMap<String, String>)>,
+    /// The run's image map (`crate::images::map`), recorded on the anchor, and where it and the
+    /// run's map of image to task job definition (`crate::aws::task_definitions`) were written,
+    /// handed to the coordinator.
+    pub image_map:
+        Option<(crate::aws::batch::RunMapUris, std::collections::BTreeMap<String, String>)>,
 }
 
 #[derive(Debug)]
@@ -473,7 +475,7 @@ pub async fn submit(
                 .then(|| crate::runs::output_prefix::snakemake_cache_uri(&req.project.bucket))
                 .flatten(),
             variant: req.variant.clone(),
-            image_map_uri: req.image_map.as_ref().map(|(uri, _)| uri.clone()),
+            maps: req.image_map.as_ref().map(|(uris, _)| uris.clone()),
         })
         .await;
     let job = match launched {

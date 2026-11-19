@@ -125,8 +125,8 @@ immutable ECR repository, so a tag always means the same bytes.
 - [`snakemake-logger-plugin-biffix`](../plugins/snakemake-logger-plugin-biffix/README.md) maps
   Snakemake's log records to biffix engine events.
 - [`nf-biffix`](../plugins/nf-biffix/README.md) reports Nextflow's run and task lifecycle,
-  resolves each task's container through the run's image map, and tags every Nextflow job
-  definition with the run's project.
+  resolves each task's container through the run's image map, and runs each task on the job
+  definition biffix registered for its image.
 
 Both emit the same wire contract, `schemas/wire.engine.schema.json`, and are shipped inside the
 coordinator's runtime layer. A pipeline does not list them.
@@ -188,7 +188,18 @@ biffix does not invent an authorization mechanism that a bug could bypass. Isola
 - **The account is the tenant boundary.** One deployment per account.
 - **A project is its own bucket, KMS key and roles.** A run's tasks run as the project's run
   role; the coordinator runs as the project's coordinator role, which may submit, tag and
-  terminate only jobs tagged with its own project and pass only its own project's run role.
+  terminate only jobs tagged with its own project, and submit them only on its own project's
+  task job definitions.
+- **The backend, not workflow code, registers task job definitions.** A job definition decides
+  whether a container is privileged and which host paths and devices it sees, and the compute
+  environments are shared by every project, so the coordinator (which runs the workflow's code)
+  may not register, deregister or tag one. At launch the backend registers one per (project,
+  image, engine), reused across runs: never privileged, with no volumes or devices beyond the
+  read-only host AWS CLI Nextflow's tasks stage files with, running as the project's run role and
+  logging to its task log group. IAM limits the backend to that name prefix, tenant ECR images
+  and unprivileged definitions, and the hosts' ECS agents refuse privileged containers too. The
+  run's coordinator gets a map of image to definition, and the engines submit every task on its
+  image's definition.
 - **No long-lived secrets in containers.** No AWS credentials are forwarded into a run. The only
   secret a run carries is its capability token, which is signed, expires, and authorizes the
   engine plugin's event POSTs for that one run.
@@ -239,11 +250,13 @@ feature, a logger plugin, a richer parameter schema. biffix carries a local work
 the upstream change is in review.
 
 The one current exception is the Snakemake AWS Batch executor. The coordinator installs it from a
-fork pinned to an exact commit (`docker/coordinator/wheels.env`). The fork is upstream plus open
-pull requests biffix depends on: job-state events that carry the Batch job id, a strict container
-image map (a task naming an unmapped image fails instead of pulling it), and a per-project task
-log group. Other features biffix uses, such as per-rule queues and spot retry attempts, are
-already upstream. The pin moves back to an upstream release once those pull requests merge.
+fork pinned to an exact commit (`docker/coordinator/wheels.env`). The fork is upstream plus five
+open pull requests biffix depends on: job-state events that carry the Batch job id, a strict
+container image map in which a task naming an unmapped image fails instead of pulling it, a
+per-project task log group, a job definition map with which every job runs on a definition
+registered ahead of time and the executor registers none, and privileged containers made opt-in.
+Other features biffix uses, such as per-rule queues and spot retry attempts, are already upstream.
+The pin moves back to an upstream release once all five have merged.
 
 ## The RunEvent contract
 

@@ -16,7 +16,11 @@ from biffix_infra.config import (
     QueueClass,
 )
 from biffix_infra.stacks import compute_stack
-from biffix_infra.stacks.compute_stack import ComputeStack, host_install_header
+from biffix_infra.stacks.compute_stack import (
+    DISABLE_PRIVILEGED,
+    ComputeStack,
+    host_install_header,
+)
 from biffix_infra.stacks.data_stack import DataStack
 from biffix_infra.stacks.network_stack import NetworkStack
 from tests.deploy_config_file import write_config
@@ -155,6 +159,10 @@ def test_every_host_installs_the_pinned_aws_cli_from_the_reference_bucket(
         ):
             assert assignment in user_data, assignment
         assert "biffix_install_host_aws_cli" in user_data
+        # Coordinator and worker hosts alike refuse privileged containers (nothing biffix runs
+        # on Batch is privileged), set before the ECS agent starts.
+        assert f"echo {DISABLE_PRIVILEGED} >> /etc/ecs/ecs.config" in user_data
+        assert DISABLE_PRIVILEGED == "ECS_DISABLE_PRIVILEGED=true"
     # The boot script reads exactly the variables the stack sets (its own test runs the script
     # against `host_install_header`, the one source of these lines).
     script = (Path(compute_stack.__file__).parent.parent / "host/install_aws_cli.sh").read_text()

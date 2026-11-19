@@ -97,6 +97,7 @@ fn req(params: serde_json::Value, inputs: Vec<String>) -> SubmitRequest {
             id: "demo".into(),
             bucket: "b".into(),
             run_role_arn: String::new(),
+            task_log_group: String::new(),
         },
         variant: biffix_backend::aws::batch::LaunchVariant {
             job_definition:

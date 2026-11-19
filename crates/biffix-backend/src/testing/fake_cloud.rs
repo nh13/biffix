@@ -74,6 +74,11 @@ pub struct FakeCloud {
     pub variant_job_definitions: Mutex<Vec<(String, String, String)>>,
     /// The coordinator template of every variant job definition asked for, in the same order.
     pub variant_templates: Mutex<Vec<String>>,
+    /// Every task job definition asked for, in call order.
+    pub task_job_definitions: Mutex<Vec<crate::aws::task_definitions::TaskJobDefinition>>,
+    /// Make every `task_job_definition` fail with the error this makes (`AwsError` is not
+    /// `Clone`), e.g. an unavailable AWS or a denied grant.
+    pub fail_task_job_definitions: Mutex<Option<fn() -> AwsError>>,
     /// The project of every run session minted, by run id.
     pub sessions: Mutex<Vec<(String, crate::aws::batch::LaunchProject)>>,
     /// `(bucket, key)` of every presigned source PUT.
@@ -153,6 +158,8 @@ impl FakeCloud {
             runtime_builds: Mutex::new(Vec::new()),
             variant_job_definitions: Mutex::new(Vec::new()),
             variant_templates: Mutex::new(Vec::new()),
+            task_job_definitions: Mutex::new(Vec::new()),
+            fail_task_job_definitions: Mutex::new(None),
             sessions: Mutex::new(Vec::new()),
             source_puts: Mutex::new(Vec::new()),
             template_revision: Mutex::new(1),
@@ -246,6 +253,14 @@ pub(super) fn fake_variant_job_definition(
         short(runtime_key),
         short(base)
     )
+}
+
+/// The ARN of the task job definition the fake registers for `definition`: named as the
+/// provider names it, under the prefix `biffix-t_task-`.
+pub fn fake_task_job_definition(
+    definition: &crate::aws::task_definitions::TaskJobDefinition,
+) -> String {
+    format!("arn:aws:batch:us-east-1:123:job-definition/{}:1", definition.name("biffix-t_task-"))
 }
 
 /// [`fake_variant_job_definition`] cloned from the coordinator template `template_arn`: a
@@ -369,6 +384,17 @@ impl BatchJobs for FakeCloud {
         self.variant_templates.lock().unwrap().push(template_arn.to_string());
         let template = *self.template_revision.lock().unwrap();
         Ok(fake_project_variant_job_definition(runtime_key, base_digest, template, template_arn))
+    }
+
+    async fn task_job_definition(
+        &self,
+        definition: &crate::aws::task_definitions::TaskJobDefinition,
+    ) -> Result<String, AwsError> {
+        if let Some(fail) = *self.fail_task_job_definitions.lock().unwrap() {
+            return Err(fail());
+        }
+        self.task_job_definitions.lock().unwrap().push(definition.clone());
+        Ok(fake_task_job_definition(definition))
     }
 
     fn variant_is_current(

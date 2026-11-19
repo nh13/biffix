@@ -36,9 +36,12 @@ What biffix itself is responsible for, and where a report is in scope:
 
 - **Project isolation through IAM.** Each project has its own S3 bucket, KMS key, run role and
   coordinator role. A run's tasks run as the project's run role, and the coordinator may submit,
-  tag and terminate only Batch jobs tagged with its own project and pass only its own project's
-  roles. A way for one project's run to read or write another project's data, or act as another
-  project's role, is in scope.
+  tag and terminate only Batch jobs tagged with its own project, and submit them only on the task
+  job definitions biffix registered for its project. Task job definitions are registered by the
+  backend, never by workflow code: they are unprivileged and mount nothing from the host but a
+  read-only AWS CLI, and the hosts refuse privileged containers. A way for one project's run to
+  read or write another project's data, act as another project's role, or reach the host its
+  tasks share with other projects' (a privileged container, a host path or device), is in scope.
 - **Capability tokens for engine events.** The engine plugins post events with a per-run token
   that is signed, expires, and authorizes event posts for that one run only. A token that is
   accepted for another run, after expiry, or for anything but event posts is in scope, as is a way

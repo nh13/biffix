@@ -896,6 +896,114 @@ def test_a_failed_image_retention_only_warns(deploy: Harness) -> None:
     assert "image retention for acme-coord-repo failed" in r.stderr
 
 
+_RUN_ROLE = f"arn:aws:iam::{ACCT}:role/biffix-{TENANT}-project-demo-RunBaseRole-A"
+
+
+def _job_definitions(*names: str) -> list[Rule]:
+    """The tenant's one project context, and the ACTIVE `names`, each tagged and running as its
+    run role."""
+    context = json.dumps({"id": "demo", "run_role_arn": _RUN_ROLE})
+    definitions = [
+        {
+            "jobDefinitionArn": f"arn:aws:batch:us-east-1:{ACCT}:job-definition/{name}:1",
+            "jobDefinitionName": name,
+            "tags": {"biffix:project": "demo"},
+            "containerProperties": {"jobRoleArn": _RUN_ROLE},
+        }
+        for name in names
+    ]
+    return [
+        {
+            "match": ["ssm get-parameters-by-path", f"--path /biffix/{TENANT}/projects "],
+            "out": json.dumps({"Parameters": [{"Value": context}]}),
+        },
+        {
+            "match": ["batch describe-job-definitions", "--status ACTIVE"],
+            "out": json.dumps({"jobDefinitions": definitions}),
+        },
+    ]
+
+
+def test_deploy_deregisters_the_engine_job_definitions_coordinators_registered(
+    deploy: Harness,
+) -> None:
+    deploy.add_rules(*_job_definitions("nf-samtools", "biffix-acme_task-nf-0123"))
+    r = deploy.run("deploy.sh", *DEPLOY_FLAGS, "--account", ACCT)
+    assert r.returncode == 0, r.stderr
+    assert "engine job definitions: 1 to deregister" in r.stdout
+    [deregister] = [c for c in deploy.aws_calls() if c.startswith("batch deregister")]
+    assert "job-definition/nf-samtools:1" in deregister
+    # After cdk deploy, like the image retention.
+    calls = deploy.calls()
+    first = next(i for i, c in enumerate(calls) if "batch describe-job-definitions" in c)
+    assert first > next(i for i, c in enumerate(calls) if c.startswith("cdk deploy"))
+
+
+def test_a_failed_job_definition_cleanup_only_warns(deploy: Harness) -> None:
+    deploy.add_rules(
+        {"match": ["batch deregister-job-definition"], "rc": 254, "err": "AccessDenied\n"},
+        *_job_definitions("snakejob-def-align-0123"),
+    )
+    r = deploy.run("deploy.sh", *DEPLOY_FLAGS, "--account", ACCT)
+    assert r.returncode == 0, r.stderr
+    assert "engine job-definition cleanup failed" in r.stderr
+
+
+def _task_definitions(*images: str) -> list[Rule]:
+    """The ACTIVE task definitions (one per image, under the tenant's task prefix), and ECR saying
+    every image but the first is present (the first's is gone)."""
+    definitions = [
+        {
+            "jobDefinitionArn": f"arn:aws:batch:us-east-1:{ACCT}:job-definition/biffix-{TENANT}"
+            f"_task-sm-{i}:1",
+            "jobDefinitionName": f"biffix-{TENANT}_task-sm-{i}",
+            "containerProperties": {"image": image},
+        }
+        for i, image in enumerate(images)
+    ]
+    gone = images[0].split("@", 1)[1]
+    return [
+        {
+            "match": ["batch describe-job-definitions", "--status ACTIVE"],
+            "out": json.dumps({"jobDefinitions": definitions}),
+        },
+        {
+            "match": ["ecr describe-images", f"imageDigest={gone}"],
+            "rc": 254,
+            "err": "An error occurred (ImageNotFoundException)\n",
+        },
+        {"match": ["ecr describe-images", "--image-ids"], "out": "{}"},
+    ]
+
+
+def test_deploy_deregisters_the_task_job_definitions_whose_image_is_gone(
+    deploy: Harness,
+) -> None:
+    registry = f"{ACCT}.dkr.ecr.us-east-1.amazonaws.com"
+    deploy.add_rules(
+        *_task_definitions(f"{registry}/wf@sha256:gone", f"{registry}/wf@sha256:kept"), first=True
+    )
+    r = deploy.run("deploy.sh", *DEPLOY_FLAGS, "--account", ACCT)
+    assert r.returncode == 0, r.stderr
+    assert "task job definitions: 1 to deregister (image gone)" in r.stdout
+    [deregister] = [
+        c
+        for c in deploy.aws_calls()
+        if c.startswith("batch deregister") and f"biffix-{TENANT}_task-" in c
+    ]
+    assert f"job-definition/biffix-{TENANT}_task-sm-0:1" in deregister
+
+
+def test_a_failed_task_job_definition_retention_only_warns(deploy: Harness) -> None:
+    deploy.add_rules(
+        {"match": ["batch describe-job-definitions"], "rc": 254, "err": "AccessDenied\n"},
+        first=True,
+    )
+    r = deploy.run("deploy.sh", *DEPLOY_FLAGS, "--account", ACCT)
+    assert r.returncode == 0, r.stderr
+    assert "task job-definition retention failed" in r.stderr
+
+
 def test_deploying_one_stack_skips_image_retention_and_the_variant_builds(
     deploy: Harness,
 ) -> None:
@@ -904,7 +1012,10 @@ def test_deploying_one_stack_skips_image_retention_and_the_variant_builds(
     assert r.returncode == 0, r.stderr
     assert not [c for c in deploy.aws_calls() if c.startswith("ecr ")]
     assert not [c for c in deploy.aws_calls() if c.startswith("lambda ")]
+    assert not [c for c in deploy.aws_calls() if c.startswith("batch ")]
     assert "coordinator variants: skipped (--stack" in r.stdout
+    assert "engine job definitions: skipped (--stack" in r.stdout
+    assert "task job definitions: skipped (--stack" in r.stdout
 
 
 # ── deploy.sh: coordinator variants ────────────────────────────────────────────────
