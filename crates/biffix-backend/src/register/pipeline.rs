@@ -236,6 +236,13 @@ pub(crate) async fn prepare(
     let reports = std::mem::take(&mut form_schema.reports);
     form_schema.reports =
         biffix_workflow::formschema::normalize_reports(&reports, &mut form_schema.warnings);
+    // A single-job default size is checked as the CLI checks it, so a version registered
+    // directly cannot carry one every single-job submit would then be refused for.
+    if let Some(single_job) = &form_schema.single_job {
+        single_job
+            .size()
+            .map_err(|e| ServiceError::Invalid(format!("invalid form_schema.single_job: {e}")))?;
+    }
     if req.about_markdown.as_ref().is_some_and(|a| a.len() > biffix_api::MAX_ABOUT_BYTES) {
         return Err(ServiceError::Invalid(format!(
             "about_markdown is larger than {} KiB",

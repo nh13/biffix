@@ -144,7 +144,7 @@ async fn a_snakemake_image_gets_the_runtime_before_it_runs() {
     assert_eq!(definition.log_group, launched[0].project.task_log_group);
     let uri =
         format!("s3://test-bucket/biffix/runs/{}/inputs/job-definitions.json", run_id.as_str());
-    assert_eq!(maps.job_definitions, uri);
+    assert_eq!(maps.job_definitions.as_deref(), Some(uri.as_str()));
     let written: BTreeMap<String, String> =
         serde_json::from_slice(&h.cloud.objects.lock().unwrap()[&uri]).unwrap();
     assert_eq!(written, BTreeMap::from([(derived, testing::fake_task_job_definition(definition))]));
@@ -246,7 +246,7 @@ async fn a_nextflow_run_s_tasks_run_on_nextflow_job_definitions_of_each_image() 
     let image_map: BTreeMap<String, String> =
         serde_json::from_slice(&objects[&maps.image_map]).unwrap();
     let written: BTreeMap<String, String> =
-        serde_json::from_slice(&objects[&maps.job_definitions]).unwrap();
+        serde_json::from_slice(&objects[maps.job_definitions.as_ref().unwrap()]).unwrap();
     let definitions = h.cloud.task_job_definitions.lock().unwrap().clone();
     let images: std::collections::BTreeSet<&String> = image_map.values().collect();
     assert!(!images.is_empty(), "{image_map:?}");

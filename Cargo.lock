@@ -1119,6 +1119,7 @@ dependencies = [
  "aws-sdk-cloudwatchlogs",
  "aws-sdk-codebuild",
  "aws-sdk-cognitoidentityprovider",
+ "aws-sdk-ec2",
  "aws-sdk-ecr",
  "aws-sdk-s3",
  "aws-sdk-sns",

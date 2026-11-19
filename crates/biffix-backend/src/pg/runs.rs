@@ -255,7 +255,7 @@ impl PgStore {
              r.submitter, r.submitter_label, r.run_name, r.coordinator_job_id, r.workflow_version, \
              r.input_uris, r.params, r.dag, r.output_prefix, r.coordinator_log_stream, \
              r.coordinator_exit_code, r.coordinator_status_reason, \
-             r.coordinator_termination_category, r.engine_session_id, r.session_mismatch, r.resumed_from, r.input_tables, \
+             r.coordinator_termination_category, r.engine_session_id, r.session_mismatch, r.resumed_from, r.single_job, r.input_tables, \
              r.reference_bundle, r.retention, r.work_deleted_at, r.launched_at, r.cancelled_by, \
              w.engine, w.project, w.name AS workflow_name, {WORKFLOW_TITLE_SQL} AS workflow_title, \
              w.created_at AS workflow_created_at, \
@@ -528,6 +528,11 @@ fn assemble_detail(
         engine_session_id: run.get("engine_session_id"),
         session_mismatch: run.get("session_mismatch"),
         resumed_from: run.get::<Option<String>, _>("resumed_from").map(Into::into),
+        single_job: run
+            .get::<Option<serde_json::Value>, _>("single_job")
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| StoreError::Serialization(format!("unreadable stored single_job: {e}")))?,
         input_tables: run.get("input_tables"),
         reference_bundle: run.get("reference_bundle"),
         // A stored retention this build cannot read is corrupt, not the default (`None`).

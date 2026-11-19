@@ -69,6 +69,12 @@ pub(crate) const ENGINE_SESSION_ID: &str = "BIFFIX_ENGINE_SESSION_ID";
 pub(crate) const RESUME: &str = "BIFFIX_RESUME";
 /// The Snakemake between-workflow output cache.
 pub(crate) const SNAKEMAKE_CACHE: &str = "BIFFIX_SNAKEMAKE_CACHE";
+/// `single_job`: the run executes as this one job, its engine running every task locally.
+pub(crate) const EXECUTION: &str = "BIFFIX_EXECUTION";
+/// A single-job run's vCPUs (the whole host's).
+pub(crate) const SINGLE_JOB_CPUS: &str = "BIFFIX_SINGLE_JOB_CPUS";
+/// A single-job run's memory, MiB (the whole host's allocatable share).
+pub(crate) const SINGLE_JOB_MEMORY_MIB: &str = "BIFFIX_SINGLE_JOB_MEMORY_MIB";
 
 /// What every launch sends.
 #[cfg(test)]
@@ -105,13 +111,22 @@ pub(crate) const OPTIONAL: &[&str] = &[
     ENGINE_SESSION_ID,
     RESUME,
     SNAKEMAKE_CACHE,
+    EXECUTION,
+    SINGLE_JOB_CPUS,
+    SINGLE_JOB_MEMORY_MIB,
 ];
 
-/// What the coordinator job definition (the template every variant clones) sets itself: the
-/// worker queue-classes' queues, the region, and the project's task log group.
+/// What the coordinator job definitions (the templates every variant clones) set themselves: the
+/// worker queue-classes' queues, the region, and the project's task log group; a single-job
+/// template, its scratch root and the host's instance-store marker instead of the queues.
 #[cfg(test)]
-pub(crate) const TEMPLATE: &[&str] =
-    &["BIFFIX_QUEUE_CLASS_MAP", "BIFFIX_REGION", "BIFFIX_TASK_LOG_GROUP"];
+pub(crate) const TEMPLATE: &[&str] = &[
+    "BIFFIX_INSTANCE_STORE_MARKER",
+    "BIFFIX_QUEUE_CLASS_MAP",
+    "BIFFIX_REGION",
+    "BIFFIX_SCRATCH_ROOT",
+    "BIFFIX_TASK_LOG_GROUP",
+];
 
 /// What only a local run of the image sets: the dry-run switch.
 #[cfg(test)]
@@ -169,12 +184,14 @@ pub(crate) fn coordinator_env(
         (ENGINE_VERSION, launch.variant.engine_version.clone()),
         (RUNTIME_KEY, launch.variant.runtime_key.clone()),
     ];
+    let single_job = launch.single_job;
     let optional = [
         // The image tasks default to (`super::batch::worker_image`): the version's default image
         // in its recorded repository (else the tenant workflow repository); for a Snakemake
         // version with no image of its own, the coordinator variant (which carries the same
-        // pinned Snakemake: a child job runs `python -m snakemake`); for a Nextflow one, none
-        // (each task declares its container).
+        // pinned Snakemake: a child job runs `python -m snakemake`), except in a single-job run,
+        // whose tasks without an image run in the job itself (that same variant); for a Nextflow
+        // one, none (each task declares its container).
         (
             WORKER_IMAGE,
             super::batch::worker_image(
@@ -183,17 +200,26 @@ pub(crate) fn coordinator_env(
                 worker_image_repo,
                 launch.engine,
                 &launch.variant.image,
+                single_job.is_some(),
             ),
         ),
         (IMAGE_MAP_URI, launch.maps.as_ref().map(|m| m.image_map.clone())),
         // Every task runs on the job definition the backend registered for its image, which
         // carries the project's run role and task log group.
-        (JOB_DEFINITION_MAP_URI, launch.maps.as_ref().map(|m| m.job_definitions.clone())),
+        (JOB_DEFINITION_MAP_URI, launch.maps.as_ref().and_then(|m| m.job_definitions.clone())),
         // The assignment's default, else the first declared worker queue-class, selects the
-        // child-job queue.
-        (QUEUE_CLASS, launch.queues.default_queue_class(&launch.queue_classes).map(str::to_string)),
-        // The tasks that run elsewhere (the default travels as the queue-class above).
-        (QUEUE_ASSIGNMENT, queue_assignment(launch)?),
+        // child-job queue (a single-job run submits no child job).
+        (
+            QUEUE_CLASS,
+            launch
+                .queues
+                .default_queue_class(&launch.queue_classes)
+                .filter(|_| single_job.is_none())
+                .map(str::to_string),
+        ),
+        // The tasks that run elsewhere (the default travels as the queue-class above); none for a
+        // single-job run, whose tasks all run on its own host.
+        (QUEUE_ASSIGNMENT, queue_assignment(launch)?.filter(|_| single_job.is_none())),
         (TARGET, launch.target.clone()),
         (OUTPUT_PREFIX, launch.output_prefix.clone()),
         (RETRIES, launch.retries.map(|r| r.to_string())),
@@ -201,6 +227,11 @@ pub(crate) fn coordinator_env(
         (ENGINE_SESSION_ID, launch.engine_session_id.clone()),
         (RESUME, launch.resume.then(|| "1".to_string())),
         (SNAKEMAKE_CACHE, launch.output_cache.clone()),
+        // A single-job run: the engine runs every task itself, within the whole host the job was
+        // given (the job's resource requirements say the same to Batch).
+        (EXECUTION, single_job.map(|_| super::batch::SINGLE_JOB_EXECUTION.to_string())),
+        (SINGLE_JOB_CPUS, single_job.map(|s| s.vcpus.to_string())),
+        (SINGLE_JOB_MEMORY_MIB, single_job.map(|s| s.memory_mib.to_string())),
     ];
     Ok(fixed
         .into_iter()
@@ -223,15 +254,26 @@ fn queue_assignment(launch: &CoordinatorLaunch) -> Result<Option<String>, AwsErr
 /// coordinator re-tag a job that carries a run tag, nor terminate or tag a job of another project
 /// (`infra/biffix_infra/stacks/compute_stack.py`), so a job born with them cannot be relabelled as
 /// another run's and claimed by it, nor stopped from another project.
+///
+/// A single-job run's job also carries its execution mode ([`super::batch::EXECUTION_TAG`]), which
+/// IAM pairs with the queue and job definition it may be submitted with.
 pub(crate) fn coordinator_job_tags(
     run_id: &RunId,
     project: &str,
+    single_job: bool,
 ) -> std::collections::HashMap<String, String> {
-    [
+    let mut tags: std::collections::HashMap<String, String> = [
         (super::batch::RUN_TAG.to_string(), run_id.as_str().to_string()),
         (super::batch::PROJECT_TAG.to_string(), project.to_string()),
     ]
-    .into()
+    .into();
+    if single_job {
+        tags.insert(
+            super::batch::EXECUTION_TAG.to_string(),
+            super::batch::SINGLE_JOB_EXECUTION.to_string(),
+        );
+    }
+    tags
 }
 
 /// Refuse an environment whose container overrides Batch would reject for their size: the run's
@@ -306,6 +348,7 @@ mod tests {
                 runtime_key: "rk".into(),
             },
             maps: None,
+            single_job: None,
         }
     }
 
@@ -344,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_launch_sets_every_optional_variable() {
+    fn a_full_launch_one_job_per_task_sets_its_optional_variables() {
         let launch = CoordinatorLaunch {
             image_digest: "sha256:img".into(),
             worker_image_repo_uri: Some("123.dkr.ecr.us-east-1.amazonaws.com/wf".into()),
@@ -362,7 +405,9 @@ mod tests {
             output_cache: Some("s3://proj/biffix/cache/snakemake/".into()),
             maps: Some(crate::aws::batch::RunMapUris {
                 image_map: "s3://proj/biffix/runs/run-1/inputs/images.json".into(),
-                job_definitions: "s3://proj/biffix/runs/run-1/inputs/job-definitions.json".into(),
+                job_definitions: Some(
+                    "s3://proj/biffix/runs/run-1/inputs/job-definitions.json".into(),
+                ),
             }),
             ..minimal_launch()
         };
@@ -414,6 +459,49 @@ mod tests {
         assert_eq!(env_map(&launch)["BIFFIX_WORKER_IMAGE"], "coord@sha256:v");
     }
 
+    fn single_job_launch() -> CoordinatorLaunch {
+        CoordinatorLaunch {
+            single_job: Some(crate::aws::ec2::Resources { vcpus: 32, memory_mib: 61_184 }),
+            ..full_launch()
+        }
+    }
+
+    #[test]
+    fn a_single_job_launch_sends_its_size_and_no_worker_queue() {
+        let env = env_map(&single_job_launch());
+        assert_eq!(env["BIFFIX_EXECUTION"], "single_job");
+        assert_eq!(env["BIFFIX_SINGLE_JOB_CPUS"], "32");
+        assert_eq!(env["BIFFIX_SINGLE_JOB_MEMORY_MIB"], "61184");
+        // Its tasks run inside it: no queue-class to submit them to.
+        assert!(!env.contains_key("BIFFIX_QUEUE_CLASS"));
+        // Nor, for a version that assigns tasks to queue-classes, any assignment.
+        let assigned = CoordinatorLaunch {
+            queues: biffix_workflow::queues::QueueAssignment {
+                default: Some("gpu".into()),
+                by_label: [("process_high".to_string(), "cpu".to_string())].into(),
+                ..Default::default()
+            },
+            ..single_job_launch()
+        };
+        let env_assigned = env_map(&assigned);
+        assert!(!env_assigned.contains_key("BIFFIX_QUEUE_CLASS"));
+        assert!(!env_assigned.contains_key("BIFFIX_QUEUE_ASSIGNMENT"));
+        // The version's own default image is still the tasks' default.
+        assert!(env["BIFFIX_WORKER_IMAGE"].ends_with("@sha256:img"));
+        // A Snakemake version with no image of its own: its tasks run in the job itself.
+        let bare = CoordinatorLaunch {
+            engine: Engine::Snakemake,
+            image_digest: String::new(),
+            ..single_job_launch()
+        };
+        assert!(!env_map(&bare).contains_key("BIFFIX_WORKER_IMAGE"));
+        // A launch one job per task sends none of it.
+        let tasks = env_map(&full_launch());
+        for name in [EXECUTION, SINGLE_JOB_CPUS, SINGLE_JOB_MEMORY_MIB] {
+            assert!(!tasks.contains_key(name), "{name}");
+        }
+    }
+
     /// The variable names in `text`'s words: `BIFFIX_*` and `SNAKEMAKE_*`, all capitals.
     fn env_names(text: &str) -> BTreeSet<&str> {
         text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -428,7 +516,7 @@ mod tests {
         lists.iter().flat_map(|l| l.iter().copied()).collect()
     }
 
-    /// A launch with every optional variable set.
+    /// A launch one job per task with every optional variable it can send set.
     fn full_launch() -> CoordinatorLaunch {
         CoordinatorLaunch {
             image_digest: "sha256:img".into(),
@@ -446,7 +534,7 @@ mod tests {
             output_cache: Some("s3://proj/biffix/cache/snakemake/".into()),
             maps: Some(crate::aws::batch::RunMapUris {
                 image_map: "s3://proj/images.json".into(),
-                job_definitions: "s3://proj/job-definitions.json".into(),
+                job_definitions: Some("s3://proj/job-definitions.json".into()),
             }),
             ..minimal_launch()
         }
@@ -456,7 +544,11 @@ mod tests {
     fn a_launch_sends_the_named_variables() {
         let fixed: BTreeSet<_> = env_map(&minimal_launch()).into_keys().collect();
         assert_eq!(fixed, names(&[FIXED]));
-        let sent: BTreeSet<_> = env_map(&full_launch()).into_keys().collect();
+        // Every optional variable is sent by a full launch one job per task, or a single-job one.
+        let sent: BTreeSet<_> = env_map(&full_launch())
+            .into_keys()
+            .chain(env_map(&single_job_launch()).into_keys())
+            .collect();
         assert_eq!(sent, names(&[FIXED, OPTIONAL]));
         // No name is in two lists.
         let all = [FIXED, OPTIONAL, TEMPLATE, LOCAL];
@@ -488,7 +580,7 @@ mod tests {
 
     #[test]
     fn a_coordinator_job_is_tagged_with_its_run_and_project() {
-        let tags = coordinator_job_tags(&RunId::new("run-1"), "demo");
+        let tags = coordinator_job_tags(&RunId::new("run-1"), "demo", false);
         assert_eq!(
             tags,
             [
@@ -497,6 +589,10 @@ mod tests {
             ]
             .into()
         );
+        // A single-job run's job also names its execution mode.
+        let tags = coordinator_job_tags(&RunId::new("run-1"), "demo", true);
+        assert_eq!(tags.get("biffix:execution").map(String::as_str), Some("single_job"));
+        assert_eq!(tags.len(), 3);
     }
 
     #[test]

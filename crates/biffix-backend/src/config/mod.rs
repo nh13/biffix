@@ -1,8 +1,9 @@
 //! The deploy's configuration: each entry point's settings, read once from the environment
 //! ([`env`](mod@env)), per-project contexts ([`projects`]) and their data sources
-//! ([`data_sources`]), each queue's spot/on-demand capacity ([`queue_capacity`]), and the
-//! production wiring every entry point composes its state with (`compose`), and the time a request
-//! may take ([`API_LAMBDA_TIMEOUT`], [`REQUEST_WAIT_BUDGET`]).
+//! ([`data_sources`]), each queue's spot/on-demand capacity ([`queue_capacity`]), the single-job
+//! queue-classes ([`single_job`]), the production wiring every entry point composes its state
+//! with (`compose`), and the time a request may take ([`API_LAMBDA_TIMEOUT`],
+//! [`REQUEST_WAIT_BUDGET`]).
 
 #[cfg(feature = "aws")]
 pub mod compose;
@@ -10,6 +11,7 @@ pub mod data_sources;
 pub mod env;
 pub mod projects;
 pub(crate) mod queue_capacity;
+pub mod single_job;
 
 /// The API Lambda's timeout (`infra/biffix_infra/constructs/backend_api.py`, which an infra test
 /// holds to this value): the HTTP API gives an integration 30 s. A request still running then is

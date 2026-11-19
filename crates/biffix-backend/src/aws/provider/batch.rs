@@ -8,17 +8,26 @@ use biffix_core::ids::{CoordinatorJobId, RunId};
 
 use super::errors::{classify_invalid, OrClassify};
 use super::AwsCloudProvider;
-use crate::aws::batch::{BatchJobOwner, BatchJobs, CoordinatorLaunch, LaunchProject, RunSession};
+use crate::aws::batch::{
+    BatchJobOwner, BatchJobs, CoordinatorLaunch, LaunchProject, RunSession, VariantTemplate,
+};
 use crate::aws::coordinator_env::{check_overrides_size, coordinator_env, coordinator_job_tags};
 use crate::aws::task_definitions::{self, TaskJobDefinition};
 use crate::aws::AwsError;
 
 impl AwsCloudProvider {
-    /// The name prefix of variant job definitions.
-    fn variant_prefix(&self) -> Result<&str, AwsError> {
-        self.cfg.variant_job_definition_prefix.as_deref().ok_or_else(|| {
-            AwsError::Unsupported("BIFFIX_VARIANT_JOB_DEFINITION_PREFIX is unset".into())
-        })
+    /// The name prefix of variants of `template`'s kind: a coordinator template's, or a single-job
+    /// template's (their own, so IAM tells the two apart; [`VariantTemplate`]).
+    fn variant_prefix(&self, template: VariantTemplate<'_>) -> Result<&str, AwsError> {
+        let (prefix, var) = if template.single_job {
+            (
+                &self.cfg.single_job_variant_job_definition_prefix,
+                "BIFFIX_SINGLE_JOB_VARIANT_JOB_DEFINITION_PREFIX",
+            )
+        } else {
+            (&self.cfg.variant_job_definition_prefix, "BIFFIX_VARIANT_JOB_DEFINITION_PREFIX")
+        };
+        prefix.as_deref().ok_or_else(|| AwsError::Unsupported(format!("{var} is unset")))
     }
 
     /// The name prefix of task job definitions.
@@ -231,6 +240,34 @@ fn job_definition_name_of(arn: &str) -> Option<&str> {
     Some(rest.rsplit_once(':').map_or(rest, |(name, _)| name))
 }
 
+/// The container overrides of a coordinator's SubmitJob: its environment (`env`), and for a
+/// single-job run (`single_job`, the whole host its one job is given) the job's vCPUs and memory,
+/// overriding the template's own request (a placeholder), so Batch places the job alone on one
+/// host of the queue-class's exact types. A coordinator of a run one Batch job per task keeps the
+/// template's.
+fn coordinator_overrides(
+    env: Vec<(&'static str, String)>,
+    single_job: Option<crate::aws::ec2::Resources>,
+) -> ContainerOverrides {
+    use aws_sdk_batch::types::{ResourceRequirement, ResourceType};
+    let env = env
+        .into_iter()
+        .map(|(name, value)| KeyValuePair::builder().name(name).value(value).build())
+        .collect();
+    let resources = single_job.map(|size| {
+        [(ResourceType::Vcpu, u64::from(size.vcpus)), (ResourceType::Memory, size.memory_mib)]
+            .into_iter()
+            .map(|(kind, value)| {
+                ResourceRequirement::builder().r#type(kind).value(value.to_string()).build()
+            })
+            .collect::<Vec<_>>()
+    });
+    ContainerOverrides::builder()
+        .set_environment(Some(env))
+        .set_resource_requirements(resources)
+        .build()
+}
+
 /// The coordinator job definition's container, running the variant `image` instead: everything
 /// else (command, resources, job role, environment, logging) is the template's.
 fn variant_container(
@@ -266,11 +303,7 @@ impl BatchJobs for AwsCloudProvider {
     ) -> Result<CoordinatorJobId, AwsError> {
         let env = coordinator_env(launch, &self.cfg.ingest_url, &self.cfg.worker_image_repo)?;
         check_overrides_size(&env)?;
-        let env = env
-            .into_iter()
-            .map(|(name, value)| KeyValuePair::builder().name(name).value(value).build())
-            .collect();
-        let overrides = ContainerOverrides::builder().set_environment(Some(env)).build();
+        let overrides = coordinator_overrides(env, launch.single_job);
 
         let out = self
             .batch
@@ -279,7 +312,11 @@ impl BatchJobs for AwsCloudProvider {
             .job_queue(&launch.coordinator_queue)
             .job_definition(&launch.variant.job_definition)
             .container_overrides(overrides)
-            .set_tags(Some(coordinator_job_tags(&launch.run_id, &launch.project.id)))
+            .set_tags(Some(coordinator_job_tags(
+                &launch.run_id,
+                &launch.project.id,
+                launch.single_job.is_some(),
+            )))
             .send()
             .await
             .or_classify(AwsError::Batch)?;
@@ -294,11 +331,12 @@ impl BatchJobs for AwsCloudProvider {
         runtime_key: &str,
         base_digest: &str,
         image: &str,
-        template_arn: &str,
+        template: VariantTemplate<'_>,
     ) -> Result<String, AwsError> {
         use aws_sdk_batch::types::JobDefinitionType;
+        let template_arn = template.arn;
         let name = variant_job_definition_name(
-            self.variant_prefix()?,
+            self.variant_prefix(template)?,
             runtime_key,
             base_digest,
             template_arn,
@@ -380,14 +418,17 @@ impl BatchJobs for AwsCloudProvider {
         runtime_key: &str,
         base_digest: &str,
         job_definition_arn: &str,
-        template_arn: &str,
+        template: VariantTemplate<'_>,
     ) -> bool {
-        // Without a prefix no variant can be registered, so there is nothing to compare with.
-        let Ok(prefix) = self.variant_prefix() else {
-            return true;
+        // Without a prefix no variant of the template's kind can be registered. A coordinator
+        // template's recorded variant is then the one to use (nothing to compare it with); a
+        // single-job template's never is (it is a coordinator template's clone), so registering
+        // one is attempted and fails naming the unset prefix.
+        let Ok(prefix) = self.variant_prefix(template) else {
+            return !template.single_job;
         };
         job_definition_name_of(job_definition_arn)
-            == Some(&variant_job_definition_name(prefix, runtime_key, base_digest, template_arn))
+            == Some(&variant_job_definition_name(prefix, runtime_key, base_digest, template.arn))
     }
 
     async fn batch_job_owners(
@@ -514,6 +555,29 @@ mod tests {
             Some("x")
         );
         assert_eq!(job_definition_name_of("arn:aws:iam::123:role/x"), None);
+    }
+
+    #[test]
+    fn a_single_job_coordinator_asks_for_the_whole_host_and_a_tasks_one_for_nothing() {
+        use aws_sdk_batch::types::ResourceType;
+        let env = vec![("BIFFIX_RUN_ID", "run-1".to_string())];
+        let size = crate::aws::ec2::Resources { vcpus: 32, memory_mib: 61_184 };
+        let single = coordinator_overrides(env.clone(), Some(size));
+        let asked: Vec<_> = single
+            .resource_requirements()
+            .iter()
+            .map(|r| (r.r#type().cloned(), r.value()))
+            .collect();
+        assert_eq!(
+            asked,
+            [(Some(ResourceType::Vcpu), Some("32")), (Some(ResourceType::Memory), Some("61184"))]
+        );
+        assert_eq!(single.environment().len(), 1);
+        assert_eq!(single.environment()[0].value(), Some("run-1"));
+        // One Batch job per task: the template's own request stands.
+        let tasks = coordinator_overrides(env, None);
+        assert!(tasks.resource_requirements.is_none());
+        assert_eq!(tasks.environment()[0].name(), Some("BIFFIX_RUN_ID"));
     }
 
     #[test]

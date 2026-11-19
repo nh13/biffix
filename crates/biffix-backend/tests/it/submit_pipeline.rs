@@ -92,6 +92,7 @@ fn req(params: serde_json::Value, inputs: Vec<String>) -> SubmitRequest {
             retention: None,
             images: vec![],
             experiment_id: None,
+            single_job: None,
         },
         coordinator_queue: "coordinator".into(),
         project: biffix_backend::aws::batch::LaunchProject {

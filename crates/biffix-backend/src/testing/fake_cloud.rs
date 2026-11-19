@@ -74,6 +74,9 @@ pub struct FakeCloud {
     pub variant_job_definitions: Mutex<Vec<(String, String, String)>>,
     /// The coordinator template of every variant job definition asked for, in the same order.
     pub variant_templates: Mutex<Vec<String>>,
+    /// Whether each variant job definition asked for was a single-job template's, in the same
+    /// order.
+    pub variant_single_job: Mutex<Vec<bool>>,
     /// Every task job definition asked for, in call order.
     pub task_job_definitions: Mutex<Vec<crate::aws::task_definitions::TaskJobDefinition>>,
     /// Make every `task_job_definition` fail with the error this makes (`AwsError` is not
@@ -125,6 +128,27 @@ pub struct FakeCloud {
     pub build_event_asks: Mutex<Vec<String>>,
     /// Make `build_event` fail (CodeBuild unavailable).
     pub fail_build_event: std::sync::atomic::AtomicBool,
+    /// The instance types `describe_instance_types` knows (others are unknown to EC2): by default
+    /// [`fake_instance_types`].
+    pub instance_types: Mutex<BTreeMap<String, crate::aws::ec2::InstanceTypeInfo>>,
+}
+
+/// The instance types a [`FakeCloud`] knows by default, at EC2's sizes: plain x86_64 types, with no
+/// accelerator.
+pub fn fake_instance_types() -> BTreeMap<String, crate::aws::ec2::InstanceTypeInfo> {
+    [
+        ("c6id.4xlarge", 16, 32_768),
+        ("c6id.8xlarge", 32, 65_536),
+        ("c6id.16xlarge", 64, 131_072),
+        ("m6id.8xlarge", 32, 131_072),
+        ("r6id.8xlarge", 32, 262_144),
+    ]
+    .into_iter()
+    .map(|(kind, vcpus, memory_mib)| {
+        let size = crate::aws::ec2::Resources { vcpus, memory_mib };
+        (kind.to_string(), crate::aws::ec2::InstanceTypeInfo::x86_64(size))
+    })
+    .collect()
 }
 
 impl Default for FakeCloud {
@@ -158,6 +182,7 @@ impl FakeCloud {
             runtime_builds: Mutex::new(Vec::new()),
             variant_job_definitions: Mutex::new(Vec::new()),
             variant_templates: Mutex::new(Vec::new()),
+            variant_single_job: Mutex::new(Vec::new()),
             task_job_definitions: Mutex::new(Vec::new()),
             fail_task_job_definitions: Mutex::new(None),
             sessions: Mutex::new(Vec::new()),
@@ -181,6 +206,7 @@ impl FakeCloud {
             fail_live_coordinators: std::sync::atomic::AtomicBool::new(false),
             build_event_asks: Mutex::new(Vec::new()),
             fail_build_event: std::sync::atomic::AtomicBool::new(false),
+            instance_types: Mutex::new(fake_instance_types()),
         }
     }
 
@@ -281,6 +307,20 @@ pub fn fake_project_variant_job_definition(
 }
 
 #[async_trait]
+impl crate::aws::ec2::InstanceTypes for FakeCloud {
+    async fn describe_instance_types(
+        &self,
+        instance_types: &[String],
+    ) -> Result<BTreeMap<String, crate::aws::ec2::InstanceTypeInfo>, AwsError> {
+        let known = self.instance_types.lock().unwrap();
+        Ok(instance_types
+            .iter()
+            .filter_map(|t| known.get(t).map(|info| (t.clone(), info.clone())))
+            .collect())
+    }
+}
+
+#[async_trait]
 impl BatchJobs for FakeCloud {
     async fn batch_job_owners(
         &self,
@@ -374,8 +414,10 @@ impl BatchJobs for FakeCloud {
         runtime_key: &str,
         base_digest: &str,
         image: &str,
-        template_arn: &str,
+        template: crate::aws::batch::VariantTemplate<'_>,
     ) -> Result<String, AwsError> {
+        let template_arn = template.arn;
+        self.variant_single_job.lock().unwrap().push(template.single_job);
         self.variant_job_definitions.lock().unwrap().push((
             runtime_key.to_string(),
             base_digest.to_string(),
@@ -402,12 +444,12 @@ impl BatchJobs for FakeCloud {
         runtime_key: &str,
         base_digest: &str,
         job_definition_arn: &str,
-        template_arn: &str,
+        template: crate::aws::batch::VariantTemplate<'_>,
     ) -> bool {
         // Like the provider: current iff it is the one this (runtime, base, template) names.
-        let template = *self.template_revision.lock().unwrap();
+        let revision = *self.template_revision.lock().unwrap();
         job_definition_arn
-            == fake_project_variant_job_definition(runtime_key, base_digest, template, template_arn)
+            == fake_project_variant_job_definition(runtime_key, base_digest, revision, template.arn)
     }
 
     async fn terminate_job(&self, job_id: &str, reason: &str) -> Result<(), AwsError> {

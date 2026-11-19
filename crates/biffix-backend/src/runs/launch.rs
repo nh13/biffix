@@ -60,8 +60,24 @@ const ORPHAN_AFTER: Duration = Duration::from_secs(10 * 60);
 pub(crate) const LAUNCH_DISABLED: &str = "launching is disabled: this deploy has no capability \
 secret (BIFFIX_CAPABILITY_SECRET_ARN), so a run's coordinator could not report";
 
-/// The [`LaunchPlan`] format this build writes and reads.
-pub(crate) const LAUNCH_PLAN_VERSION: u32 = 1;
+/// The newest [`LaunchPlan`] format this build reads, and the one it writes for a single-job run
+/// ([`LaunchPlan::single_job`]): a build that knows only [`TASKS_LAUNCH_PLAN_VERSION`] would drop
+/// that field and launch the run one Batch job per task, so it must leave such a plan parked.
+pub(crate) const LAUNCH_PLAN_VERSION: u32 = 2;
+
+/// The [`LaunchPlan`] format this build writes for a run that is not single-job: format 1, which it
+/// reads the same as every build since format 1, so a rollback still launches it.
+pub(crate) const TASKS_LAUNCH_PLAN_VERSION: u32 = 1;
+
+/// The format a plan is written as: [`LAUNCH_PLAN_VERSION`] for a single-job run, else
+/// [`TASKS_LAUNCH_PLAN_VERSION`].
+pub(crate) fn launch_plan_version(single_job: bool) -> u32 {
+    if single_job {
+        LAUNCH_PLAN_VERSION
+    } else {
+        TASKS_LAUNCH_PLAN_VERSION
+    }
+}
 
 /// A run's launch request as submit settled it: checked, filled, pruned and validated, its inputs
 /// existence-checked and its samplesheets written. Parked verbatim (`pending_launch`) while the
@@ -77,7 +93,8 @@ pub(crate) const LAUNCH_PLAN_VERSION: u32 = 1;
 /// launches on the deploy's queue as it is at launch time.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LaunchPlan {
-    /// The plan's format ([`LAUNCH_PLAN_VERSION`] when written).
+    /// The plan's format (as written, [`launch_plan_version`]: [`LAUNCH_PLAN_VERSION`] for a
+    /// single-job run, else [`TASKS_LAUNCH_PLAN_VERSION`]).
     pub version: u32,
     /// The workflow version the run launches (re-read at launch).
     pub version_id: String,
@@ -134,6 +151,25 @@ pub struct LaunchPlan {
     /// anchor names none (`RunProjection::experiment_id`).
     #[serde(default)]
     pub experiment_id: Option<String>,
+    /// The run executes as one Batch job on one whole host, as submit resolved it
+    /// ([`crate::runs::single_job`]). Written only in format [`LAUNCH_PLAN_VERSION`]
+    /// ([`launch_plan_version`]): an older build would launch it one Batch job per task.
+    /// The same record as the run's anchor's (`RunSubmitted.single_job`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_job: Option<biffix_core::event::SingleJobUse>,
+}
+
+impl LaunchPlan {
+    /// The job queue (ARN) the run's coordinator is submitted to: the deploy's coordinator queue,
+    /// or, for a single-job run, its queue-class's queue as the deploy has it now. `Err` says why
+    /// there is none (the queue-class was removed while the run waited).
+    pub(crate) fn coordinator_queue(&self, state: &AppState) -> Result<String, String> {
+        match &self.single_job {
+            None => Ok(state.deploy.coordinator_queue.clone()),
+            Some(single) => crate::runs::single_job::queue(single, &state.deploy.single_job_queues)
+                .map(str::to_string),
+        }
+    }
 }
 
 /// A submit-time image as a version image, for [`crate::images::ensure`]: named by its reference,
@@ -331,6 +367,7 @@ pub(crate) async fn launch_run(
         submit_images,
     } = inputs;
     // The run's image map: every task image resolves through it, strictly (crate::images::map).
+    let single_job = plan.single_job.as_ref();
     let image_map = if project.bucket.is_empty() {
         None
     } else {
@@ -340,6 +377,7 @@ pub(crate) async fn launch_run(
             &state.deploy.worker_image_repo,
             version.engine,
             &variant.image,
+            single_job.is_some(),
         );
         let map = crate::images::map::build_with_overrides(
             version_images,
@@ -354,17 +392,26 @@ pub(crate) async fn launch_run(
             .await
             .map_err(LaunchError::ImageMap)?;
         // Every task runs on a job definition biffix registered (never one the workflow's code
-        // chose), so the run's definitions exist before its coordinator does.
-        let job_definitions =
-            write_job_definitions(state, run_id, &project.launch_project(), &version, &map).await?;
+        // chose), so the run's definitions exist before its coordinator does. A single-job run's
+        // tasks run inside its one job, on no job definition of their own.
+        let job_definitions = match single_job {
+            None => Some(
+                write_job_definitions(state, run_id, &project.launch_project(), &version, &map)
+                    .await?,
+            ),
+            Some(_) => None,
+        };
         Some((crate::aws::batch::RunMapUris { image_map: uri, job_definitions }, map))
     };
+    let coordinator_queue = plan
+        .coordinator_queue(state)
+        .map_err(|e| LaunchError::Submit(SubmitError::Aws(AwsError::Invalid(e))))?;
     let sreq = SubmitRequest {
         run_id: run_id.clone(),
         version,
         source: source.clone(),
         plan: plan.clone(),
-        coordinator_queue: state.deploy.coordinator_queue.clone(),
+        coordinator_queue,
         project: project.launch_project(),
         variant,
         image_source_digest,
@@ -752,7 +799,19 @@ async fn launch_ready(
     }
     let mut version = rec.version.clone();
     let image_source_digest = runnable_default(&images, &mut version);
-    let variant = match crate::images::variants::launch_variant(state, &rec.version, project).await
+    // The coordinator runs on the deploy's queue as it is now, not as it was at submit: a deploy
+    // may have replaced the queue while the run waited (as the run page labels the host). A
+    // single-job run's is its queue-class's. Checked before the variant, which may register a job
+    // definition.
+    let queue = match plan.coordinator_queue(state) {
+        Ok(queue) => queue,
+        Err(reason) => return failed(state, run_id, Stage::Launch, &reason).await,
+    };
+    let template = match project.variant_template(plan.single_job.is_some()) {
+        Ok(template) => template,
+        Err(reason) => return failed(state, run_id, Stage::Launch, &reason).await,
+    };
+    let variant = match crate::images::variants::launch_variant(state, &rec.version, template).await
     {
         Ok(variant) => variant,
         Err(e @ (NotRunnable::Retired(_) | NotRunnable::Outdated | NotRunnable::Failed { .. })) => {
@@ -761,10 +820,7 @@ async fn launch_ready(
         Err(e @ NotRunnable::Building(_)) => return wait(e.to_string()),
         Err(NotRunnable::Error(e)) => return Err(at_launch(e)),
     };
-    // The coordinator runs on the deploy's queue as it is now, not as it was at submit: a deploy
-    // may have replaced the queue while the run waited (as the run page labels the host).
-    let queue = &state.deploy.coordinator_queue;
-    if let Err(reason) = stop_unbound_coordinators(state, run_id, queue).await {
+    if let Err(reason) = stop_unbound_coordinators(state, run_id, &queue).await {
         return wait(reason);
     }
     let launched = launch_run(
@@ -1113,6 +1169,12 @@ mod tests {
                 content_key: "k".into(),
             }],
             experiment_id: Some("exp-1".into()),
+            single_job: Some(biffix_core::event::SingleJobUse {
+                queue_class: "single".into(),
+                instance_type: "c6id.8xlarge".into(),
+                vcpus: 32,
+                memory_mib: 61_184,
+            }),
         };
         let json = serde_json::to_value(&plan).unwrap();
         assert_eq!(serde_json::from_value::<LaunchPlan>(json.clone()).unwrap(), plan);
@@ -1122,5 +1184,25 @@ mod tests {
             missing.as_object_mut().unwrap().remove(required);
             assert!(serde_json::from_value::<LaunchPlan>(missing).is_err(), "{required}");
         }
+        // A plan from before single-job runs reads as one Batch job per task.
+        let mut tasks = json.clone();
+        tasks.as_object_mut().unwrap().remove("single_job");
+        assert_eq!(serde_json::from_value::<LaunchPlan>(tasks).unwrap().single_job, None);
+        // A plan parked by a build whose `single_job` was the backend's own `SingleJobLaunch`
+        // (written as exactly these four fields) reads as the same `SingleJobUse`.
+        let mut old = json.clone();
+        old["single_job"] = serde_json::from_str(
+            r#"{"queue_class":"single","instance_type":"c6id.8xlarge","vcpus":32,"memory_mib":61184}"#,
+        )
+        .unwrap();
+        assert_eq!(serde_json::from_value::<LaunchPlan>(old.clone()).unwrap(), plan);
+        assert_eq!(serde_json::to_value(&plan).unwrap()["single_job"], old["single_job"]);
+    }
+
+    #[test]
+    fn only_a_single_job_plan_is_written_in_the_newer_format() {
+        assert_eq!(launch_plan_version(false), TASKS_LAUNCH_PLAN_VERSION);
+        assert_eq!(launch_plan_version(true), LAUNCH_PLAN_VERSION);
+        const { assert!(LAUNCH_PLAN_VERSION > TASKS_LAUNCH_PLAN_VERSION) };
     }
 }

@@ -91,7 +91,11 @@ async fn main() -> Result<(), lambda_runtime::Error> {
         let batch = batch.clone();
         let migrated = migrated.clone();
         async move {
-            let queues = [background.state.deploy.coordinator_queue.clone()];
+            // Every queue a run's coordinator runs on: a single-job run's job is its coordinator.
+            let deploy = &background.state.deploy;
+            let queues: Vec<String> = std::iter::once(deploy.coordinator_queue.clone())
+                .chain(deploy.single_job_queues.iter().map(|q| q.queue.clone()))
+                .collect();
             if biffix_db::idle::check(&batch, &queues, &event.payload).await
                 == biffix_db::idle::Tick::Idle
             {

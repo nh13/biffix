@@ -82,7 +82,8 @@ pub struct SubmitRequest {
     /// Everything the run was asked for: params, inputs, target, prefix, retries, the images given
     /// at submit (their keys are in `image_map`), … (its `version_id` is `version`'s).
     pub plan: LaunchPlan,
-    /// The deploy's coordinator queue, as it is at launch.
+    /// The queue the coordinator is submitted to, as the deploy has it at launch: its coordinator
+    /// queue, or a single-job run's queue-class's ([`LaunchPlan::coordinator_queue`]).
     pub coordinator_queue: String,
     /// The project the run launches in (its version's): its bucket, from which the per-run
     /// default output prefix is derived (empty in a local composition with no bucket: then no
@@ -436,6 +437,7 @@ pub async fn submit(
         image_map: req.image_map.as_ref().map(|(_, map)| map.clone()),
         submit_images: (!req.plan.images.is_empty()).then(|| req.plan.images.clone()),
         experiment_id: req.plan.experiment_id.clone(),
+        single_job: req.plan.single_job.clone(),
         ..biffix_core::event::RunSubmitted::new(
             req.version.id.as_str(),
             req.version.git_sha.as_str(),
@@ -477,6 +479,7 @@ pub async fn submit(
                 .flatten(),
             variant: req.variant.clone(),
             maps: req.image_map.as_ref().map(|(uris, _)| uris.clone()),
+            single_job: req.plan.single_job.as_ref().map(crate::runs::single_job::resources),
         })
         .await;
     let job = match launched {
@@ -744,6 +747,7 @@ mod tests {
                 retention: None,
                 images: vec![],
                 experiment_id: None,
+                single_job: None,
             },
             coordinator_queue: "coordinator".into(),
             project: crate::aws::batch::LaunchProject {

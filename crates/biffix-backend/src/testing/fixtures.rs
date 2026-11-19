@@ -166,6 +166,7 @@ pub fn run_detail(run_id: &str, state: &str) -> RunDetailView {
         engine_session_id: None,
         session_mismatch: false,
         resumed_from: None,
+        single_job: None,
         input_tables: None,
         cost: None,
         task_groups: vec![],

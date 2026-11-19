@@ -116,6 +116,16 @@ async fn parked() -> Harness {
 /// [`parked`], launched into `experiment` (created first, live, in the version's project) when
 /// given.
 async fn parked_in(experiment: Option<&str>) -> Harness {
+    parked_with(experiment, false).await
+}
+
+const SINGLE_QUEUE: &str = "arn:aws:batch:us-east-1:123:job-queue/biffix-t-single";
+const SINGLE_TEMPLATE: &str =
+    "arn:aws:batch:us-east-1:123:job-definition/biffix-t-coordinator-single-demo:1";
+
+/// [`parked_in`]; with `single_job`, a single-job run on a deploy with one single-job queue-class
+/// (`SINGLE_QUEUE`, c6id.8xlarge) and the project's single-job template (`SINGLE_TEMPLATE`).
+async fn parked_with(experiment: Option<&str>, single_job: bool) -> Harness {
     let store = Arc::new(MemStore::new());
     let registry = Arc::new(MemRegistry::new());
     let events = Arc::new(MemEventSink::new());
@@ -129,15 +139,30 @@ async fn parked_in(experiment: Option<&str>) -> Harness {
             coordinator_queue: "coordinator".into(),
             queue_classes: vec!["cpu-spot".into()],
             worker_image_repo: "111122223333.dkr.ecr.us-east-1.amazonaws.com/biffix-workers".into(),
+            single_job_queues: vec![biffix_backend::config::single_job::SingleJobQueue {
+                name: "single".into(),
+                queue: SINGLE_QUEUE.into(),
+                instance_types: vec!["c6id.8xlarge".into()],
+            }],
             ..Default::default()
         })
-        .with_projects(testing::bucket_project("test-bucket"))
+        .with_projects(testing::one_project(biffix_backend::config::projects::ProjectContext {
+            single_job_job_definition: Some(SINGLE_TEMPLATE.into()),
+            ..testing::project("demo", "test-bucket")
+        }))
         .build();
-    let (status, _) = post(&state, "/workflows", &register_body()).await;
+    let mut register = register_body();
+    if single_job {
+        register["form_schema"]["single_job"] = json!({});
+    }
+    let (status, _) = post(&state, "/workflows", &register).await;
     assert!(status.is_success(), "register: {status}");
     let mut submit = json!({"workflow_version_id": "abc:hash:0",
             "params": {"reads": "s3://b/in.fastq", "outdir": "s3://b/out/"},
             "images": [SAMTOOLS]});
+    if single_job {
+        submit["single_job"] = json!({});
+    }
     if let Some(id) = experiment {
         state
             .experiments
@@ -277,6 +302,85 @@ async fn a_parked_run_waits_for_its_images_then_launches() {
         anchor.image_map.unwrap()[SAMTOOLS],
         testing::fake_derived_artifact(&image, &key).image
     );
+}
+
+/// A parked single-job run is written in the newer plan format (an older biffix leaves it parked
+/// rather than launch it one Batch job per task) and launches at the size submit resolved, on its
+/// queue-class's queue and the project's single-job template.
+#[tokio::test]
+async fn a_parked_single_job_run_launches_as_one_job() {
+    let h = parked_with(None, true).await;
+    let plan = h.store.pending.lock().unwrap()[h.run_id.as_str()].plan.clone();
+    assert_eq!(plan["version"], json!(2));
+    assert_eq!(plan["single_job"]["instance_type"], "c6id.8xlarge");
+    h.images_ready();
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.launched, 1, "{report:?}");
+    let launch = h.cloud.launched.lock().unwrap()[0].clone();
+    assert_eq!(launch.coordinator_queue, SINGLE_QUEUE);
+    assert_eq!(launch.single_job.map(|s| s.vcpus), Some(32));
+    assert_eq!(h.cloud.variant_templates.lock().unwrap().last().unwrap(), SINGLE_TEMPLATE);
+    assert!(h.cloud.task_job_definitions.lock().unwrap().is_empty());
+
+    // A run one job per task still parks in the format every build reads.
+    let h = parked().await;
+    let plan = h.store.pending.lock().unwrap()[h.run_id.as_str()].plan.clone();
+    assert_eq!(plan["version"], json!(1));
+    assert!(plan.get("single_job").is_none());
+}
+
+/// A parked single-job run is single-job while it waits (its `run_preparing` says so, at the size
+/// submit resolved), not only once its anchor is recorded; a run one job per task says nothing.
+#[tokio::test]
+async fn a_parked_single_job_run_is_single_job_while_it_waits() {
+    let preparing = |h: &Harness| {
+        h.events
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|e| match &e.data {
+                EventData::RunPreparing(p) => Some((**p).clone()),
+                _ => None,
+            })
+            .expect("run_preparing recorded")
+    };
+    let h = parked_with(None, true).await;
+    let single = preparing(&h).single_job.expect("run_preparing names the single-job launch");
+    assert_eq!(single.queue_class, "single");
+    assert_eq!(single.instance_type, "c6id.8xlarge");
+    assert_eq!(single.vcpus, 32);
+    assert_eq!(h.events.folded().runs[h.run_id.as_str()].single_job, Some(single));
+
+    let h = parked().await;
+    assert_eq!(preparing(&h).single_job, None);
+}
+
+/// A parked single-job run whose queue-class a deploy removed while it waited fails at launch.
+#[tokio::test]
+async fn a_parked_single_job_run_whose_queue_class_is_gone_fails() {
+    let mut h = parked_with(None, true).await;
+    h.state.deploy.single_job_queues.clear();
+    h.images_ready();
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+    let (reason, _) = h.failure().unwrap();
+    assert!(reason.contains("`single` is no longer configured"), "{reason}");
+    assert!(h.cloud.launched.lock().unwrap().is_empty());
+}
+
+/// A parked single-job run whose project lost its single-job template (a deploy removed the
+/// project's single-job queue-classes while it waited) fails at launch, before any variant.
+#[tokio::test]
+async fn a_parked_single_job_run_whose_project_has_no_single_job_template_fails() {
+    let mut h = parked_with(None, true).await;
+    h.state.projects = testing::one_project(testing::project("demo", "test-bucket"));
+    h.images_ready();
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+    let (reason, _) = h.failure().unwrap();
+    assert!(reason.contains("has no single-job job definition"), "{reason}");
+    assert!(h.cloud.launched.lock().unwrap().is_empty());
 }
 
 /// A run parked in an experiment is in it while it waits (its `run_preparing` says so), and the

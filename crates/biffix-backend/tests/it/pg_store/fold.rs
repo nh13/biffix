@@ -338,3 +338,35 @@ async fn run_id_ties_order_bytewise_whatever_the_database_collation() {
         .collect();
     assert_eq!(due, ["dB"]);
 }
+
+/// A single-job run's anchor is folded onto its projection row and read back on its detail, and a
+/// run one Batch job per task reads none.
+#[tokio::test]
+#[ignore = "requires --features pg + the Postgres harness"]
+async fn a_single_job_anchor_reads_back_on_the_run_detail() {
+    use biffix_core::event::{run_submitted, RunSubmitted, SingleJobUse};
+    use biffix_core::time::Timestamp;
+
+    let pool = migrated_pool("single_job_anchor_reads_back").await;
+    let single = SingleJobUse {
+        queue_class: "single".into(),
+        instance_type: "c6id.8xlarge".into(),
+        vcpus: 32,
+        memory_mib: 61_184,
+    };
+    let anchor = |id: &str, single_job: Option<SingleJobUse>| {
+        run_submitted(
+            &RunId::new(id),
+            Timestamp::from_epoch_seconds(1.0),
+            RunSubmitted {
+                single_job,
+                ..RunSubmitted::new("v1", "abc", "sha256:x", serde_json::json!({}), vec![])
+            },
+        )
+    };
+    let events = vec![anchor("rs", Some(single.clone())), anchor("rt", None)];
+    biffix_db::log::append_and_advance(&pool, &events).await.unwrap();
+    let store = PgStore::new(pool);
+    assert_eq!(store.get_run(&RunId::new("rs")).await.unwrap().single_job, Some(single));
+    assert_eq!(store.get_run(&RunId::new("rt")).await.unwrap().single_job, None);
+}
