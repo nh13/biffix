@@ -25,6 +25,7 @@ from tests.synth.synth_helpers import (
     BATCH_JOBS,
     CONFIG,
     LEGACY,
+    SINGLE_JOB_CLASSES,
     Json,
     _actions,
     _build,
@@ -34,6 +35,7 @@ from tests.synth.synth_helpers import (
     _logical_id,
     _not_resources,
     _project_context,
+    _render,
     _resources,
     _statements_for,
 )
@@ -436,10 +438,14 @@ def test_a_coordinator_cannot_move_a_job_s_tags_or_reach_another_project_s_jobs(
         assert "Queuecoordinator" in queue, queue
         assert set(_resources(job_tag)) == {BATCH_JOBS, queue}
         assert job_tag["Condition"] == {
-            "ForAllValues:StringEquals": {"aws:TagKeys": ["biffix:run", "biffix:project"]},
+            "ForAllValues:StringEquals": {
+                "aws:TagKeys": ["biffix:run", "biffix:project", "biffix:execution"]
+            },
             "StringEquals": {
                 "aws:RequestTag/biffix:project": [default, "other", "legacy"],
             },
+            # A single-job run's execution tag, with its one value.
+            "StringEqualsIfExists": {"aws:RequestTag/biffix:execution": "single_job"},
         }
         env = _lambda_env(api, fn)
         assert "BIFFIX_PROJECT" not in env
@@ -451,13 +457,21 @@ def test_a_coordinator_cannot_move_a_job_s_tags_or_reach_another_project_s_jobs(
         return "".join((aws / path).read_text().split()).replace(",)", ")")
 
     # The tag and the coordinator's BIFFIX_PROJECT are the launch's project (the run's version's).
-    assert "coordinator_job_tags(&launch.run_id,&launch.project.id)" in compact("provider/batch.rs")
+    # (A single-job run's job also carries the execution tag.)
+    assert (
+        "coordinator_job_tags(&launch.run_id,&launch.project.id,launch.single_job.is_some())"
+        in compact("provider/batch.rs")
+    )
     env_rs = compact("coordinator_env.rs")
     assert 'constPROJECT:&str="BIFFIX_PROJECT";' in env_rs
     assert "(PROJECT,launch.project.id.clone())" in env_rs
     batch = (aws / "batch.rs").read_text()
     assert f'pub(crate) const RUN_TAG: &str = "{batch_access.RUN_TAG}";' in batch
     assert f'pub(crate) const PROJECT_TAG: &str = "{batch_access.PROJECT_TAG}";' in batch
+    # The launch grants' SubmitJob conditions key on the same execution tag and value.
+    assert f'pub(crate) const EXECUTION_TAG: &str = "{batch_access.EXECUTION_TAG}";' in batch
+    single = batch_access.SINGLE_JOB_EXECUTION
+    assert f'pub(crate) const SINGLE_JOB_EXECUTION: &str = "{single}";' in batch
 
 
 def _batch_allowed(
@@ -573,3 +587,46 @@ def test_the_backend_reads_task_logs_from_the_shared_and_every_project_s_group(
     for project in stacks["projects"]:
         context = _project_context(api, project.project_id)
         assert context["task_log_group"] == f"/biffix/project-{project.project_id}/batch"
+
+
+def test_the_context_names_the_single_job_template_only_when_there_is_one(
+    default_stacks: Stacks, single_job_stacks: Stacks
+) -> None:
+    # Always the key (the backend's golden example has it): null without a single-job
+    # queue-class, else the single-job template's revisioned ARN (not the tasks-mode one's).
+    api = default_stacks["api"]
+    assert _project_context(api, api.default_project_id)["single_job_job_definition"] is None
+    api = single_job_stacks["api"]
+    pid = api.default_project_id
+    context = _project_context(api, pid)
+    single = api.single_job_job_definitions[pid]
+    assert context["single_job_job_definition"] == _render(api.resolve(single.job_definition_arn))
+    assert context["single_job_job_definition"] != context["coordinator_job_definition"]
+
+
+def test_no_coordinator_may_submit_to_a_single_job_queue(single_job_stacks: Stacks) -> None:
+    # A single-job host is a whole run's: a workflow's coordinator never reaches it.
+    api, compute = single_job_stacks["api"], single_job_stacks["compute"]
+    t = Template.from_stack(api)
+    single = {
+        _render(api.resolve(compute.queues[qc.name].job_queue_arn)) for qc in SINGLE_JOB_CLASSES
+    }
+    workers = {
+        _render(api.resolve(queue.job_queue_arn)) for queue in compute.worker_queues.values()
+    }
+    job_definitions = f"{_BATCH}:job-definition/"
+    for role in api.coordinator_roles.values():
+        statements = _statements_for(t, api, role)
+        named = {r for st in statements for r in _resources(st)}
+        assert not single & named, single & named
+        for action in ("batch:SubmitJob", "batch:TagResource"):
+            # Every resource an Allow names for it but jobs and job definitions is a queue: the
+            # worker queues, exactly (no `job-queue/*`, no `*`, no coordinator or single-job queue).
+            queues = {
+                r
+                for st in statements
+                if st["Effect"] == "Allow" and _grants(st, action)
+                for r in _resources(st)
+                if r != BATCH_JOBS and not r.startswith(job_definitions)
+            }
+            assert queues == workers, (action, queues)

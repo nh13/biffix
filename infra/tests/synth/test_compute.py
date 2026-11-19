@@ -1,7 +1,12 @@
 """The compute stack: a queue and compute environment per queue-class, and the hosts."""
 
+import base64
 import dataclasses
+import email
+import gzip
 import json
+import posixpath
+import subprocess
 from pathlib import Path
 
 import aws_cdk as cdk
@@ -15,21 +20,27 @@ from biffix_infra.config import (
     DeployConfig,
     QueueClass,
 )
-from biffix_infra.stacks import compute_stack
-from biffix_infra.stacks.compute_stack import (
+from biffix_infra.host_boot import (
     DISABLE_PRIVILEGED,
-    ComputeStack,
+    INSTALL_AWS_CLI,
+    INSTANCE_STORE_MARKER,
+    SINGLE_JOB_BOOT_SCRIPT,
     host_install_header,
+    single_job_boot_script,
 )
+from biffix_infra.stacks.compute_stack import ComputeStack
 from biffix_infra.stacks.data_stack import DataStack
 from biffix_infra.stacks.network_stack import NetworkStack
 from tests.deploy_config_file import write_config
 from tests.helpers import REPO_ROOT
 from tests.synth.synth_helpers import (
     CONFIG,
+    SINGLE_JOB_CLASSES,
+    Json,
     _build,
     _grants,
     _logical_id,
+    _render,
     _statements,
 )
 
@@ -165,7 +176,7 @@ def test_every_host_installs_the_pinned_aws_cli_from_the_reference_bucket(
         assert DISABLE_PRIVILEGED == "ECS_DISABLE_PRIVILEGED=true"
     # The boot script reads exactly the variables the stack sets (its own test runs the script
     # against `host_install_header`, the one source of these lines).
-    script = (Path(compute_stack.__file__).parent.parent / "host/install_aws_cli.sh").read_text()
+    script = INSTALL_AWS_CLI.read_text()
     header = host_install_header(cli, bucket_name="b", region="r")
     for name in (line.split("=", 1)[0] for line in header):
         assert f"${name}" in script or f"${{{name}" in script, name
@@ -250,3 +261,196 @@ def test_batch_job_logs_expire(default_stacks: Stacks) -> None:
     (retention,) = t.find_resources("Custom::LogRetention").values()
     assert retention["Properties"]["LogGroupName"] == "/aws/batch/job"
     assert retention["Properties"]["RetentionInDays"] == 365
+
+
+# EC2's limit on a launch's user data (before base64), which Batch's own merged-in part also counts
+# against.
+_USER_DATA_MAX_BYTES = 16 * 1024
+# The longest a token in the user data (the reference bucket's name) resolves to.
+_BUCKET_NAME_MAX = 63
+
+
+def _resolve(value: object) -> str:
+    """A CloudFormation string as deployed: joins joined, `Fn::Base64` encoded, and any other
+    deploy-time value (the bucket name) at its longest."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and "Fn::Join" in value:
+        sep, parts = value["Fn::Join"]
+        return str(sep).join(_resolve(p) for p in parts)
+    if isinstance(value, dict) and "Fn::Base64" in value:
+        return base64.b64encode(_resolve(value["Fn::Base64"]).encode()).decode()
+    return "x" * _BUCKET_NAME_MAX
+
+
+def _bytes(payload: object) -> bytes:
+    """A MIME leaf part's decoded payload, which is bytes."""
+    assert isinstance(payload, bytes), payload
+    return payload
+
+
+def _user_data(compute: ComputeStack, queue_class: str) -> tuple[str, list[tuple[str, str]]]:
+    """`queue_class`'s launch-template user data as a host receives it (each deploy-time value at
+    its longest), and its MIME parts as (content type, decoded body), in order."""
+    lt = compute.queue_classes[queue_class].launch_template
+    templates = Template.from_stack(compute).find_resources("AWS::EC2::LaunchTemplate")
+    data: Json = templates[_logical_id(compute, lt)]["Properties"]["LaunchTemplateData"]
+    raw = _resolve(data["UserData"]["Fn::Base64"])
+    message = email.message_from_string(raw)
+    parts = [
+        (part.get_content_type(), _bytes(part.get_payload(decode=True)).decode())
+        for part in message.walk()
+        if not part.is_multipart()
+    ]
+    return raw, parts
+
+
+def _compute_resources(compute: ComputeStack, queue_class: str) -> Json:
+    envs = Template.from_stack(compute).find_resources("AWS::Batch::ComputeEnvironment")
+    ce = compute.queue_classes[queue_class].compute_environment
+    resources: Json = envs[_logical_id(compute, ce)]["Properties"]["ComputeResources"]
+    return resources
+
+
+def test_a_single_job_queue_class_has_its_own_on_demand_exact_type_environment(
+    single_job_stacks: Stacks,
+) -> None:
+    compute = single_job_stacks["compute"]
+    assert isinstance(compute, ComputeStack)
+    assert list(compute.single_job_queues) == [qc.name for qc in SINGLE_JOB_CLASSES]
+    assert "cpu-spot" in compute.worker_queues
+    assert not set(compute.worker_queues) & {*compute.single_job_queues, "coordinator"}
+    queues = Template.from_stack(compute).find_resources("AWS::Batch::JobQueue")
+    templates = set()
+    for qc in SINGLE_JOB_CLASSES:
+        resources = _compute_resources(compute, qc.name)
+        assert resources["Type"] == "EC2", resources
+        assert resources["InstanceTypes"] == qc.instances
+        assert resources["AllocationStrategy"] == "BEST_FIT_PROGRESSIVE"
+        assert resources["MaxvCpus"] == qc.max_vcpus
+        # Its boothook is written for the ECS-optimized AL2023 AMI.
+        assert resources["Ec2Configuration"] == [{"ImageType": "ECS_AL2023"}], resources
+        # A kernel fix reaches its hosts on an infrastructure update (infra/README.md, "Taking a
+        # kernel fix on single-job hosts"): Batch takes the newest AMI only when this is set, and
+        # only under its service-linked role (no ServiceRole of our own).
+        assert resources["UpdateToLatestImageVersion"] is True, resources
+        envs = Template.from_stack(compute).find_resources("AWS::Batch::ComputeEnvironment")
+        ce = compute.queue_classes[qc.name].compute_environment
+        assert "ServiceRole" not in envs[_logical_id(compute, ce)]["Properties"]
+        templates.add(json.dumps(resources["LaunchTemplate"], sort_keys=True))
+        # Its queue runs on its compute environment alone.
+        queue = queues[_logical_id(compute, compute.queues[qc.name])]["Properties"]
+        (order,) = queue["ComputeEnvironmentOrder"]
+        ce = compute.queue_classes[qc.name].compute_environment
+        assert order["ComputeEnvironment"] == {
+            "Fn::GetAtt": [_logical_id(compute, ce), "ComputeEnvironmentArn"]
+        }
+    # Each has its own launch template, none of them a tasks-mode host's.
+    others = {
+        json.dumps(_compute_resources(compute, name)["LaunchTemplate"], sort_keys=True)
+        for name in ("coordinator", *compute.worker_queues)
+    }
+    assert len(templates) == len(SINGLE_JOB_CLASSES)
+    assert not templates & others
+
+
+def test_a_single_job_host_sits_with_the_coordinator_not_the_isolated_workers(
+    single_job_stacks: Stacks,
+) -> None:
+    compute = single_job_stacks["compute"]
+    assert isinstance(compute, ComputeStack)
+
+    def subnets(name: str) -> list[str]:
+        return [_render(s) for s in _compute_resources(compute, name)["Subnets"]]
+
+    coordinator = subnets("coordinator")
+    # The fixture puts workers in the isolated subnets (worker_egress: ecr_s3_only).
+    assert subnets("cpu-spot") != coordinator
+    for qc in SINGLE_JOB_CLASSES:
+        assert subnets(qc.name) == coordinator
+
+
+def test_only_a_single_job_host_boots_with_the_seccomp_profile_and_scratch(
+    single_job_stacks: Stacks,
+) -> None:
+    compute = single_job_stacks["compute"]
+    assert isinstance(compute, ComputeStack)
+    for qc in SINGLE_JOB_CLASSES:
+        raw, parts = _user_data(compute, qc.name)
+        # A boothook (it runs before Docker and the ECS agent start), then the two parts every
+        # host runs.
+        assert [t for t, _ in parts] == [
+            "text/cloud-boothook",
+            "text/x-shellscript",
+            "text/x-shellscript",
+        ]
+        (_, boothook), (_, harden), (_, install) = parts
+        # The shim unpacks the boot script (its own test runs it) and runs it.
+        assert boothook.startswith("#!/bin/bash\n")
+        script = SINGLE_JOB_BOOT_SCRIPT
+        head, payload = boothook.split(f"if base64 -d <<'EOF' | gunzip > {script}; then\n", 1)
+        assert "set -o pipefail\n" in head
+        payload, rest = payload.split("\nEOF\n", 1)
+        assert gzip.decompress(base64.b64decode(payload)).decode() == single_job_boot_script()
+        assert rest.splitlines() == [
+            f"  bash {script}",
+            "else",
+            f"  rm -f {INSTANCE_STORE_MARKER}",
+            '  echo "biffix: single-job boot script did not unpack"',
+            "fi",
+        ]
+        assert f"echo {DISABLE_PRIVILEGED} >> /etc/ecs/ecs.config" in harden
+        assert "biffix_install_host_aws_cli" in install
+        # Room to spare under EC2's limit for Batch's own part.
+        assert len(raw.encode()) < _USER_DATA_MAX_BYTES - 2048, len(raw)
+    for name in ("coordinator", *compute.worker_queues):
+        _, parts = _user_data(compute, name)
+        assert [t for t, _ in parts] == ["text/x-shellscript", "text/x-shellscript"], name
+        assert not any("seccomp" in body for _, body in parts), name
+
+
+def test_a_boot_script_that_does_not_unpack_is_never_run(
+    single_job_stacks: Stacks, tmp_path: Path
+) -> None:
+    # A truncated payload (gunzip fails mid-stream) leaves a partial script; the shim must not
+    # run it.
+    compute = single_job_stacks["compute"]
+    assert isinstance(compute, ComputeStack)
+    _, ((_, boothook), *_) = _user_data(compute, SINGLE_JOB_CLASSES[0].name)
+    script = tmp_path / "single-job-boot.sh"
+    body, rest = boothook.split("\nEOF\n", 1)
+    lines = body.splitlines()
+    # Cut inside the payload (whole base64 lines, so only gunzip fails).
+    truncated = "\n".join([*lines[: len(lines) - 3], "EOF", rest])
+    # A marker an earlier boot left on the root volume: removing it is the boot script's job, so
+    # the shim does it when the script cannot run, lest it vouch for scratch that is not mounted.
+    marker = tmp_path / "instance-store"
+    marker.write_text("/dev/nvme1n1\n")
+    shim = (
+        truncated.replace(SINGLE_JOB_BOOT_SCRIPT, str(script))
+        .replace(f"mkdir -p {posixpath.dirname(SINGLE_JOB_BOOT_SCRIPT)}", f"mkdir -p {tmp_path}")
+        .replace(INSTANCE_STORE_MARKER, str(marker))
+    )
+    assert SINGLE_JOB_BOOT_SCRIPT not in shim
+    assert INSTANCE_STORE_MARKER not in shim
+    result = subprocess.run(["bash", "-c", shim], capture_output=True, text=True)
+    assert "biffix: single-job boot script did not unpack" in result.stdout, result
+    assert "seccomp" not in result.stdout
+    assert not marker.exists(), "a stale instance-store marker survived a failed unpack"
+
+
+def test_compute_refuses_a_single_job_queue_class_built_in_code() -> None:
+    # The loader refuses these (test_config_keys); a config built in code is checked at synth.
+    bad = DeployConfig(
+        tenant="dev",
+        region="us-east-1",
+        projects=[],
+        queue_classes=[
+            QueueClass(name="coordinator", capacity="ON_DEMAND", coordinator=True),
+            QueueClass(name="single", capacity="SPOT", single_job=True, instances=["c6id.8xlarge"]),
+        ],
+    )
+    app = cdk.App()
+    net = NetworkStack(app, "net")
+    with pytest.raises(ValueError, match="ON_DEMAND"):
+        ComputeStack(app, "compute", vpc=net.vpc, config=bad, host_bucket=_host_bucket(app))

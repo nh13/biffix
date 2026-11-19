@@ -3,6 +3,7 @@ AWS CLI every Batch host installs (ComputeStack, the api stack's coordinator tem
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from biffix_infra.config.fields import Fields, Raw, count, flag, is_count, text, text_list
@@ -49,6 +50,12 @@ class QueueClass:
     # size IS the measurement; general workloads use families. Detected by the presence of a ".".
     instances: list[str] = field(default_factory=list)
     coordinator: bool = False
+    # A single-job queue-class: each job on it is a whole run (the engine and every task, in nested
+    # apptainer) given the whole host. Its compute environment is its own (never shared with
+    # tasks-mode work), on-demand, on exact instance types, and its hosts boot with the relaxed
+    # seccomp profile and the instance-store `/scratch` (ComputeStack). Not a worker queue-class:
+    # no coordinator submits to it; the backend does, for a single-job run.
+    single_job: bool = False
     # The most vCPUs the queue-class's compute environment may run at once (its spend ceiling).
     max_vcpus: int = 256
     # Launch-template overrides. Every compute environment gets a launch template (the host boot
@@ -83,11 +90,13 @@ class HostAwsCli:
 def parse_queue_class(raw: Raw) -> QueueClass:
     """One `queue_classes` entry (its keys are QueueClass's fields), validated."""
     name = text("queue-class name", raw.get("name"))
+    check_queue_class_name(name)
     where = f"queue-class {name!r}:"
     qc = QueueClass(
         **{
             **raw,
             "coordinator": flag(f"{where} coordinator", raw.get("coordinator")),
+            "single_job": flag(f"{where} single_job", raw.get("single_job")),
             "instances": text_list(f"{where} instances", raw.get("instances")),
         }
     )
@@ -100,6 +109,8 @@ def parse_queue_class(raw: Raw) -> QueueClass:
             f"queue-class {qc.name!r} has capacity {qc.capacity!r}, "
             f"expected one of {sorted(CAPACITIES)}"
         )
+    if qc.single_job:
+        check_single_job(qc)
     # The launch template's gp3 root volume (`ebs_gb`, else DEFAULT_ROOT_VOLUME_GB) takes these as
     # they are, so a value gp3 refuses would fail only at CloudFormation deploy.
     gb = DEFAULT_ROOT_VOLUME_GB if qc.ebs_gb is None else count(f"{where} ebs_gb", qc.ebs_gb, 1)
@@ -120,6 +131,93 @@ def parse_queue_class(raw: Raw) -> QueueClass:
     if qc.imds_hop_limit is not None:
         count(f"{where} imds_hop_limit", qc.imds_hop_limit, 1, 64)
     return qc
+
+
+def check_queue_class_name(name: str) -> None:
+    """Refuse a queue-class name of digits only. The maps keyed by queue-class name that the stacks
+    render to JSON (the coordinator's BIFFIX_QUEUE_CLASS_MAP, whose first entry is the default
+    worker queue-class) go through CDK's JavaScript, which puts integer-like keys first: such a name
+    would silently become the default."""
+    if re.fullmatch(r"[0-9]+", name):
+        raise ValueError(
+            f"queue-class name {name!r} is digits only; give it a letter (e.g. 'q{name}'): the "
+            "JSON the stacks render would put it first and make it the default"
+        )
+
+
+def check_single_job(qc: QueueClass) -> None:
+    """A single-job queue-class's constraints. On-demand: a reclaimed host would lose the whole
+    run, which keeps its work on the host's own disks. Exact instance types only: a job asks for
+    the whole host, so the backend must know each type's size, and a family would let Batch place
+    it on a larger host beside another run. One size (`c6id.8xlarge` with `m6id.8xlarge`, never
+    with `c6id.16xlarge`), for the same reason; for a metal size, one family too, as a metal type
+    is the whole machine, whose size differs by family. A suffix is not always one vCPU count
+    (`hpc6id.32xlarge` has 64, `x2idn.32xlarge` 128); the backend refuses types of different vCPU
+    counts from EC2's description, which this config check cannot see. Never also the coordinator
+    queue-class: that one runs tasks-mode coordinators, which must not land on these hosts."""
+    where = f"single-job queue-class {qc.name!r}"
+    if qc.coordinator:
+        raise ValueError(f"{where} cannot also be the coordinator queue-class")
+    if qc.capacity != "ON_DEMAND":
+        raise ValueError(
+            f"{where} has capacity {qc.capacity!r}, expected ON_DEMAND: a reclaimed host would "
+            "lose the whole run"
+        )
+    if not qc.instances:
+        raise ValueError(f"{where} names no instances; give exact types like 'c6id.8xlarge'")
+    families = [entry for entry in qc.instances if "." not in entry]
+    if families:
+        raise ValueError(
+            f"{where} names instance families {families}; give exact types like 'c6id.8xlarge' "
+            "(a job asks for the whole host, so its size must be known)"
+        )
+    sizes = sorted({entry.split(".", 1)[1] for entry in qc.instances})
+    if len(sizes) > 1:
+        raise ValueError(
+            f"{where} names several sizes {sizes} in {qc.instances}; give one size (e.g. "
+            "'c6id.8xlarge' and 'm6id.8xlarge') and a single-job queue-class per size: a job "
+            "sized for the smaller host fits twice on a larger one, so two runs could share "
+            "that host's CPUs, memory and /scratch"
+        )
+    metal_families = sorted({entry.split(".", 1)[0] for entry in qc.instances})
+    if sizes[0].startswith("metal") and len(metal_families) > 1:
+        raise ValueError(
+            f"{where} names {sizes[0]} types of several families {metal_families}; a metal size "
+            "is the whole machine, which differs by family (z1d.metal has 48 vCPUs, r6id.metal "
+            "128), so give one family: a job sized for the smaller host fits twice on a larger one"
+        )
+    graviton = [entry for entry in qc.instances if is_graviton(entry)]
+    if graviton:
+        raise ValueError(
+            f"{where} names Graviton (arm64) types {graviton}; single-job runs need x86_64 for "
+            "now (the coordinator image carries apptainer on amd64 only: apptainer publishes no "
+            "arm64 package)"
+        )
+    accelerated = [entry for entry in qc.instances if is_accelerated(entry)]
+    if accelerated:
+        raise ValueError(
+            f"{where} names accelerated (GPU, FPGA or ML chip) types {accelerated}; single-job "
+            "hosts run the ECS-optimized AL2023 AMI, which has no accelerator driver, and a run "
+            "asks for no accelerator, so it would pay for one it cannot use"
+        )
+
+
+def is_graviton(instance_type: str) -> bool:
+    """Whether exact type `instance_type` is a Graviton (arm64) type: its class is a family and a
+    generation followed by `g` (`c7gd.8xlarge`, `m8g.4xlarge`, `r6gd.large`), which no x86 class
+    is (`g5`, `g6e` are GPU classes: no generation digit before their `g`), or the first-generation
+    Graviton `a1`."""
+    family = instance_type.split(".", 1)[0]
+    return family == "a1" or re.fullmatch(r"[a-z]+\d+g[a-z0-9-]*", family) is not None
+
+
+def is_accelerated(instance_type: str) -> bool:
+    """Whether exact type `instance_type` is an accelerated type: a GPU (`g5`, `g6e`, `gr6`,
+    `gr6f`, `p4d`), FPGA (`f1`), Inferentia (`inf2`), Trainium (`trn1`), Gaudi (`dl1`) or video
+    transcoding (`vt1`) class, each a family prefix and then the generation digit. No x86 general,
+    compute, memory or storage class starts with one of these prefixes and a digit."""
+    family = instance_type.split(".", 1)[0]
+    return re.fullmatch(r"(g|gr|p|f|inf|trn|dl|vt)\d[a-z0-9-]*", family) is not None
 
 
 def parse_host_aws_cli(block: Raw | None) -> HostAwsCli:

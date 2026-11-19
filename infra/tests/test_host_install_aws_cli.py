@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 
 from biffix_infra.config import HostAwsCli
+from biffix_infra.host_boot import host_install_header
 from biffix_infra.paths import HOST_DIR
-from biffix_infra.stacks.compute_stack import host_install_header
 from tests.helpers import executable
 
 SCRIPT = HOST_DIR / "install_aws_cli.sh"

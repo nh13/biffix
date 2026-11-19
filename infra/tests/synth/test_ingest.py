@@ -12,6 +12,7 @@ from biffix_infra.constructs.ingest_pipeline import INGEST_MAX_RECEIVE_COUNT
 from tests.synth.synth_helpers import (
     BATCH_JOBS,
     CONFIG,
+    SINGLE_JOB_CONFIG,
     Json,
     _actions,
     _actions_for_role,
@@ -294,3 +295,32 @@ def test_reconcile_expires_only_the_snakemake_cache(default_stacks: Stacks, tmp_
     env, statements = reconcile(forever)
     assert "BIFFIX_SNAKEMAKE_CACHE_DAYS" not in env
     assert not any("biffix/cache/snakemake/" in json.dumps(st) for st in statements)
+
+
+def test_a_single_job_queue_is_a_coordinator_queue_to_ingest_and_reconcile(
+    single_job_stacks: Stacks,
+) -> None:
+    # Its job is a whole run: its Batch events are the run's (coordinator-shaped), and the probe's
+    # worker-queue health does not count it.
+    config = SINGLE_JOB_CONFIG
+    ingest = single_job_stacks["ingest"]
+    single = [config.queue_name(qc) for qc in config.single_job_queue_classes]
+    coordinators = [config.queue_name(config.coordinator_queue_class), *single]
+    workers = [config.queue_name(qc) for qc in config.worker_queue_classes]
+    t = Template.from_stack(ingest)
+    functions = t.find_resources("AWS::Lambda::Function")
+    for fn in (ingest.ingest_lambda, ingest.reconcile_lambda):
+        env = functions[_logical_id(ingest, fn)]["Properties"]["Environment"]["Variables"]
+        assert env["BIFFIX_COORDINATOR_QUEUES"].split(",") == coordinators
+    env = functions[_logical_id(ingest, ingest.reconcile_lambda)]["Properties"]["Environment"]
+    assert env["Variables"]["BIFFIX_WORKER_QUEUES"].split(",") == workers
+    # And its jobs' state changes reach the log.
+    rules = t.find_resources(
+        "AWS::Events::Rule", {"Properties": {"EventPattern": {"source": ["aws.batch"]}}}
+    )
+    (rule,) = rules.values()
+    routed = {
+        _render(q).rsplit("/", 1)[1]
+        for q in rule["Properties"]["EventPattern"]["detail"]["jobQueue"]
+    }
+    assert set(single) <= routed
