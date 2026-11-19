@@ -161,7 +161,8 @@ ENGINE="${BIFFIX_ENGINE:-snakemake}"
 # run role, and submits child jobs only on the task job definitions biffix registered for its own
 # project (infra/biffix_infra/constructs/batch_access.py):
 #   - Job definitions. The coordinator runs the workflow's own code, so it never registers a job
-#     definition (IAM denies it every job-definition write): a definition decides whether a
+#     definition (IAM denies it every job-definition write but tagging its own task definitions
+#     with its own project, as a tagged submit requires): a definition decides whether a
 #     container is privileged and which host paths it sees, on hosts every project shares. The
 #     backend registers one per image the run may use, at launch (never privileged; no volumes but
 #     the Nextflow tasks' read-only host AWS CLI; the project's run role and task log group), tagged

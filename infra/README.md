@@ -453,8 +453,10 @@ by `name:revision` and register none of their own. IAM holds both sides to that:
   pass each project's run role (and the coordinator template roles), no other.
 - A coordinator role may submit only its own project's task definitions, and is explicitly denied
   every other job definition (the coordinator definitions, anything else) and registering,
-  deregistering, tagging or untagging any job definition. It passes no role, and the permissions
-  boundary allows no `iam:PassRole` at all.
+  deregistering or untagging any job definition. It may tag only its own project's task
+  definitions, with its own project's tag (Batch authorizes a tagged submit as a TagResource on the
+  definition it names), so it cannot make any definition its project's. It passes no role, and the
+  permissions boundary allows no `iam:PassRole` at all.
 - Every Batch host sets `ECS_DISABLE_PRIVILEGED=true` in its ECS agent config, so a privileged
   container cannot start on the shared compute environments whatever its job definition says.
 

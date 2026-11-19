@@ -47,17 +47,18 @@ def grant_coordinator_batch(
     the name of the project's own Batch task log group: the only project log group it may read.
 
     The coordinator runs the workflow's own code, so denies bound what the allows cannot, whatever
-    allow is added later: it may never register, deregister, tag or untag a job definition (so it
-    can never make one that is privileged, mounts the host, pulls an image from outside the tenant
-    or runs as another role), never submit a job definition other than a task definition of its
-    own project, never re-tag or untag a job's run tag (a job's run is fixed when the job is
-    created, which is what the engine ingest route's claim check trusts), and never tag another
-    project's job. It passes no role: SubmitJob passes none, and a task definition already names
-    its project's run role."""
+    allow is added later: it may never register, deregister or untag a job definition, nor tag one
+    that is not already its own project's (so it can never make one that is privileged, mounts the
+    host, pulls an image from outside the tenant or runs as another role, nor make one its
+    project's; it tags its own task definitions only as a tagged submit requires), never submit a
+    job definition other than a task definition of its own project, never re-tag or untag a job's
+    run tag (a job's run is fixed when the job is created, which is what the engine ingest route's
+    claim check trusts), and never tag another project's job. It passes no role: SubmitJob passes
+    none, and a task definition already names its project's run role."""
     arns = _Arns(stack, task_prefix)
     _grant_submit(role, arns, queue_arns, project_id)
     _deny_foreign_submit(role, arns, project_id)
-    _deny_job_definition_changes(role, arns)
+    _deny_job_definition_changes(role, arns, project_id)
     _grant_describe(role)
     _grant_tagging(role, arns, queue_arns, project_id)
     _grant_task_logs(role, arns, task_log_group)
@@ -106,6 +107,11 @@ def _own_project_resource(project_id: str) -> dict[str, str]:
     return {f"aws:ResourceTag/{PROJECT_TAG}": project_id}
 
 
+def _own_project_request_and_resource(project_id: str) -> dict[str, str]:
+    """A request tagging, of a resource tagged, with `project_id` (a `StringEquals` condition)."""
+    return {**_own_project_request(project_id), **_own_project_resource(project_id)}
+
+
 def _another_projects(project_id: str) -> dict[str, dict[str, str]]:
     """The condition matching a resource tagged with a project other than `project_id`."""
     return {
@@ -140,10 +146,7 @@ def _grant_submit(role: iam.IRole, arns: _Arns, queue_arns: list[str], project_i
             actions=["batch:SubmitJob"],
             resources=[arns.task_revisions],
             conditions={
-                "StringEquals": {
-                    **_own_project_request(project_id),
-                    **_own_project_resource(project_id),
-                },
+                "StringEquals": _own_project_request_and_resource(project_id),
                 **_TAGS_THE_PROJECT,
             },
         )
@@ -190,8 +193,8 @@ def _deny_foreign_submit(role: iam.IRole, arns: _Arns, project_id: str) -> None:
     )
 
 
-def _deny_job_definition_changes(role: iam.IRole, arns: _Arns) -> None:
-    """Never create, remove or relabel a job definition."""
+def _deny_job_definition_changes(role: iam.IRole, arns: _Arns, project_id: str) -> None:
+    """Never create, remove or untag a job definition, nor tag one into this project."""
     # A job definition picks the container's privileges, host mounts, image and role, and the
     # compute environments are shared by every project, so only the backend registers them.
     role.add_to_principal_policy(
@@ -201,11 +204,24 @@ def _deny_job_definition_changes(role: iam.IRole, arns: _Arns) -> None:
             resources=["*"],
         )
     )
-    # Re-tagging a definition as this project's would make it submittable here.
+    # Re-tagging a definition as this project's would make it submittable here. A tagged submit
+    # needs TagResource on its own task definition (see _grant_tagging), so tagging is not denied
+    # outright: a definition that does not already carry this project's tag (another project's,
+    # or one with none: a negated condition is true for an absent key), and a request that does
+    # not tag this project, are denied, so no definition is ever made this project's.
+    for condition in (_own_project_resource(project_id), _own_project_request(project_id)):
+        role.add_to_principal_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.DENY,
+                actions=["batch:TagResource"],
+                resources=[arns.job_definition],
+                conditions={"StringNotEquals": condition},
+            )
+        )
     role.add_to_principal_policy(
         iam.PolicyStatement(
             effect=iam.Effect.DENY,
-            actions=["batch:TagResource", "batch:UntagResource"],
+            actions=["batch:UntagResource"],
             resources=[arns.job_definition],
         )
     )
@@ -236,7 +252,8 @@ def _grant_describe(role: iam.IRole) -> None:
 
 
 def _grant_tagging(role: iam.IRole, arns: _Arns, queue_arns: list[str], project_id: str) -> None:
-    """Tag each child job, with this project only; never re-tag a job's run."""
+    """Tag each child job, and the task definition it names, with this project only; never re-tag
+    a job's run."""
     # The engines tag every child job at submit (its run and project). Batch authorizes a
     # tag-on-create as TagResource on the new job, and a tagged SubmitJob also as TagResource on
     # the job queue it names (verified live: without the queue, every tagged submit is denied).
@@ -246,6 +263,21 @@ def _grant_tagging(role: iam.IRole, arns: _Arns, queue_arns: list[str], project_
             actions=["batch:TagResource"],
             resources=[arns.job, *queue_arns],
             conditions={"StringEquals": _own_project_request(project_id)},
+        )
+    )
+    # A tagged SubmitJob is authorized as TagResource on the job definition it names too
+    # (verified live: without it, every tagged submit is denied). So this project's own task
+    # definitions may be tagged, by a request that tags this project: the project tag cannot change
+    # (_deny_job_definition_changes denies every other job-definition tag). Other keys may be set
+    # that way and never removed (UntagResource is denied), which grants nothing: the backend reads
+    # only the project tag of a definition, and its definitions do not propagate tags to tasks. The
+    # keys cannot be bounded: a submit carries every tag of the job, and a workflow's own
+    # (SNAKEMAKE_AWS_BATCH_JOB_TAGS, Nextflow resourceLabels) are kept.
+    role.add_to_principal_policy(
+        iam.PolicyStatement(
+            actions=["batch:TagResource"],
+            resources=[arns.task_revisions],
+            conditions={"StringEquals": _own_project_request_and_resource(project_id)},
         )
     )
     # A job's run tag is write-once. A job gets it when it is created (a tag-on-create, while
