@@ -200,6 +200,18 @@ class DeployConfig(DeployNames):
         return coordinators[0]
 
     @property
+    def worker_queue_classes(self) -> list[QueueClass]:
+        """The queue-classes coordinators submit tasks to, in config order: every one but the
+        coordinator's and the single-job ones (whose jobs are whole runs, submitted by the
+        backend)."""
+        return [qc for qc in self.queue_classes if not (qc.coordinator or qc.single_job)]
+
+    @property
+    def single_job_queue_classes(self) -> list[QueueClass]:
+        """The single-job queue-classes, in config order."""
+        return [qc for qc in self.queue_classes if qc.single_job]
+
+    @property
     def data_source_buckets(self) -> list[str]:
         """Every data source's bucket (read-only to runs), across projects."""
         return sorted({s.bucket for p in self.projects for s in p.data_sources})

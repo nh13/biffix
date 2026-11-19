@@ -9,7 +9,7 @@ from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
 
-from biffix_infra.config import DEFAULT_ROOT_VOLUME_GB, HOST_PREFIX, QueueClass
+from biffix_infra.config import DEFAULT_ROOT_VOLUME_GB, HOST_PREFIX, QueueClass, check_single_job
 
 
 class BatchQueueClass(Construct):
@@ -40,6 +40,9 @@ class BatchQueueClass(Construct):
                 f"coordinator queue-class {qc.name!r} must be ON_DEMAND, not spot: a reclaimed "
                 "coordinator would kill its whole run"
             )
+        # Config parsing checks this too; a QueueClass built in code is checked here.
+        if qc.single_job:
+            check_single_job(qc)
         instance_types, instance_classes = resolve_instances(
             qc.instances, qc.name, instance_families
         )
@@ -57,6 +60,14 @@ class BatchQueueClass(Construct):
             instance_classes=instance_classes or None,
             use_optimal_instance_classes=not has_explicit,
             launch_template=self.launch_template,
+            # A single-job host's boothook relies on the ECS-optimized AL2023 AMI (dmsetup and
+            # xfsprogs without an install, bash 5, cloud-init ordering before Docker), so pin it
+            # rather than take whichever image Batch defaults to. Others keep Batch's default.
+            images=(
+                [batch.EcsMachineImage(image_type=batch.EcsMachineImageType.ECS_AL2023)]
+                if qc.single_job
+                else None
+            ),
             allocation_strategy=(
                 batch.AllocationStrategy.SPOT_CAPACITY_OPTIMIZED
                 if spot

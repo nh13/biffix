@@ -26,12 +26,12 @@ cross-stack resource references — there are no manual `add_dependency` calls i
 | `biffix-<tenant>-network` | VPC, subnets, NAT (see **Network posture**) |
 | `biffix-<tenant>-data` | Shared reference S3 bucket and its KMS key, the image archive bucket and its KMS key, ECR repos (coordinator, workflow, builds) |
 | `biffix-<tenant>-identity` | Cognito user pool + clients, the permissions boundary, the GitHub-OIDC roles |
-| `biffix-<tenant>-compute` | AWS Batch compute environments + queues (with the host launch template; every host's ECS agent refuses privileged containers) |
+| `biffix-<tenant>-compute` | AWS Batch compute environments + queues (with the host launch template; every host's ECS agent refuses privileged containers). A single-job queue-class gets its own compute environment whose hosts also get the relaxed seccomp profile and an instance-store `/scratch` (see **Single-job queue-classes**) |
 | `biffix-<tenant>-build` | The CodeBuild projects: `runtime-build` (coordinator variants: base image + engine runtime), `image-import` (import, probe, derive and archive workflow images), and `image-build-amd64` / `image-build-arm64` (build workflow images from a Dockerfile or pixi recipe) |
 | `biffix-<tenant>-project-<id>` | Per-project S3 bucket, KMS key, run role (one per `projects[]` entry) |
 | `biffix-<tenant>-persistence` | Aurora (event store) + the capability-token signing secret |
 | `biffix-<tenant>-ingest` | Ingest SQS queue + DLQ, the ingest + reconcile Rust Lambdas, the reconcile schedule |
-| `biffix-<tenant>-api` | The backend Rust Lambda, HTTP API + Cognito authorizer, one coordinator role + job definition template per project (`biffix-<tenant>-coordinator-<project>`), each project's SSM context parameter (`/biffix/<tenant>/projects/<id>`), the scheduled backend sweep (run provenance crates, image and runtime builds and their retries, launching runs parked while their images are prepared). A launch registers the task job definitions the run's child jobs run on (see **Task job definitions**) |
+| `biffix-<tenant>-api` | The backend Rust Lambda, HTTP API + Cognito authorizer, one coordinator role + job definition template per project (`biffix-<tenant>-coordinator-<project>`; with a single-job queue-class also `biffix-<tenant>-coordinator-single-<project>`), each project's SSM context parameter (`/biffix/<tenant>/projects/<id>`), the scheduled backend sweep (run provenance crates, image and runtime builds and their retries, launching runs parked while their images are prepared). A launch registers the task job definitions the run's child jobs run on (see **Task job definitions**) |
 | `biffix-<tenant>-edge` | CloudFront + the private UI bucket |
 
 `<tenant>` comes from `tenant:` in the deploy config and is prefixed with `biffix-` for you — so
@@ -687,6 +687,73 @@ A host whose install fails still joins its compute environment (a failed boot wo
 replace it in a loop); the reason is in `/var/log/biffix-host-aws-cli.log` and the instance's console
 output, and Nextflow tasks placed on it fail.
 
+### Single-job queue-classes (`single_job`)
+
+A queue-class with `single_job: true` runs a whole run as one Batch job on one whole host: the
+engine with its local executor, each task in the image its Batch job would run (converted before the
+run) through apptainer nested in the job's container, its working files on the host's local disks. The backend submits such a run there (it asks
+for the whole host's vCPUs and memory); no coordinator may submit to it, and it is never in the
+task queue-class menu.
+
+- **Config.** `capacity: ON_DEMAND`, exact instance types only (`c6id.8xlarge`, not `c`), not
+  `coordinator: true`; the loader refuses anything else. Pick types with NVMe instance store
+  (`c6id`, `m6id`, `r6id`, `i4i`…): their disks become `/scratch`. x86_64 only for now: the
+  coordinator image carries Apptainer on amd64 only, so the loader refuses a Graviton type (and an
+  accelerated one: GPU, FPGA or ML-chip types, as the AMI has no accelerator driver). Give each
+  single-job queue-class one size (`c6id.8xlarge` with `m6id.8xlarge`, not with `c6id.16xlarge`, nor
+  metal types of two families, whose sizes differ; the loader refuses either): a host that could
+  hold two of its smaller types' jobs would run two runs side by side, sharing its `/scratch`.
+  Several single-job queue-classes may coexist (one per size).
+- **Compute.** Its own compute environment and launch template, never shared with tasks-mode work,
+  in the coordinator's NAT subnets (the job reports to the API, which `worker_egress: ecr_s3_only`
+  subnets cannot reach). Besides the two parts every host runs, its user data starts with a
+  cloud-init boothook (it runs before Docker and the ECS agent start, on every boot) that:
+  - writes `/etc/docker/seccomp-biffix-single-job.json` (moby's default profile, vendored in
+    `biffix_infra/host/moby-seccomp-default-v25.0.18.json` under Apache-2.0, with moby's license
+    and notice beside it in `moby-LICENSE` and `moby-NOTICE`, plus one rule allowing `mount`,
+    `umount2`, `unshare` and `setns`) and points `/etc/docker/daemon.json`'s `seccomp-profile` at
+    it (`host/seccomp_profile.sh`; log `/var/log/biffix-seccomp-profile.log`);
+  - formats the instance-store disks as one XFS file system (one disk directly, several striped
+    with device-mapper, as the AMI has neither mdadm nor lvm2) and mounts it at `/scratch`
+    (`host/scratch_disks.sh`; log `/var/log/biffix-scratch.log`). It is rebuilt on every boot.
+    Once it is mounted, and only then, the hook writes the marker `/var/lib/biffix/instance-store`
+    (root's, on the root volume, never on the run-writable `/scratch`), so a run can tell instance
+    store from a bare directory on the root volume and no run can remove or fake the marker. The
+    boot script itself is unpacked to `/var/lib/biffix/single-job-boot.sh`.
+  Either step failing is logged and the host still joins (a failed boot would have Batch replace it
+  in a loop): without the profile, apptainer is refused; without the disks (or on a type with no
+  instance store), `/scratch` is the root volume and there is no marker. Check the logs (or the
+  console output) when a single-job run fails early. Its compute environment is pinned to the
+  ECS-optimized AL2023 AMI, which the boothook is written for.
+- **Security.** The profile lets any container on these hosts create user namespaces and mount in
+  them. That grants no host capability and container root still cannot get past `/proc` masking,
+  but it exposes kernel code reachable through user namespaces; only these dedicated hosts (one run
+  each) boot with it. AWS does not support custom Docker daemon configuration in general.
+  Instance-store data is encrypted by the hardware with ephemeral keys, not the project's KMS key,
+  and is gone with the instance.
+- **Job definition.** Per project, `biffix-<tenant>-coordinator-single-<project>` in the api stack:
+  the coordinator image and command, run as the project's **run base role** (it submits no Batch
+  job), `/dev/fuse` passed in, an init process, the host's `/scratch` mounted read-write and its
+  `/var/lib/biffix` read-only, `BIFFIX_SCRATCH_ROOT=/scratch` and
+  `BIFFIX_INSTANCE_STORE_MARKER=/var/lib/biffix/instance-store` in its environment (both from
+  `biffix_infra/host_boot.py`, which the boothook takes them from too), not privileged, the
+  coordinator template's retries and timeout. The backend clones it per variant
+  like the tasks-mode template, naming the clones `biffix-<tenant>-coordinator-sj-…` (tasks-mode
+  variants are `…-coordinator-rt-…`; both prefixes, and `single-`, are reserved, so no project id
+  starts with `rt-`, `sj-` or `single-`); its ARN is the context's `single_job_job_definition`
+  (`null` in a deploy without a single-job queue-class).
+- **IAM.** With a single-job queue-class, each run base role may pull from the workflow and builds
+  repositories (a single-job job converts its run's images to SIF itself). The backend and sweep get
+  `BIFFIX_SINGLE_JOB_QUEUES` (`[{"name": "<queue-class>", "queue": "<arn>", "instance_types":
+  [...]}, ...]`, in deploy-config order, the first the default)
+  and `BIFFIX_SINGLE_JOB_VARIANT_JOB_DEFINITION_PREFIX`, may register job definitions with that
+  prefix, may SubmitJob on those queues with them, tag-on-create on those queues, and
+  `ec2:DescribeInstanceTypes`. The pairing is enforced by a request tag: a single-job coordinator
+  job is submitted tagged `biffix:execution=single_job`, and only such a submit may name a
+  single-job queue or an `sj-` variant; only an untagged one may name the coordinator queue or an
+  `rt-` variant. So neither kind of variant runs on the other's queue. Ingest and reconcile
+  count the queues as coordinator queues.
+
 ### Custom app domain with external DNS
 
 `app_domain` is the stable browser/OAuth callback hostname. The CloudFront alias needs an ACM
@@ -811,15 +878,17 @@ gateway (`gateway`, ~$32/mo, recommended HA). Pipelines can pull public conda/Py
 data without a staging step.
 
 **Locked-down workers (`worker_egress: ecr_s3_only`, off by default).** The Batch workers (every
-compute environment but the coordinator's) move to isolated subnets with no route to the internet,
+compute environment but the coordinator's and the single-job queue-classes') move to isolated subnets with no route to the internet,
 reaching only interface endpoints for ECR (`ecr.api`, `ecr.dkr`), the ECS agent (`ecs`,
 `ecs-agent`, `ecs-telemetry`) and CloudWatch Logs, plus an S3 gateway endpoint of their own. A task
 can then pull no image the tenant does not hold and fetch nothing from the internet (a task that
 downloads data or packages at run time fails). The workers' S3 endpoint policy reaches only
 same-region buckets in the tenant account, the configured data sources' buckets (read) and imported
 project buckets, and ECR's own layer bucket, so a task cannot copy data to a bucket elsewhere; a
-public dataset bucket must be declared as a data source to be readable. The coordinator and the
-Lambdas keep the NAT and an unrestricted S3 endpoint. Cost: the six endpoints across two AZs, ~$90/mo. Turning it on or off
+public dataset bucket must be declared as a data source to be readable. The coordinator, the
+single-job hosts and the Lambdas keep the NAT and an unrestricted S3 endpoint: a single-job host
+runs a run's coordinator as well as its tasks, so its tasks are not locked down; a deployment that
+relies on the lockdown should define no single-job queue-class. Cost: the six endpoints across two AZs, ~$90/mo. Turning it on or off
 replaces the worker compute environments, so do it while they are idle. The strict per-run image
 map already stops unmapped image pulls; this closes the network behind it.
 

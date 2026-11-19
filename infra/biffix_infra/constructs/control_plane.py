@@ -16,8 +16,10 @@ from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_secretsmanager as secretsmanager
 
 from biffix_infra.constructs.batch_access import (
+    EXECUTION_TAG,
     PROJECT_TAG,
     RUN_TAG,
+    SINGLE_JOB_EXECUTION,
     batch_arn,
 )
 from biffix_infra.constructs.coordinator import Coordinator
@@ -51,6 +53,7 @@ class ControlPlaneGrants:
         coordinator_image_uri: str,
         worker_image_repo_uri: str,
         capability_secret: secretsmanager.ISecret,
+        single_job_instance_types: dict[str, list[str]] | None = None,
     ) -> None:
         self._stack = stack
         self._projects = projects
@@ -63,11 +66,21 @@ class ControlPlaneGrants:
         self._coordinator_image_uri = coordinator_image_uri
         self._worker_image_repo_uri = worker_image_repo_uri
         self._capability_secret = capability_secret
+        # name → exact instance types of each single-job queue-class, in config order (its queue
+        # is `compute.single_job_queues[name]`).
+        self._single_job_instance_types = single_job_instance_types or {}
         # Every coordinator variant's job definition is named `<prefix><runtime key12>-<base12>-
         # <template8>`: the template hash makes a variant per (runtime, base, project template).
+        # A tasks-mode variant (a clone of the coordinator template) has the `rt-` prefix and a
+        # single-job one (a clone of the single-job template) the `sj-` prefix, so IAM tells them
+        # apart: each is submitted only to its own queues (`launch`).
         self._variant_prefix = f"biffix-{tenant}-coordinator-rt-"
         self._variant_job_definitions = batch_arn(
             stack, "job-definition", f"{self._variant_prefix}*"
+        )
+        self._single_job_variant_prefix = f"biffix-{tenant}-coordinator-sj-"
+        self._single_job_variant_job_definitions = batch_arn(
+            stack, "job-definition", f"{self._single_job_variant_prefix}*"
         )
         # Every task job definition (`<prefix><sm|nf>-<32 hex>`, one per project, tenant image and
         # engine; `DeployNames.task_job_definition_prefix`) is registered by a launch; coordinators
@@ -106,6 +119,12 @@ class ControlPlaneGrants:
         for env, name in self._build_project_names.items():
             fn.add_environment(env, name)
         fn.add_environment("BIFFIX_VARIANT_JOB_DEFINITION_PREFIX", self._variant_prefix)
+        variants = [self._variant_job_definitions]
+        if self._single_job_instance_types:
+            fn.add_environment(
+                "BIFFIX_SINGLE_JOB_VARIANT_JOB_DEFINITION_PREFIX", self._single_job_variant_prefix
+            )
+            variants.append(self._single_job_variant_job_definitions)
         # Where the image builds push: a built image is trusted only from there.
         fn.add_environment("BIFFIX_BUILDS_IMAGE_REPO", self._build.builds_repo.repository_uri)
         self._build.grant_start_builds(fn)
@@ -118,12 +137,13 @@ class ControlPlaneGrants:
         fn.add_to_role_policy(
             iam.PolicyStatement(
                 actions=["batch:RegisterJobDefinition", "batch:TagResource"],
-                resources=[self._variant_job_definitions],
+                resources=variants,
             )
         )
         self._deny_unsafe_registrations(fn)
-        # A clone passes the template's roles. Only the templates' own (each project's coordinator
-        # role, never a run role), so a variant runs as exactly the project whose template it was
+        # A clone passes the template's roles, and only the templates' own: the coordinator
+        # template's job and execution roles, and the single-job template's (its job role is the
+        # project's run base role). So a variant runs as exactly the project whose template it was
         # cloned from.
         for coordinator in self._coordinators.values():
             coordinator.grant_pass_roles(fn)
@@ -143,25 +163,73 @@ class ControlPlaneGrants:
         fn.add_environment("BIFFIX_TASK_JOB_DEFINITION_PREFIX", self._task_prefix)
         self._register_tasks(fn)
         fn.add_environment("BIFFIX_COORDINATOR_QUEUE", compute.coordinator_queue.job_queue_arn)
+        # The queues a whole run may launch on instead (single-job mode), each with the instance
+        # types the backend sizes its whole-host request from: a JSON array in deploy-config
+        # order, the first the default. An array, not an object keyed by name: CDK renders an
+        # object through JavaScript, which puts integer-like keys first and so could change which
+        # queue-class is first.
+        single_job_queues = self._single_job_queue_arns()
+        if single_job_queues:
+            fn.add_environment(
+                "BIFFIX_SINGLE_JOB_QUEUES",
+                self._stack.to_json_string(
+                    [
+                        {
+                            "name": name,
+                            "queue": arn,
+                            "instance_types": self._single_job_instance_types[name],
+                        }
+                        for name, arn in single_job_queues.items()
+                    ]
+                ),
+            )
+            # The vCPUs and memory of those instance types (the whole-host request). Describe has
+            # no resource-level permissions.
+            fn.add_to_role_policy(
+                iam.PolicyStatement(actions=["ec2:DescribeInstanceTypes"], resources=["*"])
+            )
+        coordinator_queue = compute.coordinator_queue.job_queue_arn
+        launch_queues = [coordinator_queue, *single_job_queues.values()]
         fn.add_environment("BIFFIX_INGEST_URL", ingest_url)
         # The samplesheets/`images.json` a launch writes under the run's own `inputs/` folder, in
         # whichever project the run is in.
         for project in self._projects:
             project.grant_backend_run_inputs(fn)
+        job_arn = batch_arn(self._stack, "job", "*")
         # Runs launch on coordinator variants, whose job definitions the backend registers
-        # itself: SubmitJob on the coordinator queue with a job definition of the variant name
-        # only.
+        # itself: tasks-mode (`rt-`) variants on the coordinator queue, single-job (`sj-`)
+        # variants on the single-job queues. IAM authorizes a SubmitJob's queue and its job
+        # definition as separate resource checks, each against every statement, so the pairing
+        # rests on the request's tags, which every check sees alike: the backend tags a single-job
+        # coordinator job `EXECUTION_TAG=SINGLE_JOB_EXECUTION` and a tasks-mode one not at all. A
+        # crossed pair then fails one of its checks (a single-job variant on the coordinator
+        # queue: the queue needs the tag absent, the definition needs it present). The job ARN is
+        # in both, under the same condition, should Batch authorize the new job too.
         fn.add_to_role_policy(
             iam.PolicyStatement(
                 actions=["batch:SubmitJob"],
-                resources=[compute.coordinator_queue.job_queue_arn, self._variant_job_definitions],
+                resources=[coordinator_queue, self._variant_job_definitions, job_arn],
+                conditions={"Null": {f"aws:RequestTag/{EXECUTION_TAG}": "true"}},
             )
         )
+        if single_job_queues:
+            fn.add_to_role_policy(
+                iam.PolicyStatement(
+                    actions=["batch:SubmitJob"],
+                    resources=[
+                        *single_job_queues.values(),
+                        self._single_job_variant_job_definitions,
+                        job_arn,
+                    ],
+                    conditions={
+                        "StringEquals": {f"aws:RequestTag/{EXECUTION_TAG}": SINGLE_JOB_EXECUTION}
+                    },
+                )
+            )
         # SubmitJob takes no idempotency token: when its answer is lost, the launcher lists the
         # run's coordinator by its job name to find a job it may have created (binding it, or
         # stopping it before launching again). ListJobs has no resource-level permissions.
         fn.add_to_role_policy(iam.PolicyStatement(actions=["batch:ListJobs"], resources=["*"]))
-        job_arn = batch_arn(self._stack, "job", "*")
         # The coordinator job is created with its run and project tags (a tag-on-create, which
         # Batch authorizes as TagResource on the new job and on the queue the submit names —
         # verified live: without the queue every tagged submit is denied), so it is protected like
@@ -169,15 +237,21 @@ class ControlPlaneGrants:
         # coordinators may not re-tag a job that carries a run tag, nor tag or terminate another
         # project's (ComputeStack.grant_coordinator). Only those tags, and only a project of this
         # deploy (the backend tags a run with its version's project; each coordinator role's own
-        # tag conditions still keep a run inside its project).
+        # tag conditions still keep a run inside its project), plus a single-job run's execution
+        # tag, whose only value is `SINGLE_JOB_EXECUTION`.
         fn.add_to_role_policy(
             iam.PolicyStatement(
                 actions=["batch:TagResource"],
-                resources=[job_arn, compute.coordinator_queue.job_queue_arn],
+                resources=[job_arn, *launch_queues],
                 conditions={
-                    "ForAllValues:StringEquals": {"aws:TagKeys": [RUN_TAG, PROJECT_TAG]},
+                    "ForAllValues:StringEquals": {
+                        "aws:TagKeys": [RUN_TAG, PROJECT_TAG, EXECUTION_TAG]
+                    },
                     "StringEquals": {
                         f"aws:RequestTag/{PROJECT_TAG}": [p.project_id for p in self._projects]
+                    },
+                    "StringEqualsIfExists": {
+                        f"aws:RequestTag/{EXECUTION_TAG}": SINGLE_JOB_EXECUTION
                     },
                 },
             )
@@ -209,6 +283,16 @@ class ControlPlaneGrants:
         # `ingest-disabled` tokens, so a launcher refuses to start a run that cannot report.
         fn.add_environment("BIFFIX_CAPABILITY_SECRET_ARN", self._capability_secret.secret_arn)
         grant_secret_read(fn, self._capability_secret)
+
+    def _single_job_queue_arns(self) -> dict[str, str]:
+        """name → job queue ARN of each single-job queue-class, in config order."""
+        queues = self._compute.single_job_queues
+        if set(queues) != set(self._single_job_instance_types):
+            raise ValueError(
+                f"single-job queue-classes {sorted(queues)} and their instance types "
+                f"{sorted(self._single_job_instance_types)} disagree"
+            )
+        return {name: queues[name].job_queue_arn for name in self._single_job_instance_types}
 
     def _register_tasks(self, fn: lambda_.Function) -> None:
         """Let `fn` register the task job definitions a launch needs: one per (project, tenant
@@ -255,7 +339,7 @@ class ControlPlaneGrants:
         the tenant's registry, whichever allow (`build_variants`, `launch`) lets it register.
         Called by both, so each is complete on its own (IAM merges the repeated denies)."""
         # The compute environments are shared by every project (and their hosts refuse privileged
-        # containers anyway, ComputeStack._host_user_data): no definition `fn` registers, task or
+        # containers anyway, host_boot.host_user_data): no definition `fn` registers, task or
         # coordinator variant, is privileged.
         job_definitions = batch_arn(self._stack, "job-definition", "*")
         fn.add_to_role_policy(

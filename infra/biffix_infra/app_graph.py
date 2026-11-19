@@ -74,12 +74,12 @@ def build_stacks(
     # DeployConfig.load validates these too; a config built in code (tests) is checked here.
     validate_projects(config.projects)
     protect = {"termination_protection": termination_protection}
+    # A single-job queue's job is a whole run, so it is a coordinator queue to ingest and reconcile
+    # (the job's events are the run's), never a worker queue.
     coordinator_queue_names = [
-        config.queue_name(qc) for qc in config.queue_classes if qc.coordinator
+        config.queue_name(qc) for qc in config.queue_classes if qc.coordinator or qc.single_job
     ]
-    worker_queue_names = [
-        config.queue_name(qc) for qc in config.queue_classes if not qc.coordinator
-    ]
+    worker_queue_names = [config.queue_name(qc) for qc in config.worker_queue_classes]
 
     network = NetworkStack(
         app,
@@ -207,6 +207,7 @@ def build_stacks(
             config.coordinator_image_tag
         ),
         worker_image_repo_uri=data.workflow_repo.repository_uri,
+        workflow_repo=data.workflow_repo,
         build=build,
         alerts_topic=ingest.alerts_topic,
         env=env,

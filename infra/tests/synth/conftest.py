@@ -3,7 +3,7 @@
 import pytest
 
 from biffix_infra.app_graph import Stacks
-from tests.synth.synth_helpers import _build, _two_project_stacks
+from tests.synth.synth_helpers import SINGLE_JOB_CONFIG, _build, _two_project_stacks
 
 
 @pytest.fixture(scope="session")
@@ -21,3 +21,10 @@ def two_project_stacks(tmp_path_factory: pytest.TempPathFactory) -> Stacks:
     """The stack graph of the default config plus two more projects (`_two_project_stacks`),
     synthesized once and shared like ``default_stacks``."""
     return _two_project_stacks(tmp_path_factory.mktemp("two_project_graph"))
+
+
+@pytest.fixture(scope="session")
+def single_job_stacks(tmp_path_factory: pytest.TempPathFactory) -> Stacks:
+    """The stack graph of `SINGLE_JOB_CONFIG` (the default config plus two single-job
+    queue-classes), synthesized once and shared like ``default_stacks``."""
+    return _build(tmp_path_factory.mktemp("single_job_graph"), config=SINGLE_JOB_CONFIG)

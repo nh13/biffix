@@ -33,6 +33,7 @@ from typing import Any
 from aws_cdk import CfnOutput, Duration, Stack
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_ec2 as ec2
+from aws_cdk import aws_ecr as ecr
 from aws_cdk import aws_ecs as ecs
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_rds as rds
@@ -40,13 +41,14 @@ from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_sns as sns
 from constructs import Construct
 
-from biffix_infra.config import DeployConfig
+from biffix_infra.config import DeployConfig, check_queue_class_name
 from biffix_infra.constructs.alarms import Alarms
 from biffix_infra.constructs.backend_api import BackendApi
 from biffix_infra.constructs.backend_sweep import BackendSweep
 from biffix_infra.constructs.batch_access import BATCH_LOG_GROUP, log_group_arn
 from biffix_infra.constructs.control_plane import ControlPlaneGrants
 from biffix_infra.constructs.coordinator import Coordinator
+from biffix_infra.host_boot import SCRATCH_DIR
 from biffix_infra.lambda_artifacts import rust_lambda_code
 from biffix_infra.rbac import RBAC_GROUP_ROLES
 from biffix_infra.stacks.build_stack import BuildStack
@@ -77,6 +79,7 @@ class ApiStack(Stack):
         coordinator_image: ecs.ContainerImage,
         coordinator_image_uri: str,
         worker_image_repo_uri: str,
+        workflow_repo: ecr.IRepository,
         build: BuildStack,
         alerts_topic: sns.ITopic,
         **kwargs: Any,
@@ -86,14 +89,16 @@ class ApiStack(Stack):
         # ── One coordinator (role + job definition template + context) per project ──
         # name → queue ARN for every WORKER queue-class, in config order; the entrypoint resolves
         # the queue the engine submits child jobs to (--aws-batch-job-queue takes an ARN), by
-        # default the first. The coordinator's queue-class is left out: child jobs never go there.
+        # default the first. The coordinator's queue-class and the single-job ones are left out:
+        # child jobs never go there.
+        # Its order matters, and CDK's JSON puts integer-like keys first: refuse such a name (the
+        # config loader does too; a config built in code is checked here).
+        for name in compute.worker_queues:
+            check_queue_class_name(name)
         queue_map = self.to_json_string(
-            {
-                name: queue.job_queue_arn
-                for name, queue in compute.queues.items()
-                if name != config.coordinator_queue_class.name
-            }
+            {name: queue.job_queue_arn for name, queue in compute.worker_queues.items()}
         )
+        single_job = bool(config.single_job_queue_classes)
         self.projects_path = config.projects_path
         coordinators = {
             project.project_id: Coordinator(
@@ -107,12 +112,26 @@ class ApiStack(Stack):
                 image=coordinator_image,
                 queue_map=queue_map,
                 projects_path=self.projects_path,
+                single_job=single_job,
+                scratch_dir=SCRATCH_DIR,
             )
             for project in projects
         }
+        # A single-job run's job runs as its project's run base role and turns every image its
+        # run's image map names into a SIF itself, so in a deploy with a single-job queue-class
+        # that role may pull from the repositories an image map names.
+        if single_job:
+            for project in projects:
+                self._grant_run_role_image_pulls(project, [workflow_repo, build.builds_repo])
         self.coordinator_roles = {pid: c.role for pid, c in coordinators.items()}
         self.coordinator_job_definitions = {
             pid: c.job_definition for pid, c in coordinators.items()
+        }
+        # Each project's single-job template, in a deploy with a single-job queue-class.
+        self.single_job_job_definitions = {
+            pid: c.single_job_job_definition
+            for pid, c in coordinators.items()
+            if c.single_job_job_definition is not None
         }
         # Each project's context, as the backend reads it (see the module docstring).
         self.project_contexts = {pid: c.context for pid, c in coordinators.items()}
@@ -143,6 +162,9 @@ class ApiStack(Stack):
             coordinator_image_uri=coordinator_image_uri,
             worker_image_repo_uri=worker_image_repo_uri,
             capability_secret=capability_secret,
+            single_job_instance_types={
+                qc.name: list(qc.instances) for qc in config.single_job_queue_classes
+            },
         )
 
         # ── Backend API — Rust Lambda behind an HTTP API Gateway ──
@@ -207,7 +229,8 @@ class ApiStack(Stack):
         # The launch form shows the deploy's retention period for intermediate files.
         if config.intermediates_retention_days is not None:
             fn.add_environment("BIFFIX_RETENTION_DAYS", str(config.intermediates_retention_days))
-        queue_class_names = [qc.name for qc in config.queue_classes if not qc.coordinator]
+        # The task queue-classes a run may pick: neither the coordinator's nor a single-job one.
+        queue_class_names = [qc.name for qc in config.worker_queue_classes]
         fn.add_environment("BIFFIX_QUEUE_CLASSES", ",".join(queue_class_names))
         # Each physical queue's capacity: the fallback spot/on-demand label for a host whose own
         # EC2 lifecycle is unknown. Compact (the queue-name prefix once, then each capacity's
@@ -229,6 +252,31 @@ class ApiStack(Stack):
         # The Cognito groups IdentityStack creates, from the same one mapping (rbac.py): a group
         # can never exist without the backend knowing its role.
         fn.add_environment("BIFFIX_GROUP_ROLE_MAP", json.dumps(RBAC_GROUP_ROLES, sort_keys=True))
+
+    def _grant_run_role_image_pulls(
+        self, project: ProjectStack, repositories: list[ecr.IRepository]
+    ) -> None:
+        """Let `project`'s run base role pull from `repositories` (the tenant's workflow and builds
+        repositories: a run's image map is strict, so it names no other). A policy of this stack's
+        attached to the role, not `repository.grant_pull(role)`, which would put it in the
+        project's stack, and so make that stack depend on the data stack's repositories."""
+        iam.Policy(
+            self,
+            f"RunRoleImagePulls-{project.project_id}",
+            roles=[project.run_base_role],
+            statements=[
+                # GetAuthorizationToken has no resource-level permissions.
+                iam.PolicyStatement(actions=["ecr:GetAuthorizationToken"], resources=["*"]),
+                iam.PolicyStatement(
+                    actions=[
+                        "ecr:BatchGetImage",
+                        "ecr:GetDownloadUrlForLayer",
+                        "ecr:BatchCheckLayerAvailability",
+                    ],
+                    resources=[repository.repository_arn for repository in repositories],
+                ),
+            ],
+        )
 
     def _grant_backend(self, projects: list[ProjectStack], user_pool: cognito.IUserPool) -> None:
         """What the backend reads and writes beyond a launch. Identity-based, on its own role: this
