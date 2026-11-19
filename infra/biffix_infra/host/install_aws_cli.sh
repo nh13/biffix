@@ -5,7 +5,7 @@
 # into every task container and stages the task's S3 I/O with it, so task images (a stock
 # BioContainer) need no AWS CLI of their own.
 #
-# compute_stack.py prepends the pinned values:
+# host_boot.py prepends the pinned values:
 #   BIFFIX_HOST_BUCKET, BIFFIX_REGION, BIFFIX_AWS_CLI_DIR (/opt/biffix/aws-cli),
 #   BIFFIX_AWS_CLI_KEY_PREFIX (host/aws-cli/<version>/),
 #   BIFFIX_AWS_CLI_SHA256_X86_64, BIFFIX_AWS_CLI_SHA256_AARCH64

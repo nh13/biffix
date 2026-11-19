@@ -2,18 +2,28 @@
 the HTTP API."""
 
 import base64
+import dataclasses
+import fnmatch
 import gzip
 import json
+import posixpath
 import re
 from pathlib import Path
 from typing import Any
 
+import pytest
 from aws_cdk.assertions import Match, Template
 from constructs import IConstruct
 
 from biffix_infra.app_graph import Stacks
 from biffix_infra.config import DeployConfig
 from biffix_infra.constructs.script_project import COMMON_SCRIPT, bundled_script
+from biffix_infra.host_boot import (
+    HOST_STATE_DIR,
+    INSTANCE_STORE_MARKER,
+    SCRATCH_DIR,
+    single_job_boot_header,
+)
 from biffix_infra.rbac import RBAC_GROUP_ROLES
 from biffix_infra.stacks.api_stack import ApiStack
 from biffix_infra.stacks.build_stack import RUNTIME_BUILD_SCRIPT
@@ -24,7 +34,11 @@ from tests.synth.synth_helpers import (
     _BATCH,
     BATCH_JOBS,
     CONFIG,
+    SINGLE_JOB_CLASSES,
+    SINGLE_JOB_CONFIG,
+    SINGLE_JOB_VARIANT_JOB_DEFINITIONS,
     VARIANT_JOB_DEFINITIONS,
+    Json,
     _actions,
     _actions_for_role,
     _build,
@@ -32,6 +46,7 @@ from tests.synth.synth_helpers import (
     _grants,
     _lambda_env,
     _logical_id,
+    _policies,
     _project_context,
     _render,
     _resources,
@@ -68,10 +83,25 @@ def test_backend_gets_each_queues_capacity(default_stacks: Stacks) -> None:
     assert capacities["biffix-acme-cpu-spot"] == "SPOT"
 
 
+def _env_value_size(name: str, value: object) -> int:
+    """A Lambda environment value's size once deployed: a literal as it is, a deploy-time value (an
+    ARN, an image URI) 110 bytes. BIFFIX_SINGLE_JOB_QUEUES is JSON holding one queue ARN per
+    single-job queue-class: its literal parts as they are, each ARN 110 bytes."""
+    if isinstance(value, str):
+        return len(value)
+    if name == "BIFFIX_SINGLE_JOB_QUEUES":
+        assert isinstance(value, dict), value
+        sep, parts = value["Fn::Join"]
+        assert sep == "", value
+        return sum(len(p) if isinstance(p, str) else 110 for p in parts)
+    return 110
+
+
 def test_the_backend_environment_stays_well_inside_lambda_s_4_kb(tmp_path: Path) -> None:
     # Lambda refuses a function whose environment (names + values) exceeds 4 KB, and only at
     # deploy: a real deploy failed at 4108 bytes. Synth a deploy that size (13
-    # worker queue-classes, a custom domain, Google federation, two data sources) and bound the
+    # worker queue-classes, a custom domain, Google federation, two data sources), plus two
+    # single-job queue-classes, and bound the
     # backend's and the sweep's environments: literal values as they are, each
     # CloudFormation-resolved one (an ARN, an image URI) at 110 bytes (that deploy's
     # resolved values average 81, the longest 145), under a budget ~200 bytes short of the limit.
@@ -80,10 +110,23 @@ def test_the_backend_environment_stays_well_inside_lambda_s_4_kb(tmp_path: Path)
     # parameter (4 KB).
     arches = [f"arch-{a}" for a in ("c6a", "c7a", "c7i", "c7g", "c8g", "m7i", "m8a", "m8g")]
     arenas = ["arch-m8a-arena", "arch-m8g-arena", "arch-c8g64"]
-    classes = [{"name": "coordinator", "capacity": "ON_DEMAND", "coordinator": True}] + [
-        {"name": n, "capacity": "SPOT" if n != "cpu-ondemand" else "ON_DEMAND"}
-        for n in ["cpu-spot", "cpu-ondemand", *arches, *arenas]
-    ]
+    classes = (
+        [{"name": "coordinator", "capacity": "ON_DEMAND", "coordinator": True}]
+        + [
+            {"name": n, "capacity": "SPOT" if n != "cpu-ondemand" else "ON_DEMAND"}
+            for n in ["cpu-spot", "cpu-ondemand", *arches, *arenas]
+        ]
+        + [
+            # Two single-job queue-classes: BIFFIX_SINGLE_JOB_QUEUES names each queue's ARN.
+            {
+                "name": f"single-{size}",
+                "capacity": "ON_DEMAND",
+                "single_job": True,
+                "instances": [f"c6id.{size}"],
+            }
+            for size in ("8xlarge", "16xlarge")
+        ]
+    )
     source = {
         "bucket": "acme-genomics-data",
         "description": "FASTQs for the benchmark samples.",
@@ -140,9 +183,7 @@ def test_the_backend_environment_stays_well_inside_lambda_s_4_kb(tmp_path: Path)
         measured = {}
         for label, fn in (("backend", api.backend_lambda), ("sweep", api.sweep_lambda)):
             env = _lambda_env(api, fn)
-            measured[label] = sum(
-                len(k) + (len(v) if isinstance(v, str) else 110) for k, v in env.items()
-            )
+            measured[label] = sum(len(k) + _env_value_size(k, v) for k, v in env.items())
         return measured, api
 
     two, _ = sizes("two", two_projects)
@@ -202,12 +243,15 @@ def test_backend_submits_only_variant_job_definitions_on_the_coordinator_queue(
     assert backend_submit == sweep_submit, (backend_submit, sweep_submit)
     (queue,) = [r for r in _resources(backend_submit) if "JobQueueArn" in r]
     assert "Queuecoordinator" in queue, queue
-    assert set(_resources(backend_submit)) == {queue, VARIANT_JOB_DEFINITIONS}
+    assert set(_resources(backend_submit)) == {queue, VARIANT_JOB_DEFINITIONS, BATCH_JOBS}
+    # Only a job without the single-job execution tag (a tasks-mode coordinator).
+    assert backend_submit["Condition"] == {"Null": {"aws:RequestTag/biffix:execution": "true"}}
 
 
 def test_launchers_can_list_a_run_s_coordinators(default_stacks: Stacks) -> None:
     # A launch whose SubmitJob answer was lost looks the run's coordinator up by its job name
-    # (ListJobs, which takes no resource-level permissions) before binding or relaunching it.
+    # (ListJobs) before binding or relaunching it. ListJobs takes no resource-level permissions,
+    # and nothing else rides on the statement.
     api = default_stacks["api"]
     t = Template.from_stack(api)
     for role in (api.backend_lambda.role, api.sweep_lambda.role):
@@ -216,6 +260,25 @@ def test_launchers_can_list_a_run_s_coordinators(default_stacks: Stacks) -> None
         ]
         assert _actions(listing) == {"batch:ListJobs"}
         assert _resources(listing) == ["*"]
+
+
+def test_only_the_sweep_can_describe_job_queues(default_stacks: Stacks) -> None:
+    # Only the launch sweep passes over an earlier launch's queue it cannot list, once
+    # DescribeJobQueues says Batch deleted it; that action takes no resource-level permissions.
+    # The API Lambda never asks, so it is not granted it.
+    api = default_stacks["api"]
+    t = Template.from_stack(api)
+    (describing,) = [
+        st
+        for st in _statements_for(t, api, api.sweep_lambda.role)
+        if "batch:DescribeJobQueues" in _actions(st)
+    ]
+    assert _actions(describing) == {"batch:DescribeJobQueues"}
+    assert _resources(describing) == ["*"]
+    assert not any(
+        _grants(st, "batch:DescribeJobQueues")
+        for st in _statements_for(t, api, api.backend_lambda.role)
+    )
 
 
 def test_the_api_lambda_times_out_when_the_backend_budgets_for(default_stacks: Stacks) -> None:
@@ -356,6 +419,8 @@ def test_backend_and_sweep_can_build_and_register_coordinator_variants(
     for env in wired:
         assert env["BIFFIX_RUNTIME_BUILD_PROJECT"] == "biffix-acme-runtime-build"
         assert env["BIFFIX_VARIANT_JOB_DEFINITION_PREFIX"] == "biffix-acme-coordinator-rt-"
+        # No single-job queue-class, so no single-job variants.
+        assert "BIFFIX_SINGLE_JOB_VARIANT_JOB_DEFINITION_PREFIX" not in env
         assert "BIFFIX_COORDINATOR_IMAGE" in env
 
 
@@ -598,3 +663,319 @@ def test_ingest_url_is_api_local_not_cloudfront(default_stacks: Stacks) -> None:
     assert "cloudfront" not in ingest_url.lower()
     # Intra-stack, so it renders as a GetAtt to the HTTP API's endpoint, not an execute-api literal.
     assert "HttpApi" in ingest_url and "ApiEndpoint" in ingest_url
+
+
+# ── single-job mode ──
+
+
+def _single_job_queue_arns(stacks: Stacks) -> dict[str, str]:
+    """Each single-job queue-class's queue ARN as the api stack imports it, rendered."""
+    api, compute = stacks["api"], stacks["compute"]
+    return {
+        qc.name: _render(api.resolve(compute.queues[qc.name].job_queue_arn))
+        for qc in SINGLE_JOB_CLASSES
+    }
+
+
+def test_the_single_job_template_runs_the_whole_run_as_the_run_role(
+    single_job_stacks: Stacks,
+) -> None:
+    api = single_job_stacks["api"]
+    (project,) = single_job_stacks["projects"]
+    t = Template.from_stack(api)
+    jobdefs = t.find_resources("AWS::Batch::JobDefinition")
+    single = api.single_job_job_definitions[project.project_id]
+    tasks_mode = api.coordinator_job_definitions[project.project_id]
+    props = jobdefs[_logical_id(api, single)]["Properties"]
+    coordinator = jobdefs[_logical_id(api, tasks_mode)]["Properties"]
+    assert props["JobDefinitionName"] == f"biffix-acme-coordinator-single-{project.project_id}"
+    # The tasks-mode template's retries and timeout (the backend sizes the token by them).
+    for key in ("RetryStrategy", "Timeout", "Type", "PlatformCapabilities"):
+        assert props.get(key) == coordinator.get(key), key
+    container = props["ContainerProperties"]
+    assert container["Image"] == coordinator["ContainerProperties"]["Image"]
+    assert container["Command"] == ["biffix-coordinator"]
+    # The project's run base role, not its coordinator role.
+    assert _render(api.resolve(container["JobRoleArn"])) == _render(
+        api.resolve(project.run_base_role.role_arn)
+    )
+    assert container.get("Privileged") in (None, False)
+    assert container["LinuxParameters"] == {
+        "Devices": [
+            {
+                "ContainerPath": "/dev/fuse",
+                "HostPath": "/dev/fuse",
+                "Permissions": ["READ", "WRITE"],
+            }
+        ],
+        "InitProcessEnabled": True,
+    }
+    # The instance-store scratch read-write, and the host's own state directory (where the
+    # boothook writes the instance-store marker) read-only, so no run can remove or fake it.
+    volumes = {v["Name"]: v["Host"]["SourcePath"] for v in container["Volumes"]}
+    assert sorted(volumes.values()) == sorted([SCRATCH_DIR, HOST_STATE_DIR])
+    mounts = {volumes[m["SourceVolume"]]: m for m in container["MountPoints"]}
+    assert mounts == {
+        path: {"ContainerPath": path, "ReadOnly": path == HOST_STATE_DIR, "SourceVolume": name}
+        for name, path in volumes.items()
+    }
+    assert mounts[HOST_STATE_DIR]["ReadOnly"] is True
+    assert mounts[SCRATCH_DIR]["ReadOnly"] is False
+    assert posixpath.dirname(INSTANCE_STORE_MARKER) == HOST_STATE_DIR
+    # A placeholder size: the backend asks for the whole host at submit.
+    assert {r["Type"]: r["Value"] for r in container["ResourceRequirements"]} == {
+        "VCPU": "1",
+        "MEMORY": "2048",
+    }
+    env = {e["Name"]: e["Value"] for e in container["Environment"]}
+    assert env == {
+        "BIFFIX_REGION": CONFIG.region,
+        "BIFFIX_TASK_LOG_GROUP": project.task_log_group_name,
+        "BIFFIX_SCRATCH_ROOT": SCRATCH_DIR,
+        "BIFFIX_INSTANCE_STORE_MARKER": INSTANCE_STORE_MARKER,
+    }
+
+
+def test_the_scratch_root_and_marker_are_one_value_everywhere(single_job_stacks: Stacks) -> None:
+    # host_boot's constants are the one source: the template names them to the job, the host's
+    # boothook gets the same, and the coordinator's own fallbacks (for a job definition that does
+    # not set them) agree.
+    api = single_job_stacks["api"]
+    (project,) = single_job_stacks["projects"]
+    jobdefs = Template.from_stack(api).find_resources("AWS::Batch::JobDefinition")
+    single = api.single_job_job_definitions[project.project_id]
+    container = jobdefs[_logical_id(api, single)]["Properties"]["ContainerProperties"]
+    env = {e["Name"]: e["Value"] for e in container["Environment"]}
+    assert env["BIFFIX_SCRATCH_ROOT"] == SCRATCH_DIR
+    assert env["BIFFIX_INSTANCE_STORE_MARKER"] == INSTANCE_STORE_MARKER
+    header = single_job_boot_header()
+    assert f"BIFFIX_SCRATCH_DIR={SCRATCH_DIR}" in header
+    assert f"BIFFIX_INSTANCE_STORE_MARKER={INSTANCE_STORE_MARKER}" in header
+    coordinator = (REPO_ROOT / "docker/coordinator/lib/single_job.sh").read_text()
+    assert f"${{BIFFIX_SCRATCH_ROOT:-{SCRATCH_DIR}}}" in coordinator
+    assert f"${{BIFFIX_INSTANCE_STORE_MARKER:-{INSTANCE_STORE_MARKER}}}" in coordinator
+
+
+def test_no_single_job_template_without_a_single_job_queue_class(default_stacks: Stacks) -> None:
+    api = default_stacks["api"]
+    assert api.single_job_job_definitions == {}
+    env = _lambda_env(api, api.backend_lambda)
+    assert "BIFFIX_SINGLE_JOB_QUEUES" not in env
+    t = Template.from_stack(api)
+    for fn in (api.backend_lambda, api.sweep_lambda):
+        actions = _actions_for_role(t, api, fn.role)
+        assert "ec2:DescribeInstanceTypes" not in actions
+
+
+def test_backend_and_sweep_get_the_single_job_queues_in_config_order(
+    single_job_stacks: Stacks,
+) -> None:
+    api = single_job_stacks["api"]
+    arns = _single_job_queue_arns(single_job_stacks)
+    for fn in (api.backend_lambda, api.sweep_lambda):
+        raw = _lambda_env(api, fn)["BIFFIX_SINGLE_JOB_QUEUES"]
+        rendered = _render(raw)
+        # Compact JSON, the way the backend parses it: an array in deploy-config order (the first
+        # is the default), so no JSON object's key order decides it.
+        assert ": " not in rendered and ", " not in rendered, rendered
+        assert json.loads(rendered) == [
+            {"name": qc.name, "queue": arns[qc.name], "instance_types": qc.instances}
+            for qc in SINGLE_JOB_CLASSES
+        ]
+
+
+def test_the_backend_may_launch_on_single_job_queues(single_job_stacks: Stacks) -> None:
+    api = single_job_stacks["api"]
+    t = Template.from_stack(api)
+    queues = set(_single_job_queue_arns(single_job_stacks).values())
+    coordinator = _render(api.resolve(single_job_stacks["compute"].coordinator_queue.job_queue_arn))
+    for fn in (api.backend_lambda, api.sweep_lambda):
+        statements = _statements_for(t, api, fn.role)
+        submits = [st for st in statements if _actions(st) == {"batch:SubmitJob"}]
+        # One statement per (queues, variants) pair, each keyed on the execution tag: tasks-mode
+        # variants on the coordinator queue without it, single-job variants on the single-job
+        # queues with it.
+        by_resources = {tuple(sorted(_resources(st))): st.get("Condition") for st in submits}
+        assert by_resources == {
+            tuple(sorted([coordinator, VARIANT_JOB_DEFINITIONS, BATCH_JOBS])): {
+                "Null": {"aws:RequestTag/biffix:execution": "true"}
+            },
+            tuple(sorted([*queues, SINGLE_JOB_VARIANT_JOB_DEFINITIONS, BATCH_JOBS])): {
+                "StringEquals": {"aws:RequestTag/biffix:execution": "single_job"}
+            },
+        }
+        (tag,) = [
+            st
+            for st in statements
+            if _actions(st) == {"batch:TagResource"} and BATCH_JOBS in _resources(st)
+        ]
+        # The same tag conditions as the coordinator queue's, plus the execution tag (one value).
+        assert set(_resources(tag)) == {BATCH_JOBS, coordinator, *queues}
+        assert tag["Condition"]["ForAllValues:StringEquals"] == {
+            "aws:TagKeys": ["biffix:run", "biffix:project", "biffix:execution"]
+        }
+        assert tag["Condition"]["StringEqualsIfExists"] == {
+            "aws:RequestTag/biffix:execution": "single_job"
+        }
+
+
+def _submit_allowed(statements: list[Json], resources: list[str], tags: dict[str, str]) -> bool:
+    """Whether a SubmitJob naming `resources` (queue, job definition, the new job) with request
+    tags `tags` is allowed: IAM checks each resource on its own, against every statement, so each
+    needs an Allow naming it (wildcards matched) whose conditions (the Null and StringEquals
+    request-tag ones these statements use) hold."""
+
+    def holds(condition: Json | None) -> bool:
+        for op, keys in (condition or {}).items():
+            for key, want in keys.items():
+                tag = tags.get(key.removeprefix("aws:RequestTag/"))
+                if op == "Null":
+                    if (tag is None) != (want == "true"):
+                        return False
+                elif op == "StringEquals":
+                    if tag not in (want if isinstance(want, list) else [want]):
+                        return False
+                else:
+                    raise AssertionError(f"unexpected condition {op}")
+        return True
+
+    def allowed(resource: str) -> bool:
+        return any(
+            st["Effect"] == "Allow"
+            and _grants(st, "batch:SubmitJob")
+            and any(fnmatch.fnmatchcase(resource, r) for r in _resources(st))
+            and holds(st.get("Condition"))
+            for st in statements
+        )
+
+    return all(allowed(r) for r in resources)
+
+
+def test_no_launcher_may_submit_a_crossed_pair(single_job_stacks: Stacks) -> None:
+    # A single-job variant runs only on a single-job queue (tagged), a tasks-mode one only on the
+    # coordinator queue (untagged): no tagging makes a crossed pair pass every resource check.
+    api = single_job_stacks["api"]
+    t = Template.from_stack(api)
+    (single_queue, *_) = _single_job_queue_arns(single_job_stacks).values()
+    coordinator = _render(api.resolve(single_job_stacks["compute"].coordinator_queue.job_queue_arn))
+    rt = VARIANT_JOB_DEFINITIONS.removesuffix("*") + "abc:1"
+    sj = SINGLE_JOB_VARIANT_JOB_DEFINITIONS.removesuffix("*") + "abc:1"
+    job = BATCH_JOBS.removesuffix("*") + "0123"
+    base = {"biffix:run": "r", "biffix:project": "p"}
+    single = {**base, "biffix:execution": "single_job"}
+    for fn in (api.backend_lambda, api.sweep_lambda):
+        statements = _statements_for(t, api, fn.role)
+        # The two real launches.
+        assert _submit_allowed(statements, [coordinator, rt, job], base)
+        assert _submit_allowed(statements, [single_queue, sj, job], single)
+        # Every crossed pair, under either tagging, or the wrong tags on a right pair.
+        for tags in (base, single, {**base, "biffix:execution": "other"}):
+            assert not _submit_allowed(statements, [coordinator, sj, job], tags), tags
+            assert not _submit_allowed(statements, [single_queue, rt, job], tags), tags
+        assert not _submit_allowed(statements, [coordinator, rt, job], single)
+        assert not _submit_allowed(statements, [single_queue, sj, job], base)
+        (describe,) = [st for st in statements if "ec2:DescribeInstanceTypes" in _actions(st)]
+        assert _actions(describe) == {"ec2:DescribeInstanceTypes"}
+        assert _resources(describe) == ["*"]
+
+
+def test_backend_and_sweep_register_single_job_variants_under_their_own_prefix(
+    single_job_stacks: Stacks,
+) -> None:
+    # A single-job variant is named `biffix-<tenant>-coordinator-sj-…`, apart from the tasks-mode
+    # `rt-` variants; the backend reads the prefix from the environment.
+    api = single_job_stacks["api"]
+    t = Template.from_stack(api)
+    for fn in (api.backend_lambda, api.sweep_lambda):
+        env = _lambda_env(api, fn)
+        assert env["BIFFIX_VARIANT_JOB_DEFINITION_PREFIX"] == "biffix-acme-coordinator-rt-"
+        assert (
+            env["BIFFIX_SINGLE_JOB_VARIANT_JOB_DEFINITION_PREFIX"] == "biffix-acme-coordinator-sj-"
+        )
+        (register,) = [
+            st
+            for st in _statements_for(t, api, fn.role)
+            if _actions(st) == {"batch:RegisterJobDefinition", "batch:TagResource"}
+            and "Condition" not in st
+        ]
+        assert _resources(register) == [
+            VARIANT_JOB_DEFINITIONS,
+            SINGLE_JOB_VARIANT_JOB_DEFINITIONS,
+        ]
+
+
+def test_a_worker_queue_class_named_with_digits_only_is_refused(tmp_path: Path) -> None:
+    # The queue map's first entry is the coordinator's default worker queue-class, and CDK's JSON
+    # would put a digits-only name first. The loader refuses it (test_config_keys); a config built
+    # in code is refused at synth.
+    digits = dataclasses.replace(CONFIG.queue_classes[0], name="7", coordinator=False)
+    bad = dataclasses.replace(CONFIG, queue_classes=[*CONFIG.queue_classes, digits])
+    with pytest.raises(ValueError, match="digits only"):
+        _build(tmp_path, bad)
+
+
+def test_single_job_queues_are_neither_offered_nor_in_the_queue_map(
+    single_job_stacks: Stacks,
+) -> None:
+    api = single_job_stacks["api"]
+    workers = [qc.name for qc in SINGLE_JOB_CONFIG.worker_queue_classes]
+    env = _lambda_env(api, api.backend_lambda)
+    assert env["BIFFIX_QUEUE_CLASSES"].split(",") == workers
+    (project,) = single_job_stacks["projects"]
+    jobdefs = Template.from_stack(api).find_resources("AWS::Batch::JobDefinition")
+    tasks_mode = api.coordinator_job_definitions[project.project_id]
+    container = jobdefs[_logical_id(api, tasks_mode)]["Properties"]["ContainerProperties"]
+    (queue_map,) = [
+        e["Value"] for e in container["Environment"] if e["Name"] == "BIFFIX_QUEUE_CLASS_MAP"
+    ]
+    assert list(json.loads(_render(queue_map))) == workers
+
+
+def test_backend_and_sweep_pass_the_single_job_template_s_roles(single_job_stacks: Stacks) -> None:
+    # A single-job variant is a clone of the single-job template: it passes the template's
+    # execution role and the run base role (already passed for task definitions).
+    api = single_job_stacks["api"]
+    t = Template.from_stack(api)
+    (project,) = single_job_stacks["projects"]
+    single = api.single_job_job_definitions[project.project_id]
+    execution = _render(api.resolve(single.container.execution_role.role_arn))
+    expected = _template_roles(api) | _run_roles(api, [project]) | {execution}
+    assert len(expected) == 4
+    for fn in (api.backend_lambda, api.sweep_lambda):
+        passes = [st for st in _statements_for(t, api, fn.role) if _grants(st, "iam:PassRole")]
+        assert {r for st in passes for r in _resources(st)} == expected
+
+
+def test_the_run_role_pulls_images_only_with_single_job(
+    default_stacks: Stacks, single_job_stacks: Stacks
+) -> None:
+    def pulls(stacks: Stacks) -> list[Json]:
+        """The ECR statements of every api-stack policy attached to the project's run base role
+        (which the api stack imports from the project's stack)."""
+        api = stacks["api"]
+        (project,) = stacks["projects"]
+        role = _render(api.resolve(project.run_base_role.role_name))
+        return [
+            st
+            for policy in _policies(Template.from_stack(api))
+            if role in [_render(r) for r in policy["Properties"].get("Roles", [])]
+            for st in policy["Properties"]["PolicyDocument"]["Statement"]
+            if any(a.startswith("ecr:") for a in _actions(st))
+        ]
+
+    assert pulls(default_stacks) == []
+    statements = pulls(single_job_stacks)
+    (token,) = [st for st in statements if _actions(st) == {"ecr:GetAuthorizationToken"}]
+    assert _resources(token) == ["*"]
+    (pull,) = [st for st in statements if st is not token]
+    assert _actions(pull) == {
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchCheckLayerAvailability",
+    }
+    rendered = _resources(pull)
+    assert len(rendered) == 2
+    assert any("WorkflowRepo" in r for r in rendered), rendered
+    assert any("BuildsRepo" in r for r in rendered), rendered
+    # Never the coordinator repository.
+    assert not any("CoordinatorRepo" in r for r in rendered), rendered

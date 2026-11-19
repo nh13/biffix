@@ -129,19 +129,21 @@ def parse_project(raw: Raw) -> Project:
 
 def validate_projects(projects: list[Project]) -> None:
     """Refuse a project list the backend could not route by: an id outside `[A-Za-z0-9-]` (it
-    names the `project-<id>` stack) or starting with `rt-`, two projects with one id, or two
-    projects on one bucket. The
-    backend resolves a run's project from the bucket its outputs are in, and each project's
-    coordinator and run roles are scoped to its own bucket, so a shared bucket would make two
-    projects one isolation boundary."""
+    names the `project-<id>` stack) or starting with `rt-`, `sj-` or `single-`, two projects with
+    one id, or two projects on one bucket. The backend resolves a run's project from the bucket its
+    outputs are in, and each project's coordinator and run roles are scoped to its own bucket, so a
+    shared bucket would make two projects one isolation boundary."""
     ids = [p.id for p in projects]
     for pid in ids:
         if not isinstance(pid, str) or not _PROJECT_ID.fullmatch(pid):
             raise ValueError(f"project id {pid!r}: use only letters, digits and `-`")
         # Its coordinator template, `biffix-<tenant>-coordinator-<id>`, must stay outside the
-        # name space of the variants the backend registers (`…-coordinator-rt-*`).
-        if pid.startswith("rt-"):
-            raise ValueError(f"project id {pid!r}: may not start with `rt-` (reserved)")
+        # name spaces of the variants the backend registers (`…-coordinator-rt-*`, and
+        # `…-coordinator-sj-*` for single-job ones) and of the single-job templates
+        # (`…-coordinator-single-<id>`), or two definitions would share one name.
+        for reserved in ("rt-", "sj-", "single-"):
+            if pid.startswith(reserved):
+                raise ValueError(f"project id {pid!r}: may not start with `{reserved}` (reserved)")
     duplicates = sorted({pid for pid in ids if ids.count(pid) > 1})
     if duplicates:
         raise ValueError(f"duplicate project ids: {duplicates}")

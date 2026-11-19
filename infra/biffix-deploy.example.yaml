@@ -46,7 +46,7 @@ worker_egress: nat
 
 # REQUIRED. The queue-class menu: one AWS Batch compute environment and queue per entry
 # (`biffix-<tenant>-<name>`). Workflows pick a queue-class by name, and registration refuses a name
-# that is not here. Exactly one entry must be the coordinator's.
+# that is not here. Exactly one entry must be the coordinator's. A name may not be digits only.
 queue_classes:
   - name: cpu-spot
     # SPOT (default) or ON_DEMAND. Spot is far cheaper; biffix retries tasks a reclaim kills.
@@ -57,6 +57,9 @@ queue_classes:
     instances: ["c", "m", "r"]
     # Whether this is the coordinator's queue-class (default: false).
     coordinator: false
+    # Whether this is a single-job queue-class (default: false): each job on it is a whole run
+    # given the whole host (see the sample below).
+    single_job: false
     # The most vCPUs this compute environment runs at once: its spend ceiling (default: 256).
     max_vcpus: 256
     # The encrypted root volume, in GB. Default: null (30 GB gp3). Raise it for tasks that need
@@ -84,6 +87,21 @@ queue_classes:
   #     ebs_gb: 500
   #     ebs_throughput: 500
   #     ebs_iops: 6000
+  # A single-job queue-class: a run submitted in single-job mode runs entirely in one job on one
+  # whole host (the engine and every task, in apptainer), its intermediates on the host's NVMe
+  # instance-store disks (mounted at /scratch): the types must have NVMe instance store (c6id, m6id,
+  # r6id, i4i, ...), as on a type without it every single-job run fails at start. Its own compute environment, never shared with tasks-mode work: ON_DEMAND, exact
+  # instance types only, and not the coordinator. Give each single-job queue-class ONE size
+  # (c6id.8xlarge with m6id.8xlarge, not with c6id.16xlarge; the loader refuses mixed sizes): a
+  # job asks for its type's whole host, so a host that could hold two smaller ones would run two
+  # runs side by side. Add one queue-class per size.
+  # Its hosts allow containers to create user namespaces and mount in them (infra/README.md,
+  # "Single-job queue-classes").
+  #   - name: single-c6id-8xl
+  #     capacity: ON_DEMAND
+  #     single_job: true
+  #     instances: ["c6id.8xlarge"]
+  #     max_vcpus: 128
 
 # Instance family key -> the instance class Batch is given for it (Batch picks the size). These
 # entries are merged over the built-in defaults: c: c6i, m: m6i, r: r6i, g: g5, arm64: c7g,

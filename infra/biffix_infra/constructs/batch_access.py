@@ -22,6 +22,12 @@ RUN_TAG = "biffix:run"
 # `aws::PROJECT_TAG`): a project's coordinator role may submit, tag and terminate only jobs tagged
 # with its own project, and submit only the task job definitions tagged with it.
 PROJECT_TAG = "biffix:project"
+# The Batch tag the backend puts on a single-job coordinator job at submit (value
+# `SINGLE_JOB_EXECUTION`); a tasks-mode coordinator job carries none. The control plane's SubmitJob
+# grants key on it, so a single-job variant runs only on a single-job queue and a tasks-mode one
+# only on the coordinator queue (ControlPlaneGrants.launch).
+EXECUTION_TAG = "biffix:execution"
+SINGLE_JOB_EXECUTION = "single_job"
 # The log group every Batch job writes to unless its job definition names another: the awslogs
 # driver's default. Coordinators log here (and so did the Snakemake task jobs of runtimes whose
 # executor predated the log-group setting, which no longer launch); task jobs log to their

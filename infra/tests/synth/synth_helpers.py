@@ -23,12 +23,37 @@ from biffix_infra.config import (
     DataSource,
     DeployConfig,
     Project,
+    QueueClass,
 )
 from biffix_infra.stacks.api_stack import ApiStack
 from biffix_infra.stacks.project_stack import ProjectStack
 from tests.deploy_config_file import FIXTURE
 
 CONFIG = DeployConfig.load(FIXTURE)
+
+# The frozen config plus two single-job queue-classes (one size each), with workers in the
+# isolated subnets so a single-job host's placement is told apart from a worker's.
+SINGLE_JOB_CLASSES = (
+    QueueClass(
+        name="single-8xl",
+        capacity="ON_DEMAND",
+        single_job=True,
+        instances=["c6id.8xlarge"],
+        max_vcpus=128,
+    ),
+    QueueClass(
+        name="single-16xl",
+        capacity="ON_DEMAND",
+        single_job=True,
+        instances=["m6id.16xlarge"],
+        max_vcpus=128,
+    ),
+)
+SINGLE_JOB_CONFIG = dataclasses.replace(
+    CONFIG,
+    queue_classes=[*CONFIG.queue_classes, *SINGLE_JOB_CLASSES],
+    worker_egress="ecr_s3_only",
+)
 
 # A piece of a synthesized CloudFormation template (a resource, an IAM statement, ...), as the
 # JSON `Template` gives it.
@@ -188,6 +213,8 @@ _BATCH = "arn:aws:batch:{Ref:AWS::Region}:{Ref:AWS::AccountId}"
 
 
 VARIANT_JOB_DEFINITIONS = f"{_BATCH}:job-definition/biffix-acme-coordinator-rt-*"
+# Every single-job coordinator variant's (clones of the single-job template).
+SINGLE_JOB_VARIANT_JOB_DEFINITIONS = f"{_BATCH}:job-definition/biffix-acme-coordinator-sj-*"
 
 
 BATCH_JOBS = f"{_BATCH}:job/*"

@@ -23,6 +23,8 @@ from biffix_infra.config.compute import (
     HOST_AWS_CLI_PATH,
     HostAwsCli,
     QueueClass,
+    check_queue_class_name,
+    check_single_job,
 )
 from biffix_infra.config.cors import (
     CORS_MAX_AGE_SECONDS,
@@ -79,6 +81,8 @@ __all__ = [
     "Project",
     "QueueClass",
     "bucket_cors_instructions",
+    "check_queue_class_name",
+    "check_single_job",
     "noncurrent_versions_lifecycle_rule",
     "parse_image_archive",
     "project_bucket_cors",
