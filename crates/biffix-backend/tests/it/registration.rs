@@ -10,6 +10,7 @@ use biffix_workflow::digest::ImageDigestError;
 use biffix_workflow::engines::Engine;
 use biffix_workflow::formschema::{from_snakemake_config_ordered, SchemaOrder, WidgetHint};
 use biffix_workflow::manifest::{detect_engine, BiffixManifest, EngineDetectError};
+use biffix_workflow::queues::{QueueAssignment, QueueAssignmentError};
 use biffix_workflow::version::content_hash;
 
 // ── engine detection ──────────────────────────────────────────────────────────
@@ -121,6 +122,7 @@ fn input(qcs: Vec<String>) -> RegisterInput {
         target: None,
         form_schema: Default::default(),
         queue_classes: qcs,
+        queues: Default::default(),
         about_markdown: None,
         runtime_key: "rt".into(),
         runtime_recipe: serde_json::json!({"engine": "snakemake"}),
@@ -135,6 +137,50 @@ fn rejects_unknown_queue_classes() {
     assert_eq!(err, RegisterError::UnknownQueueClasses(vec!["gpu".into(), "tpu".into()]));
     // Read for people, not as a Rust list.
     assert_eq!(err.to_string(), "queue-class(es) not in the deploy menu: gpu, tpu");
+}
+
+#[test]
+fn the_queue_assignment_is_frozen_when_it_picks_among_the_version_s_queue_classes() {
+    let menu = vec!["cpu-spot".to_string(), "gpu".to_string()];
+    let mut nf = input(vec!["cpu-spot".into(), "gpu".into()]);
+    nf.engine = Engine::Nextflow;
+    nf.queues = QueueAssignment {
+        default: Some("cpu-spot".into()),
+        by_label: [("process_gpu".to_string(), "gpu".to_string())].into(),
+        by_name: [("ALIGN".to_string(), "gpu".to_string())].into(),
+    };
+    let v = freeze_version(&nf, &menu, &[], "h").unwrap();
+    assert_eq!(v.queues, nf.queues);
+}
+
+#[test]
+fn a_queue_assignment_outside_the_version_s_queue_classes_is_refused() {
+    let menu = vec!["cpu-spot".to_string(), "gpu".to_string()];
+    // `gpu` is on the menu, but the version does not list it.
+    let mut sm = input(vec!["cpu-spot".into()]);
+    sm.queues.by_name.insert("align".into(), "gpu".into());
+    let err = freeze_version(&sm, &menu, &[], "h").unwrap_err();
+    assert!(matches!(err, RegisterError::Queues(QueueAssignmentError::NotInVersion { .. })));
+    assert!(err.to_string().contains("`gpu` (queues.by_name.align)"), "{err}");
+    // A version listing no queue-classes may assign none either.
+    let mut none = input(vec![]);
+    none.queues.default = Some("cpu-spot".into());
+    assert!(matches!(
+        freeze_version(&none, &menu, &[], "h"),
+        Err(RegisterError::Queues(QueueAssignmentError::NotInVersion { ref listed, .. }))
+            if listed.is_empty()
+    ));
+}
+
+#[test]
+fn a_snakemake_queue_assignment_by_label_is_refused() {
+    let menu = vec!["cpu-spot".to_string()];
+    let mut sm = input(vec!["cpu-spot".into()]);
+    sm.queues.by_label.insert("process_high".into(), "cpu-spot".into());
+    assert_eq!(
+        freeze_version(&sm, &menu, &[], "h").unwrap_err(),
+        RegisterError::Queues(QueueAssignmentError::LabelsNeedNextflow)
+    );
 }
 
 fn prior(id: &str, build: u32, hash: &str) -> SourceBuild {
@@ -256,6 +302,17 @@ fn the_inputs_hash_covers_what_the_version_freezes_and_nothing_else() {
         ("queue classes", |h| {
             h.input.queue_classes = vec!["gpu".into()];
         }),
+        // With several queue classes and no `queues.default`, the first is where tasks run.
+        ("the first of several queue classes", |h| {
+            h.input.queue_classes = vec!["gpu".into(), "cpu-spot".into()];
+        }),
+        ("queue assignment by name", |h| {
+            h.input.queues.by_name.insert("align".into(), "gpu".into());
+        }),
+        ("queue assignment by label", |h| {
+            h.input.queues.by_label.insert("process_gpu".into(), "gpu".into());
+        }),
+        ("queue assignment default", |h| h.input.queues.default = Some("gpu".into())),
         ("form schema", |h| h.input.form_schema = Default::default()),
         ("about", |h| h.input.about_markdown = Some("# hi".into())),
     ];
@@ -264,12 +321,12 @@ fn the_inputs_hash_covers_what_the_version_freezes_and_nothing_else() {
         change(&mut changed);
         assert_ne!(base.hash(), changed.hash(), "{what} is not hashed");
     }
-    // What the version freezes but the hash leaves out: the order queue classes were given in and
-    // their duplicates, and the default image's digest and ECR coordinates, which the pinned
-    // `images` already carry.
+    // What the version freezes but the hash leaves out: the order of the queue classes after the
+    // first and their duplicates, and the default image's digest and ECR coordinates, which the
+    // pinned `images` already carry.
     let unhashed: Vec<Change> = vec![
-        ("queue class order and duplicates", |h| {
-            h.input.queue_classes = vec!["gpu".into(), "cpu-spot".into(), "gpu".into()];
+        ("queue class order after the first, and duplicates", |h| {
+            h.input.queue_classes = vec!["cpu-spot".into(), "gpu".into(), "gpu".into()];
         }),
         ("image digest", |h| {
             h.input.image_digest = format!("sha256:{}", "b".repeat(64));
@@ -289,6 +346,27 @@ fn the_inputs_hash_covers_what_the_version_freezes_and_nothing_else() {
         change(&mut changed);
         assert_eq!(base.hash(), changed.hash(), "{what} is hashed");
     }
+}
+
+#[test]
+fn a_version_with_one_queue_class_and_no_assignment_hashes_as_before_the_assignment() {
+    // Pinned, so a change to what such a version hashes (which would make re-registering every
+    // existing version a new build) is deliberate.
+    let mut one = Hashed::base();
+    one.input.queue_classes = vec!["cpu-spot".into()];
+    assert_eq!(one.hash(), "593fa2c6d0c9b57e1df3006cf6e9cc1543923cbd4cde2243d562a35cae673afd");
+    // Duplicates of the one queue class do not choose a default.
+    one.input.queue_classes = vec!["cpu-spot".into(), "cpu-spot".into()];
+    assert_eq!(one.hash(), "593fa2c6d0c9b57e1df3006cf6e9cc1543923cbd4cde2243d562a35cae673afd");
+}
+
+#[test]
+fn with_a_queues_default_the_order_of_the_queue_classes_is_not_hashed() {
+    let mut base = Hashed::base();
+    base.input.queues.default = Some("gpu".into());
+    let mut reordered = base.clone();
+    reordered.input.queue_classes = vec!["gpu".into(), "cpu-spot".into()];
+    assert_eq!(base.hash(), reordered.hash());
 }
 
 #[test]
@@ -356,6 +434,7 @@ fn mem_version(
             target: None,
             form_schema: serde_json::json!({"fields": [], "warnings": []}),
             queue_classes: vec![],
+            queues: Default::default(),
             about_markdown: None,
             runtime_key: "rt".into(),
             runtime_recipe: serde_json::json!({"engine": "nextflow"}),

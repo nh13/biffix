@@ -241,6 +241,16 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
             &engine_version,
         )?;
     }
+    // Which queue-class each task runs on: checked here, before anything is staged, as the server
+    // checks it again (against the deploy's menu too).
+    let queues = manifest.queues.clone().unwrap_or_default();
+    queues
+        .validate(engine, &opts.queue_classes)
+        .map_err(|e| CliError::InvalidInput(format!("biffix.yaml {e}")))?;
+    // Advisory: a by_name entry for a rule the workflow does not define assigns nothing.
+    if engine == Engine::Snakemake {
+        crate::local::queue_names::warn_unmatched_rules(root, &files, &entrypoint.file, &queues);
+    }
     let form_schema = serde_json::to_value(&form_schema)
         .map_err(|e| CliError::Unclassified(format!("cannot encode the form: {e}")))?;
     // Checked before anything is staged, as the server would refuse it after.
@@ -302,6 +312,7 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
         registration_inputs,
         images: named_images,
         nextflow_plugins,
+        queues: (!queues.is_empty()).then(|| queues.into()),
     };
 
     // The same source with the same inputs again is refused, naming the version already registered
@@ -309,12 +320,25 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
     // bring versions up to date, reports the same reply as "up to date" instead.
     let view = client.register_workflow(&req).await.map_err(annotate_register)?;
     let id = view.id.as_str().to_string();
-    // A deployment that predates build options ignores them; say so rather than build the wrong
-    // image (asked only when there are any).
-    if super::images::sends_build_options(&req.images) {
-        let detail =
-            client.get_workflow(&id).await.map_err(|e| super::images::read_back_failed(&id, e))?;
-        super::images::check_build_options_kept(&id, &req.images, &detail.images)?;
+    // A deployment that predates build options or `queues` ignores them; say so rather than build
+    // the wrong image or run every task on the default queue (asked only when there are any).
+    let sends_build_options = super::images::sends_build_options(&req.images);
+    if sends_build_options || req.queues.is_some() {
+        let detail = client.get_workflow(&id).await.map_err(|e| {
+            if sends_build_options {
+                super::images::read_back_failed(&id, e)
+            } else {
+                e.map_message(|m| {
+                    format!("registered {id}, but its queue assignment could not be read back: {m}")
+                })
+            }
+        })?;
+        if sends_build_options {
+            super::images::check_build_options_kept(&id, &req.images, &detail.images)?;
+        }
+        if let Some(sent) = &req.queues {
+            check_queues_kept(&id, sent, detail.queues.as_ref())?;
+        }
     }
 
     // The server is authoritative for the frozen id, but a divergence from the id the CLI computed
@@ -359,6 +383,26 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
         }
     }
     Ok(())
+}
+
+/// Refuse a registration whose deployment did not record the queue assignment `sent` as sent (a
+/// backend that predates `queues` ignores the field): `shown` is the version `id`'s assignment as
+/// the deployment records it. The version is registered by then, but every task would run on its
+/// default queue-class.
+fn check_queues_kept(
+    id: &str,
+    sent: &biffix_api::QueueAssignment,
+    shown: Option<&biffix_api::QueueAssignment>,
+) -> CliResult<()> {
+    if shown == Some(sent) {
+        return Ok(());
+    }
+    Err(CliError::Unclassified(format!(
+        "registered {id}, but the deployment recorded it without the biffix.yaml `queues:` sent, \
+         as a backend that predates queue assignments does; deploy the backend first (`deploy.sh` \
+         without `--stack`): every task of {id} would run on its default queue-class. Do not run \
+         {id}; register again once it is deployed"
+    )))
 }
 
 /// The tarball of `tree`, checked to hold the content `content_hash` (the version id) names: the
@@ -525,6 +569,25 @@ fn annotate_register(err: CliError) -> CliError {
 mod tests {
     use super::*;
     use crate::commands::workflows::version;
+
+    #[test]
+    fn a_queue_assignment_the_deployment_dropped_is_refused() {
+        let sent = biffix_api::QueueAssignment {
+            by_name: [("align".to_string(), "gpu".to_string())].into(),
+            ..Default::default()
+        };
+        assert!(check_queues_kept("abc:h:0", &sent, Some(&sent)).is_ok());
+        for shown in [None, Some(biffix_api::QueueAssignment::default())] {
+            let err = check_queues_kept("abc:h:0", &sent, shown.as_ref()).unwrap_err();
+            assert!(
+                matches!(&err, CliError::Unclassified(m)
+                    if m.starts_with("registered abc:h:0, but the deployment recorded it without \
+                                      the biffix.yaml `queues:` sent")
+                        && m.contains("deploy the backend first")),
+                "{err:?}"
+            );
+        }
+    }
 
     #[test]
     fn register_rejections_keep_the_server_s_reason() {

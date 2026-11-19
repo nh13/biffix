@@ -54,6 +54,11 @@ mod tests {
             "70d3f2003476933200d670b03258b90211699bce1e1c5cfa58266e1a12523f1c\
              f94833ff36a14b8bd15b840d9caf9e5c",
         ),
+        (
+            4,
+            "48e2e3b88a150c05f97fec496fdb8b4c91f8d60ab7075f45a846d1fb80df54ce\
+             a042865e4b7b3866d4433a92d50c5498",
+        ),
     ];
 
     #[test]

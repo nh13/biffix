@@ -2472,6 +2472,23 @@ export interface components {
         [key: string]: number;
       };
     };
+    /**
+     * @description Which worker queue-class each task runs on: `queues:` in `biffix.yaml`
+     *     (`biffix_workflow::queues`). Values are queue-class names, resolved to the deployment's Batch
+     *     queues when a run starts.
+     */
+    QueueAssignment: {
+      /** @description Nextflow only: process label → queue-class. */
+      by_label?: {
+        [key: string]: string;
+      };
+      /** @description Nextflow process or Snakemake rule name → queue-class. */
+      by_name?: {
+        [key: string]: string;
+      };
+      /** @description The queue-class tasks run on when no selector picks one. */
+      default?: string | null;
+    };
     /** @description A reference bundle (`GET /references`). */
     ReferenceBundle: {
       /** Format: int64 */
@@ -2575,6 +2592,7 @@ export interface components {
       project: string;
       /** @description Worker queue-classes this version's tasks reference (validated against the deploy menu). */
       queue_classes?: string[] | null;
+      queues?: components['schemas']['QueueAssignment'] | null;
       /** @description How the CLI was invoked, recorded so the version can be re-registered from its inputs. */
       registration_inputs: components['schemas']['RegistrationInputs'];
       /**
@@ -4106,6 +4124,7 @@ export interface components {
       not_ready?: string[];
       project: string;
       queue_classes: string[];
+      queues?: components['schemas']['QueueAssignment'] | null;
       /** @description What the registration was given beyond the source. */
       registration_inputs: components['schemas']['RegistrationInputs'];
       /** @description Whether this version is released (see [`WorkflowVersionSummary::release`]). */

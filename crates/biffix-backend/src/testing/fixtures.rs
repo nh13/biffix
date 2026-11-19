@@ -102,6 +102,7 @@ pub fn version_with_reports(
             target: None,
             form_schema: serde_json::json!({"fields": [], "warnings": [], "reports": reports}),
             queue_classes: vec![],
+            queues: Default::default(),
             about_markdown: None,
             runtime_key,
             runtime_recipe,

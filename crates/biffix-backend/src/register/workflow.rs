@@ -57,6 +57,10 @@ pub struct WorkflowVersion {
     /// Queue-classes this version's tasks reference (validated against the deploy menu).
     #[serde(default)]
     pub queue_classes: Vec<String>,
+    /// Which of those queue-classes each task runs on (`queues:` in `biffix.yaml`), as validated
+    /// at registration. Empty: every task runs on the default queue-class.
+    #[serde(default, skip_serializing_if = "biffix_workflow::queues::QueueAssignment::is_empty")]
+    pub queues: biffix_workflow::queues::QueueAssignment,
     /// The version's About page (Markdown from the manifest's `about:`), when it has one.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub about_markdown: Option<String>,

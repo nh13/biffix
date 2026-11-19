@@ -80,6 +80,7 @@ fn register_request() -> biffix_api::RegisterRequest {
         registration_inputs: Default::default(),
         images: Default::default(),
         nextflow_plugins: Vec::new(),
+        queues: None,
     }
 }
 

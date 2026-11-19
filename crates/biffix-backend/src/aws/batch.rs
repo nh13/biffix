@@ -73,8 +73,13 @@ pub struct CoordinatorLaunch {
     pub output_prefix: Option<String>,
     /// Parameter values the coordinator materializes into the engine config.
     pub params: serde_json::Value,
-    /// Worker queue-classes this version declared; the first selects the child-job queue.
+    /// Worker queue-classes this version declared; the first selects the child-job queue unless
+    /// `queues` names a default.
     pub(crate) queue_classes: Vec<String>,
+    /// Which queue-class each task runs on (`queues:` in `biffix.yaml`), validated at
+    /// registration: its default selects the child-job queue, its selectors the tasks that run
+    /// elsewhere.
+    pub(crate) queues: biffix_workflow::queues::QueueAssignment,
     /// Default task retry count (`BIFFIX_RETRIES`); `None` leaves the coordinator's default.
     pub retries: Option<u32>,
     /// Keep-going (`BIFFIX_KEEP_GOING`); `None` leaves the coordinator's default.

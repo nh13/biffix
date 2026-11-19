@@ -109,6 +109,7 @@ fn row_to_record(r: &sqlx::postgres::PgRow) -> Result<RegisteredVersion, StoreEr
     // Native Postgres text[] ↔ Vec<String> directly — no JSON re-parse per row.
     let queue_classes: Vec<String> = r.get("queue_classes");
     let registration_inputs = serde_json::from_value(required(r, "registration_inputs")?)?;
+    let queues = serde_json::from_value(r.get("queues"))?;
     let version = WorkflowVersion {
         id: r.get("id"),
         build: build_of(r, "build")?,
@@ -127,6 +128,7 @@ fn row_to_record(r: &sqlx::postgres::PgRow) -> Result<RegisteredVersion, StoreEr
         target: r.get("target"),
         form_schema: r.get("form_schema"),
         queue_classes,
+        queues,
         about_markdown: r.get("about_markdown"),
         runtime_key: required(r, "runtime_key")?,
         runtime_recipe: required(r, "runtime_recipe")?,
@@ -150,6 +152,7 @@ impl RegistryStore for PgRegistryStore {
     async fn put_version(&self, rec: &RegisteredVersion) -> Result<(), StoreError> {
         let source = serde_json::to_value(&rec.source)?;
         let registration_inputs = serde_json::to_value(&rec.registration_inputs)?;
+        let queues = serde_json::to_value(&rec.version.queues)?;
         let build = i32::try_from(rec.version.build).map_err(|_| {
             StoreError::Serialization(format!("build {} is out of range", rec.version.build))
         })?;
@@ -169,9 +172,9 @@ impl RegistryStore for PgRegistryStore {
                   engine_version, entrypoint, target, source, form_schema, queue_classes,
                   created_by, created_at, image_repository, image_registry_id, image_region,
                   created_by_label, about_markdown, build, registration_inputs,
-                  registration_inputs_hash, runtime_key, runtime_recipe)
+                  registration_inputs_hash, runtime_key, runtime_recipe, queues)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                       $21,$22,$23,$24,$25)
+                       $21,$22,$23,$24,$25,$26)
                ON CONFLICT DO NOTHING",
         )
         .bind(&rec.version.id)
@@ -199,6 +202,7 @@ impl RegistryStore for PgRegistryStore {
         .bind(&rec.registration_inputs_hash)
         .bind(&rec.version.runtime_key)
         .bind(&rec.version.runtime_recipe)
+        .bind(&queues)
         .execute(&mut *tx)
         .await?;
         if res.rows_affected() == 0 {

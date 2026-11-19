@@ -266,6 +266,7 @@ pub(crate) async fn prepare(
         target: req.target.clone(),
         form_schema,
         queue_classes: req.queue_classes.clone().unwrap_or_default(),
+        queues: req.queues.clone().map(Into::into).unwrap_or_default(),
         about_markdown: req.about_markdown.clone().filter(|a| !a.trim().is_empty()),
         runtime_key: runtime_key.clone(),
         runtime_recipe: serde_json::to_value(&recipe)
@@ -453,6 +454,7 @@ pub fn reregister_request(
         registration_inputs: inputs,
         images,
         nextflow_plugins,
+        queues: (!v.queues.is_empty()).then(|| v.queues.clone().into()),
     })
 }
 

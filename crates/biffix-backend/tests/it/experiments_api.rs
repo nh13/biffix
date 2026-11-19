@@ -38,6 +38,7 @@ fn version_in(project: &str, id: &str) -> RegisteredVersion {
             target: None,
             form_schema: json!({"fields": [], "warnings": []}),
             queue_classes: vec![],
+            queues: Default::default(),
             about_markdown: None,
             runtime_key: "rt".into(),
             runtime_recipe: json!({"engine": "snakemake"}),

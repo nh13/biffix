@@ -23,6 +23,8 @@ pub enum RegisterError {
     InvalidImageDigest(#[from] ImageDigestError),
     #[error("queue-class(es) not in the deploy menu: {}", .0.join(", "))]
     UnknownQueueClasses(Vec<String>),
+    #[error(transparent)]
+    Queues(#[from] biffix_workflow::queues::QueueAssignmentError),
     #[error(
         "{prefix} {build} ({id}): the same source registered with the same inputs; nothing to \
          register",
@@ -40,9 +42,11 @@ pub(crate) const REGISTRATION_PIPELINE_VERSION: u32 = 6;
 /// sha256 over what a registration freezes: the name, project, source (its git sha and content
 /// hash, and where the coordinator fetches it from: the git repository and ref, or the S3 object
 /// and its sha256) and source mode, the effective engine, engine version, entrypoint, target,
-/// queue classes, FormSchema and About page, the engine runtime, the pinned images, and the
-/// registration pipeline version. So the same commit registered from a corrected location is a
-/// new build, not "identical" to one whose location no longer resolves.
+/// queue classes and queue assignment (and, for a version with several queue classes and no
+/// `queues.default`, the first, where its tasks run by default), FormSchema and About page, the
+/// engine runtime, the pinned images, and the registration pipeline version. So the same commit
+/// registered from a corrected location is a new build, not "identical" to one whose location no
+/// longer resolves.
 ///
 /// It hashes the effective values, not the overrides the client says it gave, so two
 /// registrations are "identical" exactly when they would freeze the same version: re-registering
@@ -76,12 +80,30 @@ pub fn inputs_hash(
         entrypoint: &'a str,
         target: Option<&'a str>,
         queue_classes: Vec<&'a str>,
+        // The queue class tasks run on by default when the version lists several and
+        // `queues.default` does not choose: the first given, which the sorted list above loses.
+        // Left out otherwise (one queue class, or a `queues.default`, which `queues` carries), so
+        // those versions hash as they did before it was added. A version with several and no
+        // default hashes differently since: its first re-registration after the upgrade is a new
+        // build rather than "identical".
+        #[serde(skip_serializing_if = "Option::is_none")]
+        default_queue_class: Option<&'a str>,
+        // Left out when empty, so a version that assigns no queues hashes as it did before the
+        // assignment existed (re-registering it unchanged is still "identical").
+        #[serde(skip_serializing_if = "biffix_workflow::queues::QueueAssignment::is_empty")]
+        queues: &'a biffix_workflow::queues::QueueAssignment,
         form_schema: &'a FormSchema,
         about_markdown: Option<&'a str>,
     }
     let mut queue_classes: Vec<&str> = input.queue_classes.iter().map(String::as_str).collect();
     queue_classes.sort_unstable();
     queue_classes.dedup();
+    let default_queue_class = match input.queue_classes.first() {
+        Some(first) if queue_classes.len() > 1 && input.queues.default.is_none() => {
+            Some(first.as_str())
+        }
+        _ => None,
+    };
     let hashed = Hashed {
         pipeline_version: REGISTRATION_PIPELINE_VERSION,
         name,
@@ -97,6 +119,8 @@ pub fn inputs_hash(
         entrypoint: &input.entrypoint,
         target: input.target.as_deref(),
         queue_classes,
+        default_queue_class,
+        queues: &input.queues,
         form_schema: &input.form_schema,
         about_markdown: input.about_markdown.as_deref(),
     };
@@ -121,6 +145,8 @@ pub struct RegisterInput {
     pub target: Option<String>,
     pub form_schema: FormSchema,
     pub queue_classes: Vec<String>,
+    /// Which of `queue_classes` each task runs on (`queues:` in `biffix.yaml`).
+    pub queues: biffix_workflow::queues::QueueAssignment,
     /// The version's About page Markdown, when the manifest names one.
     pub about_markdown: Option<String>,
     /// The engine runtime's key and recipe (`biffix_workflow::runtime`).
@@ -128,7 +154,8 @@ pub struct RegisterInput {
     pub runtime_recipe: serde_json::Value,
 }
 
-/// Freeze a WorkflowVersion, validating queue-classes against the deploy menu. `prior` are the
+/// Freeze a WorkflowVersion, validating queue-classes against the deploy menu and the queue
+/// assignment against the engine and the version's queue-classes. `prior` are the
 /// versions already frozen from the same source: one with the same `inputs_hash` makes this an
 /// identical registration (refused); otherwise the version is the next build. `menu` and `prior`
 /// are supplied by the caller (deploy config + store).
@@ -153,6 +180,8 @@ pub fn freeze_version(
     if !unknown.is_empty() {
         return Err(RegisterError::UnknownQueueClasses(unknown));
     }
+    // The assignment picks among the version's queue-classes (so, through them, the menu's).
+    input.queues.validate(input.engine, &input.queue_classes)?;
 
     if let Some(same) = prior.iter().find(|p| p.registration_inputs_hash == inputs_hash) {
         return Err(RegisterError::IdenticalBuild { id: same.id.clone(), build: same.build });
@@ -176,6 +205,7 @@ pub fn freeze_version(
         form_schema: serde_json::to_value(&input.form_schema)
             .expect("a FormSchema always serializes"),
         queue_classes: input.queue_classes.clone(),
+        queues: input.queues.clone(),
         about_markdown: input.about_markdown.clone(),
         runtime_key: input.runtime_key.clone(),
         runtime_recipe: input.runtime_recipe.clone(),
