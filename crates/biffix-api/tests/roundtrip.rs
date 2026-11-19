@@ -228,7 +228,7 @@ fn register_request_round_trips() {
             version: "2.7.2".into(),
             sha256: "0".repeat(64),
         }],
-        queues: Some(QueueAssignment {
+        queues: Some(biffix_api::QueuesRequest {
             default: Some("cpu-spot".into()),
             by_label: std::collections::BTreeMap::from([(
                 "process_high".into(),
@@ -338,7 +338,7 @@ fn registered_version_views_round_trip() {
         target: Some("aws".into()),
         form_schema: serde_json::json!({"fields": [], "warnings": []}),
         queue_classes: vec!["default".into()],
-        queues: Some(QueueAssignment { default: Some("default".into()), ..Default::default() }),
+        queues: Some(VersionQueues { default: Some("default".into()), ..Default::default() }),
         created_by: Some("user".into()),
         created_by_label: Some("User Name".into()),
         created_at_micros: 42,

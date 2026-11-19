@@ -3,7 +3,7 @@
 
 import type { components } from '#lib/generated/api.js';
 
-export type QueueAssignment = components['schemas']['QueueAssignment'];
+export type VersionQueues = components['schemas']['VersionQueues'];
 
 /** One line of the assignment: the tasks it picks, and the queue-class they run on. */
 export interface QueueRow {
@@ -19,7 +19,7 @@ export interface QueueRow {
  * assignment.
  */
 export function queueRows(
-  queues: QueueAssignment | null | undefined,
+  queues: VersionQueues | null | undefined,
   queueClasses: readonly string[] = [],
 ): QueueRow[] {
   if (!queues) return [];

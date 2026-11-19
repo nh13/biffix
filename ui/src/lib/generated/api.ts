@@ -2473,11 +2473,11 @@ export interface components {
       };
     };
     /**
-     * @description Which worker queue-class each task runs on: `queues:` in `biffix.yaml`
-     *     (`biffix_workflow::queues`). Values are queue-class names, resolved to the deployment's Batch
-     *     queues when a run starts.
+     * @description The `queues:` block a registration sends ([`VersionQueues`] as a version records it). An
+     *     unknown key, such as a misspelled `by_nmae`, is refused rather than dropped, which would run
+     *     every task it meant to pick on the default queue-class.
      */
-    QueueAssignment: {
+    QueuesRequest: {
       /** @description Nextflow only: process label → queue-class. */
       by_label?: {
         [key: string]: string;
@@ -2592,7 +2592,7 @@ export interface components {
       project: string;
       /** @description Worker queue-classes this version's tasks reference (validated against the deploy menu). */
       queue_classes?: string[] | null;
-      queues?: components['schemas']['QueueAssignment'] | null;
+      queues?: components['schemas']['QueuesRequest'] | null;
       /** @description How the CLI was invoked, recorded so the version can be re-registered from its inputs. */
       registration_inputs: components['schemas']['RegistrationInputs'];
       /**
@@ -3918,6 +3918,24 @@ export interface components {
       view?: components['schemas']['ViewMode'] | null;
     };
     /**
+     * @description A version's queue assignment, which worker queue-class each task runs on: `queues:` in
+     *     `biffix.yaml`, as the API carries it (the domain type is `biffix_workflow::queues::
+     *     QueueAssignment`). Values are queue-class names, resolved to the deployment's Batch queues
+     *     when a run starts.
+     */
+    VersionQueues: {
+      /** @description Nextflow only: process label → queue-class. */
+      by_label?: {
+        [key: string]: string;
+      };
+      /** @description Nextflow process or Snakemake rule name → queue-class. */
+      by_name?: {
+        [key: string]: string;
+      };
+      /** @description The queue-class tasks run on when no selector picks one. */
+      default?: string | null;
+    };
+    /**
      * @description Whether a version is released now, and by whom: the one release shape every workflow read
      *     carries (`GET /workflows`, `GET /workflows/{id}`, `PUT /workflows/{id}/release`).
      *     `at_micros`, `by` and `by_label` describe the change that released it, so they are set only
@@ -4124,7 +4142,7 @@ export interface components {
       not_ready?: string[];
       project: string;
       queue_classes: string[];
-      queues?: components['schemas']['QueueAssignment'] | null;
+      queues?: components['schemas']['VersionQueues'] | null;
       /** @description What the registration was given beyond the source. */
       registration_inputs: components['schemas']['RegistrationInputs'];
       /** @description Whether this version is released (see [`WorkflowVersionSummary::release`]). */

@@ -23,11 +23,12 @@ LIB = Path(__file__).resolve().parents[1] / "lib"
 FAKES = Path(__file__).parent / "fakes" / "py"
 
 
-def bash(code: str, *libs: str, **env: str) -> subprocess.CompletedProcess[str]:
+def bash(code: str, *libs: str, stdin: str = "", **env: str) -> subprocess.CompletedProcess[str]:
     """`code` in bash under the entrypoint's options, with common.sh and `libs` sourced."""
     sources = "".join(f'. "$LIB_DIR/{lib}.sh"\n' for lib in ("common", *libs))
     return subprocess.run(
         ["bash", "-c", f"set -euo pipefail\n{sources}{code}"],
+        input=stdin,
         env={"PATH": os.environ["PATH"], "LIB_DIR": str(LIB), "PYTHONPATH": str(FAKES)} | env,
         capture_output=True,
         text=True,
@@ -427,46 +428,77 @@ ASSIGNMENT = json.dumps(
 )
 
 
-def test_a_nextflow_assignment_is_withlabel_then_withname_selectors() -> None:
-    assert module("queue_selectors").settings("nextflow", ASSIGNMENT, QUEUES) == [
-        "process { withLabel: 'process_high' { queue = 'arn:q/cpu' } }",
-        "process { withLabel: 'size=large' { queue = 'arn:q/spot' } }",
-        "process { withName: 'ALIGN' { queue = 'arn:q/cpu' } }",
-        "process { withName: 'WF:SUB:CALL' { queue = 'arn:q/spot' } }",
+def selector_lines(
+    engine: str, assignment: str, queues: str = QUEUES, selectors: ModuleType | None = None
+) -> list[str]:
+    """queue_selectors.py's lines for `assignment` (in `selectors`, a loaded copy of the script)."""
+    selectors = selectors or module("queue_selectors")
+    lines: list[str] = selectors.settings(engine, *selectors.parse_assignment(assignment), queues)
+    return lines
+
+
+def test_a_nextflow_assignment_is_withlabel_then_withname_lines() -> None:
+    assert selector_lines("nextflow", ASSIGNMENT) == [
+        "withLabel\tprocess_high\tarn:q/cpu",
+        "withLabel\tsize=large\tarn:q/spot",
+        "withName\tALIGN\tarn:q/cpu",
+        "withName\tWF:SUB:CALL\tarn:q/spot",
     ]
 
 
+def test_nextflow_s_lines_become_config_selectors_with_the_queue_quoted() -> None:
+    lines = selector_lines("nextflow", ASSIGNMENT, json.dumps({"cpu": "arn:q/'x\\", "spot": "s"}))
+    got = bash("queue_selector_config", "nextflow", stdin="\n".join(lines) + "\n")
+    assert got.returncode == 0, got.stderr
+    assert got.stdout.splitlines() == [
+        "process { withLabel: 'process_high' { queue = 'arn:q/\\'x\\\\' } }",
+        "process { withLabel: 'size=large' { queue = 's' } }",
+        "process { withName: 'ALIGN' { queue = 'arn:q/\\'x\\\\' } }",
+        "process { withName: 'WF:SUB:CALL' { queue = 's' } }",
+    ]
+    # No assignment, no selectors.
+    assert bash("queue_selector_config", "nextflow", stdin="").stdout == ""
+
+
 def test_a_snakemake_assignment_is_the_executor_s_rule_queue_map() -> None:
-    got = module("queue_selectors").settings(
-        "snakemake", json.dumps({"by_name": {"call": "spot", "align": "cpu"}}), QUEUES
-    )
+    got = selector_lines("snakemake", json.dumps({"by_name": {"call": "spot", "align": "cpu"}}))
     assert got == ['{"align": "arn:q/cpu", "call": "arn:q/spot"}']
     # No rule named, no map.
-    assert module("queue_selectors").settings("snakemake", "{}", QUEUES) == []
+    assert selector_lines("snakemake", "{}") == []
 
 
 def test_a_snakemake_rule_name_is_any_name_snakemake_gives() -> None:
     # A `name:` directive's string, or an unnamed rule's number: the map is matched exactly, and
     # JSON quotes the name.
-    names = {"1": "cpu", "align-bwa-mem": "spot", "a:b (x)": "cpu"}
-    (got,) = module("queue_selectors").settings("snakemake", json.dumps({"by_name": names}), QUEUES)
+    names = {"1": "cpu", "align-bwa-mem": "spot", "a:b (x)": "cpu", "a'b": "cpu"}
+    (got,) = selector_lines("snakemake", json.dumps({"by_name": names}))
     assert json.loads(got) == {
         "1": "arn:q/cpu",
         "align-bwa-mem": "arn:q/spot",
         "a:b (x)": "arn:q/cpu",
+        "a'b": "arn:q/cpu",
     }
 
 
-def test_a_queue_is_quoted_for_the_engine_that_reads_it() -> None:
-    queues = json.dumps({"q": "arn:q/'x\\"})
+SELECTOR_CASES = json.loads(
+    (Path(__file__).resolve().parents[3] / "schemas" / "queue-selector-cases.json").read_text()
+)
+
+
+@pytest.mark.parametrize(
+    "case", SELECTOR_CASES, ids=lambda c: f"{c['engine']}-{c['key']}-{c['selector']!r}"
+)
+def test_the_selector_grammars_agree_with_registration(case: dict[str, object]) -> None:
+    # biffix-workflow's cases (schemas/queue-selector-cases.json, from queues.rs's validation):
+    # this script accepts exactly the selectors registration does.
     selectors = module("queue_selectors")
-    one = json.dumps({"by_name": {"a": "q"}})
-    assert selectors.settings("nextflow", one, queues) == [
-        "process { withName: 'a' { queue = 'arn:q/\\'x\\\\' } }"
-    ]
-    # JSON, which the executor reads back to the queue.
-    (sm,) = selectors.settings("snakemake", one, queues)
-    assert json.loads(sm) == {"a": "arn:q/'x\\"}
+    assignment = json.dumps({case["key"]: {case["selector"]: "cpu"}})
+    try:
+        selector_lines(str(case["engine"]), assignment, selectors=selectors)
+    except selectors.AssignmentError:
+        assert not case["accepted"], case
+    else:
+        assert case["accepted"], case
 
 
 @pytest.mark.parametrize(
@@ -499,7 +531,8 @@ def test_an_assignment_that_cannot_be_applied_says_why(
 @pytest.mark.parametrize(
     ("queues", "why"),
     [
-        ('{"cpu": "arn:q/\\ncpu"}', "a worker queue has a control character"),
+        ('{"cpu": "arn:q/\\ncpu"}', "the worker queue of 'cpu' has a control character"),
+        ('{"cpu": "arn:q/\\tcpu"}', "the worker queue of 'cpu' has a control character"),
         ('{"cpu": ""}', "queue-class 'cpu' (by_name.A) has no queue in BIFFIX_QUEUE_CLASS_MAP"),
         ("{not json", "BIFFIX_QUEUE_CLASS_MAP is not JSON"),
         ('["arn:q/cpu"]', "BIFFIX_QUEUE_CLASS_MAP is not a JSON object"),
@@ -1097,24 +1130,6 @@ def test_groovy_str_escapes_backslashes_and_quotes(value: str, literal: str) -> 
     got = bash('groovy_str "$V" what', "nextflow", V=value)
     assert got.returncode == 0, got.stderr
     assert got.stdout == literal
-
-
-GROOVY_STR_CASES = ["plain", "it's", "a\\b", "\\'", "", "$x ${y}", "arn:aws:batch:q/'x\\", "é"]
-
-
-@pytest.mark.parametrize("value", GROOVY_STR_CASES + ["a\nb", "a\rb", "a\tb", "a\x7fb"])
-def test_groovy_str_agrees_with_queue_selectors(value: str) -> None:
-    # queue_selectors.py writes Nextflow selectors with its own copy of groovy_str: both must
-    # quote alike, and refuse alike.
-    got = bash('groovy_str "$V" what', "nextflow", V=value)
-    selectors = module("queue_selectors")
-    try:
-        literal = selectors.groovy_str(value, "what")
-    except selectors.AssignmentError:
-        assert got.returncode == 78, (value, got.stdout)
-    else:
-        assert got.returncode == 0, got.stderr
-        assert got.stdout == literal
 
 
 @pytest.mark.parametrize("value", ["a\nb", "a\rb", "a\tb"])

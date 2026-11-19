@@ -1,0 +1,308 @@
+[
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "process_high",
+    "accepted": true
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "a",
+    "accepted": true
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "gpu2",
+    "accepted": true
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "queue=large",
+    "accepted": true
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "A_b9",
+    "accepted": true
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "_x",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "x_",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "9x",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "process.*",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "a b",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "a=",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "=b",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "a=b=c",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "big-one",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "a\n",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_label",
+    "selector": "ä",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "ALIGN",
+    "accepted": true
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "_x",
+    "accepted": true
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "NFCORE_SAREK:SAREK:BWAMEM1_MEM",
+    "accepted": true
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "ÄLIGN",
+    "accepted": true
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "WF:çall",
+    "accepted": true
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "a1_B2",
+    "accepted": true
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "Á",
+    "accepted": true
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "9A",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "A:",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": ":A",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "A::B",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "A.*",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "A|B",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "A-B",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "A B",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "A\n",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "A'",
+    "accepted": false
+  },
+  {
+    "engine": "nextflow",
+    "key": "by_name",
+    "selector": "A$",
+    "accepted": false
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_name",
+    "selector": "align",
+    "accepted": true
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_name",
+    "selector": "1",
+    "accepted": true
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_name",
+    "selector": "align-bwa-mem",
+    "accepted": true
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_name",
+    "selector": "a.b",
+    "accepted": true
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_name",
+    "selector": "A:B",
+    "accepted": true
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_name",
+    "selector": "call (gpu)",
+    "accepted": true
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_name",
+    "selector": "ālign",
+    "accepted": true
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_name",
+    "selector": "a'b",
+    "accepted": true
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_name",
+    "selector": "",
+    "accepted": false
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_name",
+    "selector": "a\n",
+    "accepted": false
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_name",
+    "selector": "a\tb",
+    "accepted": false
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_name",
+    "selector": "",
+    "accepted": false
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_name",
+    "selector": "a",
+    "accepted": false
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_name",
+    "selector": "",
+    "accepted": false
+  },
+  {
+    "engine": "snakemake",
+    "key": "by_label",
+    "selector": "process_high",
+    "accepted": false
+  }
+]

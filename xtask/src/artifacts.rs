@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 /// Every artifact under `schemas/`, as `(file name, content)`: the JSON Schemas derived from the
-/// contract types, and the cross-language fixture tables the UI and plugin tests read.
+/// contract types, and the cross-language fixture tables the UI, plugin and coordinator tests read.
 pub(crate) fn all() -> Vec<(&'static str, String)> {
     fn gen<T: schemars::JsonSchema>() -> String {
         pretty_json(&schemars::schema_for!(T))
@@ -19,6 +19,7 @@ pub(crate) fn all() -> Vec<(&'static str, String)> {
         ("validate-cases.json", crate::cases::validate::cases_json()),
         ("sheet-cases.json", crate::cases::sheet::cases_json()),
         ("image-ref-cases.json", crate::cases::image_ref::cases_json()),
+        ("queue-selector-cases.json", crate::cases::queue_selector::cases_json()),
         ("failure-causes.json", failure_causes_json()),
         ("ingest-limits.json", ingest_limits_json()),
     ]

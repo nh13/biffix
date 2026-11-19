@@ -46,12 +46,11 @@ use crate::engines::Engine;
 /// 8 KiB, most of it left for the run's parameters.
 const MAX_QUEUE_SELECTOR_BYTES: usize = 2048;
 
-/// The longest label or name accepted, in characters.
-const MAX_QUEUE_SELECTOR_CHARS: usize = 128;
-
-/// A Nextflow process name: an identifier, or identifiers joined by `:` (a fully qualified name).
+/// A Nextflow process name: an identifier (Groovy's, Unicode letters included), or identifiers
+/// joined by `:` (a fully qualified name). No character of it is a regex metacharacter.
 static PROCESS_NAME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*(?::[A-Za-z_][A-Za-z0-9_]*)*$").expect("valid")
+    let identifier = r"[\p{XID_Start}_]\p{XID_Continue}*";
+    Regex::new(&format!("^{identifier}(?::{identifier})*$")).expect("valid")
 });
 
 /// A label as Nextflow's `label` directive accepts it (`ProcessBuilder.isValidLabel`): a letter,
@@ -64,8 +63,11 @@ static NEXTFLOW_LABEL: LazyLock<Regex> = LazyLock::new(|| {
 /// The `queues:` block of `biffix.yaml`: the queue-class every task runs on by default, and the
 /// tasks that run elsewhere, by label (Nextflow) or by name. Recorded on the version as given.
 ///
-/// Unknown keys are ignored here, so a version stored by a newer backend (with a key added since)
-/// still reads; `biffix.yaml` refuses them, through [`BiffixManifest`](crate::manifest).
+/// Unknown keys are kept here ([`Self::unknown`]), so a version stored by a newer backend (with a
+/// key added since) still reads, and the key still reaches the coordinator, which refuses an
+/// assignment it cannot apply rather than run those tasks on the default queue. `biffix.yaml`
+/// refuses them, through [`BiffixManifest`](crate::manifest), and so do registration and
+/// re-registration.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueAssignment {
     /// The queue-class tasks run on when no selector picks one; absent, the version's first
@@ -80,6 +82,10 @@ pub struct QueueAssignment {
     /// matches them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub by_name: BTreeMap<String, String>,
+    /// Keys this backend does not know, as a newer one stored them: kept so they travel to the
+    /// coordinator with the selectors (see above). Never set by registration, which refuses them.
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_json::Value>,
 }
 
 /// [`QueueAssignment`] as `biffix.yaml` must spell it: an unknown (likely misspelled) key is
@@ -103,6 +109,7 @@ pub(crate) fn deserialize_manifest<'de, D: Deserializer<'de>>(
         default: q.default,
         by_label: q.by_label,
         by_name: q.by_name,
+        unknown: BTreeMap::new(),
     }))
 }
 
@@ -130,10 +137,9 @@ pub enum QueueAssignmentError {
          character)"
     )]
     BadRuleName(String),
-    /// A label or name longer than the engines' selectors are allowed here; `what` says which
-    /// (`label`, `process name`, `rule name`), `at` where (`by_label.<label>`, `by_name.<name>`).
-    #[error("`queues.{at}`: the {what} is longer than {MAX_QUEUE_SELECTOR_CHARS} characters")]
-    TooLong { what: &'static str, at: String },
+    /// Keys this version of biffix does not know (only a stored assignment can carry them).
+    #[error("`queues` has keys this biffix does not know: {}", .0.join(", "))]
+    UnknownKeys(Vec<String>),
     #[error(
         "`queues`: its selectors (the `by_label` and `by_name` entries, labels, names and \
          queue-classes) take {0} bytes as JSON, more than the {MAX_QUEUE_SELECTOR_BYTES} a run can \
@@ -164,9 +170,19 @@ fn listed_note(listed: &[String]) -> String {
 }
 
 impl QueueAssignment {
-    /// Whether the block assigns nothing (absent, or every key empty).
+    /// Whether the block assigns nothing (absent, or every key empty; a key this backend does not
+    /// know counts as something).
     pub fn is_empty(&self) -> bool {
-        self.default.is_none() && self.by_label.is_empty() && self.by_name.is_empty()
+        self.default.is_none()
+            && self.by_label.is_empty()
+            && self.by_name.is_empty()
+            && self.unknown.is_empty()
+    }
+
+    /// The queue-class a task no selector picks runs on: the block's `default`, else the first of
+    /// the version's queue-classes `listed` (`None`: the deployment's first).
+    pub fn default_queue_class<'a>(&'a self, listed: &'a [String]) -> Option<&'a str> {
+        self.default.as_deref().or(listed.first().map(String::as_str))
     }
 
     /// Check the block for a version of `engine` that lists the queue-classes `listed`
@@ -198,6 +214,9 @@ impl QueueAssignment {
     /// queue-class values are settled by [`Self::check_listed`] (and, through the version's list,
     /// the deploy's menu).
     fn check_selectors(&self, engine: Engine) -> Result<(), QueueAssignmentError> {
+        if !self.unknown.is_empty() {
+            return Err(QueueAssignmentError::UnknownKeys(self.unknown.keys().cloned().collect()));
+        }
         let bytes = serde_json::to_string(&self.selectors())
             .expect("a map of strings always serializes")
             .len();
@@ -208,22 +227,11 @@ impl QueueAssignment {
             return Err(QueueAssignmentError::LabelsNeedNextflow);
         }
         for label in self.by_label.keys() {
-            if label.chars().count() > MAX_QUEUE_SELECTOR_CHARS {
-                let at = format!("by_label.{label}");
-                return Err(QueueAssignmentError::TooLong { what: "label", at });
-            }
             if !NEXTFLOW_LABEL.is_match(label) {
                 return Err(QueueAssignmentError::BadLabel(label.clone()));
             }
         }
         for name in self.by_name.keys() {
-            let what = match engine {
-                Engine::Nextflow => "process name",
-                Engine::Snakemake => "rule name",
-            };
-            if name.chars().count() > MAX_QUEUE_SELECTOR_CHARS {
-                return Err(QueueAssignmentError::TooLong { what, at: format!("by_name.{name}") });
-            }
             match engine {
                 Engine::Nextflow if !PROCESS_NAME.is_match(name) => {
                     return Err(QueueAssignmentError::BadProcessName(name.clone()));
@@ -278,6 +286,7 @@ mod tests {
             default: default.map(str::to_string),
             by_label: map(labels),
             by_name: map(names),
+            unknown: BTreeMap::new(),
         }
     }
 
@@ -303,7 +312,30 @@ mod tests {
         // A version a newer backend stored, read by this one (as after a rollback).
         let stored = r#"{"by_name": {"align": "gpu"}, "by_resource": {"gpus": "gpu"}}"#;
         let got: QueueAssignment = serde_json::from_str(stored).unwrap();
-        assert_eq!(got, assignment(None, &[], &[("align", "gpu")]));
+        let mut want = assignment(None, &[], &[("align", "gpu")]);
+        want.unknown.insert("by_resource".into(), serde_json::json!({"gpus": "gpu"}));
+        assert_eq!(got, want);
+        // The key travels with the selectors, so the coordinator can refuse what it cannot apply,
+        // and keeps the assignment from reading as empty.
+        assert_eq!(
+            serde_json::to_value(got.selectors()).unwrap(),
+            serde_json::json!({"by_name": {"align": "gpu"}, "by_resource": {"gpus": "gpu"}})
+        );
+        let only_unknown: QueueAssignment = serde_json::from_str(r#"{"by_x": 1}"#).unwrap();
+        assert!(!only_unknown.is_empty() && !only_unknown.selectors().is_empty());
+        // Registration refuses it.
+        assert_eq!(
+            check(&only_unknown, Engine::Nextflow),
+            Err(QueueAssignmentError::UnknownKeys(vec!["by_x".into()]))
+        );
+    }
+
+    #[test]
+    fn the_default_queue_class_is_the_block_s_else_the_first_listed() {
+        let listed = ["cpu".to_string(), "gpu".to_string()];
+        assert_eq!(assignment(Some("gpu"), &[], &[]).default_queue_class(&listed), Some("gpu"));
+        assert_eq!(QueueAssignment::default().default_queue_class(&listed), Some("cpu"));
+        assert_eq!(QueueAssignment::default().default_queue_class(&[]), None);
     }
 
     #[test]
@@ -334,7 +366,7 @@ mod tests {
 
     #[test]
     fn a_name_is_a_nextflow_process_name_or_any_snakemake_rule_name() {
-        for ok in ["ALIGN", "_x", "NFCORE_SAREK:SAREK:BWAMEM1_MEM"] {
+        for ok in ["ALIGN", "_x", "NFCORE_SAREK:SAREK:BWAMEM1_MEM", "ÄLIGN", "WF:çall"] {
             assert_eq!(
                 check(&assignment(None, &[], &[(ok, "q")]), Engine::Nextflow),
                 Ok(()),
@@ -362,27 +394,6 @@ mod tests {
                 check(&assignment(None, &[], &[(bad, "q")]), Engine::Snakemake),
                 Err(QueueAssignmentError::BadRuleName(bad.into())),
                 "{bad}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_label_or_name_is_held_to_its_length() {
-        let fits = "a".repeat(MAX_QUEUE_SELECTOR_CHARS);
-        let long = "a".repeat(MAX_QUEUE_SELECTOR_CHARS + 1);
-        assert_eq!(check(&assignment(None, &[(&fits, "q")], &[]), Engine::Nextflow), Ok(()));
-        assert_eq!(check(&assignment(None, &[], &[(&fits, "q")]), Engine::Snakemake), Ok(()));
-        let cases = [
-            (assignment(None, &[(&long, "q")], &[]), Engine::Nextflow, "label", "by_label"),
-            (assignment(None, &[], &[(&long, "q")]), Engine::Nextflow, "process name", "by_name"),
-            (assignment(None, &[], &[(&long, "q")]), Engine::Snakemake, "rule name", "by_name"),
-        ];
-        for (a, engine, what, key) in cases {
-            let err = check(&a, engine).unwrap_err();
-            assert_eq!(err, QueueAssignmentError::TooLong { what, at: format!("{key}.{long}") });
-            assert_eq!(
-                err.to_string(),
-                format!("`queues.{key}.{long}`: the {what} is longer than 128 characters")
             );
         }
     }

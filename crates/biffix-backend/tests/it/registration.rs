@@ -148,6 +148,7 @@ fn the_queue_assignment_is_frozen_when_it_picks_among_the_version_s_queue_classe
         default: Some("cpu-spot".into()),
         by_label: [("process_gpu".to_string(), "gpu".to_string())].into(),
         by_name: [("ALIGN".to_string(), "gpu".to_string())].into(),
+        unknown: Default::default(),
     };
     let v = freeze_version(&nf, &menu, &[], "h").unwrap();
     assert_eq!(v.queues, nf.queues);

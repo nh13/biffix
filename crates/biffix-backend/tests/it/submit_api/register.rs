@@ -388,6 +388,14 @@ async fn a_version_s_queue_assignment_is_checked_and_shown() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     assert!(text_body(res).await.contains("`gpu` (queues.by_name.align)"));
 
+    // A misspelled key is refused, not dropped (which would run every task on the default).
+    let mut body = register_body();
+    body["git_sha"] = json!("eee");
+    body["queues"] = json!({"default": "cpu-spot", "by_nmae": {"align": "cpu-spot"}});
+    let res = app.clone().oneshot(post("/workflows", Some("developers"), &body)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(text_body(res).await.contains("unknown field `by_nmae`"));
+
     // A version with no assignment shows none.
     let mut body = register_body();
     body["git_sha"] = json!("fed");

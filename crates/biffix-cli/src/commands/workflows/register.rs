@@ -219,14 +219,18 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
         biffix_workflow::engines::check_engine_version(engine.as_str(), &engine_version)
             .map_err(|e| CliError::InvalidInput(e.to_string()))?
             .canonical;
-    // Advisory: rules that would run with Snakemake's default memory on AWS Batch.
-    if engine == Engine::Snakemake {
-        crate::local::memory_warning::warn_rules_without_memory(
+    // The Snakemake workflow's rules, read once for the advisories below.
+    let scan = (engine == Engine::Snakemake).then(|| {
+        crate::local::memory_warning::scan_workflow(
             root,
             &files,
             &entrypoint.file,
             Some(&engine_version),
-        );
+        )
+    });
+    // Advisory: rules that would run with Snakemake's default memory on AWS Batch.
+    if let Some(scan) = &scan {
+        crate::local::memory_warning::warn_rules_without_memory(scan);
     }
     // The workflow's own Nextflow plugins (`plugins:`, already checked by prepare_form): built
     // into its runtime, since the coordinator runs Nextflow offline. A pipeline that declares a
@@ -247,9 +251,10 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
     queues
         .validate(engine, &opts.queue_classes)
         .map_err(|e| CliError::InvalidInput(format!("biffix.yaml {e}")))?;
-    // Advisory: a by_name entry for a rule the workflow does not define assigns nothing.
-    if engine == Engine::Snakemake {
-        crate::local::queue_names::warn_unmatched_rules(root, &files, &entrypoint.file, &queues);
+    // Advisory: a by_name entry for a rule the workflow does not define assigns nothing, and a
+    // group whose rules it splits across queue-classes cannot be submitted.
+    if let Some(scan) = &scan {
+        crate::local::queue_warning::warn_queue_assignment(scan, &queues);
     }
     let form_schema = serde_json::to_value(&form_schema)
         .map_err(|e| CliError::Unclassified(format!("cannot encode the form: {e}")))?;
@@ -324,15 +329,15 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
     // the wrong image or run every task on the default queue (asked only when there are any).
     let sends_build_options = super::images::sends_build_options(&req.images);
     if sends_build_options || req.queues.is_some() {
-        let detail = client.get_workflow(&id).await.map_err(|e| {
-            if sends_build_options {
-                super::images::read_back_failed(&id, e)
-            } else {
-                e.map_message(|m| {
-                    format!("registered {id}, but its queue assignment could not be read back: {m}")
-                })
-            }
-        })?;
+        let what = match (sends_build_options, req.queues.is_some()) {
+            (true, true) => "build options and queue assignment",
+            (true, false) => "build options",
+            _ => "queue assignment",
+        };
+        let detail = client
+            .get_workflow(&id)
+            .await
+            .map_err(|e| super::images::read_back_failed(&id, what, e))?;
         if sends_build_options {
             super::images::check_build_options_kept(&id, &req.images, &detail.images)?;
         }
@@ -391,10 +396,10 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
 /// default queue-class.
 fn check_queues_kept(
     id: &str,
-    sent: &biffix_api::QueueAssignment,
-    shown: Option<&biffix_api::QueueAssignment>,
+    sent: &biffix_api::QueuesRequest,
+    shown: Option<&biffix_api::VersionQueues>,
 ) -> CliResult<()> {
-    if shown == Some(sent) {
+    if shown == Some(&sent.clone().into()) {
         return Ok(());
     }
     Err(CliError::Unclassified(format!(
@@ -572,12 +577,12 @@ mod tests {
 
     #[test]
     fn a_queue_assignment_the_deployment_dropped_is_refused() {
-        let sent = biffix_api::QueueAssignment {
+        let sent = biffix_api::QueuesRequest {
             by_name: [("align".to_string(), "gpu".to_string())].into(),
             ..Default::default()
         };
-        assert!(check_queues_kept("abc:h:0", &sent, Some(&sent)).is_ok());
-        for shown in [None, Some(biffix_api::QueueAssignment::default())] {
+        assert!(check_queues_kept("abc:h:0", &sent, Some(&sent.clone().into())).is_ok());
+        for shown in [None, Some(biffix_api::VersionQueues::default())] {
             let err = check_queues_kept("abc:h:0", &sent, shown.as_ref()).unwrap_err();
             assert!(
                 matches!(&err, CliError::Unclassified(m)

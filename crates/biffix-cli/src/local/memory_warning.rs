@@ -12,34 +12,29 @@ use crate::local::source::SourceFiles;
 /// How many rules the warning names before counting the rest.
 const SHOWN: usize = 5;
 
-/// Print (to stderr) the warning for the Snakemake workflow at `root`, whose source the coordinator
-/// gets is `files`, run from `entrypoint` (a file of `files`) on `engine_version` (`None`: not
-/// pinned, so every supported release is assumed), if any rule would run with Snakemake's default
-/// memory.
-pub(crate) fn warn_rules_without_memory(
+/// Scan the Snakemake workflow at `root`, whose source the coordinator gets is `files`, run from
+/// `entrypoint` (a file of `files`) on `engine_version` (`None`: not pinned, so every supported
+/// release is assumed). Reads only the files of `files` the scan needs (the Snakefile, what it
+/// includes, the workflow profile). One scan serves every advisory `register` prints.
+pub(crate) fn scan_workflow(
     root: &Path,
     files: &SourceFiles,
     entrypoint: &str,
     engine_version: Option<&str>,
-) {
-    if let Some(warning) = memory_warning(root, files, entrypoint, engine_version) {
-        eprintln!("[biffix] {warning}");
-    }
-}
-
-/// The warning for the Snakemake workflow at `root`, if there is one. Reads only the files of
-/// `files` the check needs (the Snakefile, what it includes, the workflow profile).
-fn memory_warning(
-    root: &Path,
-    files: &SourceFiles,
-    entrypoint: &str,
-    engine_version: Option<&str>,
-) -> Option<String> {
+) -> ResourceScan {
     let paths = files.paths();
     // Read as the run reads it: a symlink is followed, as Snakemake follows it.
     let read = |path: &str| std::fs::read_to_string(root.join(path)).ok();
     let version = engine_version.and_then(|v| EngineVersion::parse(v.trim()));
-    warning_text(&scan_snakemake_resources(&paths, read, entrypoint, version))
+    scan_snakemake_resources(&paths, read, entrypoint, version)
+}
+
+/// Print (to stderr) the warning for the workflow `scan` read, if any rule would run with
+/// Snakemake's default memory.
+pub(crate) fn warn_rules_without_memory(scan: &ResourceScan) {
+    if let Some(warning) = warning_text(scan) {
+        eprintln!("[biffix] {warning}");
+    }
 }
 
 /// The warning for `scan`, if any rule is listed.
@@ -172,19 +167,24 @@ mod tests {
         write("profiles/default/config.yaml", "default-resources: [mem_mb=1]\n");
 
         let listed = || shipped_files(root, SourceMode::Git, None).unwrap();
-        let warning = memory_warning(root, &listed(), "Snakefile", Some("9.27.0")).unwrap();
+        let warning =
+            warning_text(&scan_workflow(root, &listed(), "Snakefile", Some("9.27.0"))).unwrap();
         assert!(warning.starts_with("warning: 1 rule(s) set no memory"), "{warning}");
         assert!(warning.contains(": rules/a.smk:1 a. "), "{warning}");
         assert!(!warning.contains("engine_version"), "{warning}");
         // On 9.0.0 `mem_mib` is not read either.
-        let warning = memory_warning(root, &listed(), "Snakefile", Some("9.0.0")).unwrap();
+        let warning =
+            warning_text(&scan_workflow(root, &listed(), "Snakefile", Some("9.0.0"))).unwrap();
         assert!(
             warning.contains(": Snakefile:2 top (mem_mib is not read as memory), rules/a.smk:1 a."),
             "{warning}"
         );
 
         git_ok(root, &["add", "profiles/default/config.yaml"]);
-        assert_eq!(memory_warning(root, &listed(), "Snakefile", Some("9.27.0")), None);
+        assert_eq!(
+            warning_text(&scan_workflow(root, &listed(), "Snakefile", Some("9.27.0"))),
+            None
+        );
     }
 
     #[test]
@@ -200,9 +200,10 @@ mod tests {
             "rule a:\n    output: \"a\"\n    shell: \"x\"\n",
         )
         .unwrap();
-        let warning = memory_warning(root, &files, "Snakefile", Some("9.27.0")).unwrap();
+        let warning =
+            warning_text(&scan_workflow(root, &files, "Snakefile", Some("9.27.0"))).unwrap();
         assert!(warning.contains(": lib/rules.smk:1 a. "), "{warning}");
         let without = crate::local::source::SourceFiles::of(&["Snakefile"]);
-        assert_eq!(memory_warning(root, &without, "Snakefile", Some("9.27.0")), None);
+        assert_eq!(warning_text(&scan_workflow(root, &without, "Snakefile", Some("9.27.0"))), None);
     }
 }

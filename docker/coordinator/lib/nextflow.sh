@@ -19,6 +19,19 @@ groovy_str() {
   printf "'%s'" "$v"
 }
 
+# queue_selector_config: the -c config lines for the tasks the version sends to other queues, from
+# queue_selectors.py's lines on stdin (lib/tasks.sh QUEUE_SELECTORS_FILE): each
+# `withLabel|withName <TAB> <selector> <TAB> <queue>`, the selector an exact label or name (the
+# script checked it), becomes `process { withLabel: '<selector>' { queue = '<queue>' } }`, the
+# queue quoted by groovy_str.
+queue_selector_config() {
+  local kind selector queue
+  while IFS=$'\t' read -r kind selector queue; do
+    queue=$(groovy_str "$queue" "a worker queue")
+    echo "process { ${kind}: '${selector}' { queue = ${queue} } }"
+  done
+}
+
 # layer_plugin_version <id>: the version of the one <id> plugin the runtime layer carries
 # ($NXF_PLUGINS_DIR/<id>-<version>). It goes into NXF_PLUGINS_DEFAULT, a comma-separated list, so
 # only a plain version is accepted. The layer also carries the workflow's own plugins, so only a
@@ -120,7 +133,7 @@ run_nextflow() {
     # which outrank process.queue and a process's own `queue` directive, and, read after the
     # pipeline's config, its `queue` under the same selector; a pipeline selector that is more
     # specific (withName over withLabel) still wins, as Nextflow ranks them.
-    cat "$QUEUE_SELECTORS_FILE"
+    queue_selector_config <"$QUEUE_SELECTORS_FILE"
     [ -z "$image" ] || echo "process.container = ${image}"
     # Tag every task's Batch job with the run and project it belongs to (nf-amazon submits
     # resourceLabels as job tags): biffix accepts the plugin's task_submitted claim on a job only

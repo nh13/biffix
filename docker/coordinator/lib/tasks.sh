@@ -59,8 +59,9 @@ resolve_worker_queue() {
 
 # resolve_queue_selectors: the tasks the version sends to another worker queue than the default
 # (BIFFIX_QUEUE_ASSIGNMENT, by label or name), in the engine's own terms, in QUEUE_SELECTORS_FILE
-# (empty without an assignment; queue_selectors.py): Nextflow withLabel / withName `queue`
-# selectors for the -c config, one per line, or the Snakemake executor's rule queue map. Each
+# (empty without an assignment; queue_selectors.py): for Nextflow one tab-separated
+# `withLabel|withName <selector> <queue>` line per selector, which lib/nextflow.sh writes into the
+# -c config, or the Snakemake executor's rule queue map. Each
 # queue-class resolves through the same map as the default; exit 78 when one does not. Resolved
 # before the engine starts, so a dry run checks it too.
 resolve_queue_selectors() {

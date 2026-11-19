@@ -400,6 +400,17 @@ pub fn reregister_request(
     engine_version: Option<&str>,
 ) -> Result<RegisterRequest, ServiceError> {
     let v = &rec.version;
+    // A key a newer biffix stored would be dropped by the request (which has no field for it),
+    // and the new version would run those tasks on the default queue-class.
+    if !v.queues.unknown.is_empty() {
+        let keys: Vec<&str> = v.queues.unknown.keys().map(String::as_str).collect();
+        return Err(ServiceError::Invalid(format!(
+            "{}: its `queues` has keys this biffix does not know ({}); re-register it with a \
+             biffix that does",
+            v.id,
+            keys.join(", ")
+        )));
+    }
     let images: std::collections::BTreeMap<String, biffix_api::ImageRequest> = rec
         .images
         .iter()

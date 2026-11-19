@@ -59,7 +59,7 @@ The EC2 instance type the task's winning attempt ran on.
 
 The AWS Batch job queue the task's winning attempt ran on, as AWS reported it. A biffix queue is
 named `biffix-<tenant>-<queue-class>`, so this is the queue-class the version's `queues:` (or its
-default) sent the task to.
+default) sent the task to. Its `propertyID` is `jobQueue`.
 
 ### estimatedcost
 

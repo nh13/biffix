@@ -96,6 +96,10 @@ pub struct ResourceScan {
     /// see, a module's rules, or a rule named by Snakemake rather than its header (an unnamed
     /// rule, numbered, or one with a `name:` directive).
     pub rule_names: Option<BTreeSet<String>>,
+    /// The `group:` of each rule that has one, by rule name, when [`Self::rule_names`] is known
+    /// and every `group:` is a plain string; `None` otherwise. (A run's `--groups` or profile
+    /// `groups:` can group rules too, which the scan does not see.)
+    pub rule_groups: Option<BTreeMap<String, String>>,
 }
 
 /// Find the rules of a Snakemake workflow that would run on AWS Batch with Snakemake's default
@@ -166,6 +170,16 @@ where
         unreadable_profile,
         rule_names: (!workflow.incomplete && workflow.modules.is_empty())
             .then(|| workflow.rules.iter().map(|r| r.name.clone()).collect()),
+        rule_groups: (!workflow.incomplete && workflow.modules.is_empty())
+            .then(|| {
+                workflow
+                    .rules
+                    .iter()
+                    .filter_map(|r| r.body.group.clone().map(|g| (r.name.clone(), g)))
+                    .map(|(rule, g)| g.map(|g| (rule, g)))
+                    .collect::<Option<BTreeMap<_, _>>>()
+            })
+            .flatten(),
         unchecked_modules: workflow.modules.into_iter().collect(),
         every_release: engine_version.is_none(),
     }
@@ -208,6 +222,9 @@ struct Body {
     localrule: Option<bool>,
     /// A `name:` directive renames the rule, to a name the scan does not read.
     renamed: bool,
+    /// The `group:` directive: `Some(Some(name))` for a plain string, `Some(None)` for anything
+    /// else (an expression the scan does not evaluate).
+    group: Option<Option<String>>,
 }
 
 /// One statement of a rule file that matters here, in source order.
@@ -231,6 +248,9 @@ enum Statement {
     /// An `include:` of a plain string path, resolved against the including file (`None` when the
     /// path is not a plain string, or names no file of the source).
     Include(Option<String>),
+    /// A rule declaration (`rule`, `checkpoint`, `use rule`) the scan cannot read, such as one
+    /// whose header a trailing backslash continues onto the next line.
+    Unparsed,
 }
 
 /// A rule as the run sees it (a derived rule with its base's directives merged in).
@@ -306,6 +326,7 @@ fn read_workflow<R: FnMut(&str) -> Option<String>>(
                             localrule: with.localrule.or(base.localrule),
                             // `as` names the rule; only a `name:` in its `with:` renames it.
                             renamed: with.renamed,
+                            group: with.group.clone().or_else(|| base.group.clone()),
                         },
                         None => Body { renamed: false, ..base.clone() },
                     };
@@ -323,7 +344,7 @@ fn read_workflow<R: FnMut(&str) -> Option<String>>(
                     stack.push((included, None));
                 }
             }
-            Statement::Include(None) => workflow.incomplete = true,
+            Statement::Include(None) | Statement::Unparsed => workflow.incomplete = true,
         }
     }
     workflow
@@ -336,6 +357,8 @@ struct CodeLine<'a> {
     no: usize,
     indent: usize,
     code: &'a str,
+    /// The line as written (strings and comments intact).
+    raw: &'a str,
 }
 
 /// The index of the first line after `start` indented no deeper than `indent` (the end of the
@@ -378,6 +401,7 @@ fn parse_body(lines: &[CodeLine], start: usize, end: usize) -> Body {
             "resources" => body.resources = Some(directive_text(lines, j, rest)),
             "localrule" => body.localrule = Some(rest.trim() == "True"),
             "name" => body.renamed = true,
+            "group" => body.group = Some(group_literal(lines[j].raw)),
             key => body.runs_job |= JOB_DIRECTIVES.contains(&key),
         }
     }
@@ -389,11 +413,15 @@ fn parse_rule_file(path: &str, text: &str) -> Vec<Statement> {
     static HEADER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     static USE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let header = HEADER.get_or_init(|| {
-        regex::Regex::new(r"^(?:rule|checkpoint)(?:\s+([A-Za-z_]\w*))?\s*:")
+        // A rule name is a Python identifier, Unicode letters included.
+        regex::Regex::new(r"^(?:rule|checkpoint)(?:\s+([\p{XID_Start}_]\p{XID_Continue}*))?\s*:")
             .expect("a valid pattern")
     });
     let use_rule =
         USE.get_or_init(|| regex::Regex::new(r"^use\s+rule\s+(.*)$").expect("a valid pattern"));
+    static DECLARATION: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let declaration = DECLARATION
+        .get_or_init(|| regex::Regex::new(r"^(?:rule|checkpoint|use)\b").expect("a valid pattern"));
     let lexed = lex_python(text, true);
     let raw: Vec<&str> = text.lines().collect();
     let lines: Vec<CodeLine> = lexed
@@ -407,12 +435,20 @@ fn parse_rule_file(path: &str, text: &str) -> Vec<Statement> {
                 no: i + 1,
                 indent: if continued { usize::MAX } else { l.len() - l.trim_start().len() },
                 code,
+                raw: raw.get(i).copied().unwrap_or(""),
             })
         })
         .collect();
     let mut statements = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         if line.indent == usize::MAX {
+            continue;
+        }
+        // A declaration continued onto the next line (`rule \` then `align:`) is one the line
+        // patterns below cannot read: say so rather than miss the rule it declares.
+        let continued = lines.get(i + 1).is_some_and(|next| next.indent == usize::MAX);
+        if continued && declaration.is_match(line.code) {
+            statements.push(Statement::Unparsed);
             continue;
         }
         if let Some(c) = header.captures(line.code) {
@@ -481,6 +517,17 @@ fn parse_use_rule(text: &str, lines: &[CodeLine], at: usize, line: usize) -> Opt
         .collect();
     let with = with.then(|| parse_body(lines, at, block_end(lines, at, lines[at].indent)));
     Some(Statement::Derived { line, names, with })
+}
+
+/// The group a `group:` line names, when it is one plain (or raw) string literal on that line.
+fn group_literal(line: &str) -> Option<String> {
+    static GROUP: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = GROUP.get_or_init(|| {
+        regex::Regex::new(r#"^\s*group\s*:\s*[rR]?(?:"([^"\\]*)"|'([^'\\]*)')\s*(?:#.*)?$"#)
+            .expect("a valid pattern")
+    });
+    let c = re.captures(line)?;
+    c.get(1).or(c.get(2)).map(|m| m.as_str().to_string())
 }
 
 /// The path an `include:` line names, when it is one plain (or raw) string literal.
@@ -1326,5 +1373,58 @@ use rule a, sized as copy_* with:
             "{RULE_A}rule r:\n    name: f\"align-{{tool}}\"\n    output: \"r\"\n    shell: \"x\"\n"
         );
         assert_eq!(names(&[("Snakefile", &renamed)]), None);
+        // Only a `name:` in its `with:` block renames a derived rule (`as` names it).
+        let with_name = format!("{RULE_A}use rule a as c with:\n    name: \"x\"\n");
+        assert_eq!(names(&[("Snakefile", &with_name)]), None);
+        // A header a trailing backslash continues onto the next line.
+        let continued =
+            format!("{RULE_A}rule \\\n    align:\n    output: \"u\"\n    shell: \"x\"\n");
+        assert_eq!(names(&[("Snakefile", &continued)]), None);
+        let checkpoint =
+            format!("{RULE_A}checkpoint \\\n    align:\n    output: \"u\"\n    shell: \"x\"\n");
+        assert_eq!(names(&[("Snakefile", &checkpoint)]), None);
+        let derived = format!("{RULE_A}use rule a as b\n");
+        assert_eq!(names(&[("Snakefile", &derived)]), Some(vec!["a".to_string(), "b".into()]));
+        let derived = format!("{RULE_A}use rule a as \\\n    b\n");
+        assert_eq!(names(&[("Snakefile", &derived)]), None);
+        // A rule name is a Python identifier, Unicode letters included.
+        let unicode = format!("{RULE_A}rule ālign:\n    output: \"u\"\n    shell: \"x\"\n");
+        assert_eq!(names(&[("Snakefile", &unicode)]), Some(vec!["a".to_string(), "ālign".into()]));
+    }
+
+    #[test]
+    fn the_rule_groups_are_known_only_when_every_group_is_a_plain_string() {
+        let groups = |snakefile: &str| {
+            scan(&[("Snakefile", snakefile)], "Snakefile", Some(V9_27))
+                .rule_groups
+                .map(|g| g.into_iter().collect::<Vec<_>>())
+        };
+        let rule = |name: &str, group: &str| {
+            format!("rule {name}:\n    output: \"{name}\"\n{group}    shell: \"x\"\n")
+        };
+        let grouped = [
+            rule("a", "    group: \"g1\"  # comment\n"),
+            rule("b", "    group: 'g1'\n"),
+            rule("c", ""),
+        ]
+        .concat();
+        assert_eq!(
+            groups(&grouped),
+            Some(vec![("a".to_string(), "g1".to_string()), ("b".into(), "g1".into())])
+        );
+        // A derived rule keeps its base's group unless its `with:` sets one.
+        let derived =
+            format!("{grouped}use rule a as d\nuse rule a as e with:\n    group: \"g2\"\n");
+        assert_eq!(
+            groups(&derived),
+            Some(vec![
+                ("a".to_string(), "g1".to_string()),
+                ("b".into(), "g1".into()),
+                ("d".into(), "g1".into()),
+                ("e".into(), "g2".into()),
+            ])
+        );
+        // A group the scan does not evaluate.
+        assert_eq!(groups(&rule("a", "    group: config[\"g\"]\n")), None);
     }
 }

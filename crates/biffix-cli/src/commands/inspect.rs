@@ -85,12 +85,13 @@ pub(crate) fn inspect(opts: InspectOpts) -> CliResult<()> {
                 if let Some(note) = &entrypoint.note {
                     eprintln!("[biffix] note: {note}");
                 }
-                crate::local::memory_warning::warn_rules_without_memory(
+                let scan = crate::local::memory_warning::scan_workflow(
                     root,
                     &files,
                     &entrypoint.file,
                     manifest.engine_version.as_deref(),
                 );
+                crate::local::memory_warning::warn_rules_without_memory(&scan);
             }
             Err(e) => eprintln!("[biffix] warning: {e}"),
         }

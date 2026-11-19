@@ -191,10 +191,7 @@ pub(crate) fn coordinator_env(
         (JOB_DEFINITION_MAP_URI, launch.maps.as_ref().map(|m| m.job_definitions.clone())),
         // The assignment's default, else the first declared worker queue-class, selects the
         // child-job queue.
-        (
-            QUEUE_CLASS,
-            launch.queues.default.clone().or_else(|| launch.queue_classes.first().cloned()),
-        ),
+        (QUEUE_CLASS, launch.queues.default_queue_class(&launch.queue_classes).map(str::to_string)),
         // The tasks that run elsewhere (the default travels as the queue-class above).
         (QUEUE_ASSIGNMENT, queue_assignment(launch)?),
         (TARGET, launch.target.clone()),
@@ -526,13 +523,28 @@ mod tests {
         assert!(check_overrides_size(&env).is_ok());
         let files: Vec<String> =
             (0..400).map(|i| format!("s3://proj/data/sample-{i:04}.fastq.gz")).collect();
-        let launch =
-            CoordinatorLaunch { params: serde_json::json!({ "reads": files }), ..minimal_launch() };
+        let launch = CoordinatorLaunch {
+            params: serde_json::json!({ "reads": files }),
+            queue_classes: vec!["cpu".into()],
+            queues: biffix_workflow::queues::QueueAssignment {
+                by_name: [("ALIGN".to_string(), "cpu".to_string())].into(),
+                ..Default::default()
+            },
+            ..minimal_launch()
+        };
         let env = coordinator_env(&launch, DEPLOY_INGEST_URL, DEPLOY_WORKER_REPO).unwrap();
+        let params = serde_json::json!({ "reads": files }).to_string().len();
+        let queues = serde_json::to_string(&launch.queues.selectors()).unwrap().len();
+        assert_ne!(queues, 0);
         match check_overrides_size(&env) {
             Err(AwsError::Invalid(m)) => {
                 assert!(m.contains("too large"), "{m}");
-                assert!(m.contains("parameters, 0 the version's queue assignment)"), "{m}");
+                assert!(
+                    m.contains(&format!(
+                        "({params} of them parameters, {queues} the version's queue assignment)"
+                    )),
+                    "{m}"
+                );
             }
             other => panic!("{other:?}"),
         }
