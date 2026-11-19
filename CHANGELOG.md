@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-11-19
+
+### Features
+
+- Route Nextflow and Snakemake processes to queue-classes from biffix.yaml ([#79](https://github.com/nh13/biffix/pull/79))
+
+
 ## [0.2.1] - 2026-11-19
 
 ### Bug Fixes
