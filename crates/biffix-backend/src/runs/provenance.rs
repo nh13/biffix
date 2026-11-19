@@ -1041,7 +1041,8 @@ fn task_error(task: &Task) -> Option<String> {
     Some(if parts.is_empty() { "failed".into() } else { parts.join("; ") })
 }
 
-/// A task's resource usage: attempts, instance type, cost, and whether it was a cache hit.
+/// A task's resource usage: attempts, instance type, job queue, cost, and whether it was a cache
+/// hit.
 fn task_usage(key: &str, task: &Task) -> Vec<Value> {
     let mut usage = Vec::new();
     let task_slug = slug(key);
@@ -1063,6 +1064,11 @@ fn task_usage(key: &str, task: &Task) -> Vec<Value> {
     }
     if let Some(itype) = task.host.as_ref().and_then(|h| h.instance_type.as_deref()) {
         push("instanceType", json!(itype), None);
+    }
+    // The Batch queue it ran on, as AWS reported it: its queue-class's (`<prefix><queue-class>`),
+    // so the crate says which of the version's queue-classes the task used.
+    if let Some(queue) = task.host.as_ref().and_then(|h| h.queue.as_deref()) {
+        push("jobQueue", json!(queue), None);
     }
     if let Some(usd) = task.cost_usd {
         push(

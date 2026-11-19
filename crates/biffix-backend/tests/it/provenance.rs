@@ -31,7 +31,11 @@ fn task(key: &str, group: &str, state: &str, start: f64, end: f64) -> Task {
         finished_at: Some(end),
         group: Some(group.into()),
         cost_usd: Some(0.0125),
-        host: Some(Host { instance_type: Some("c6a.large".into()), ..Default::default() }),
+        host: Some(Host {
+            instance_type: Some("c6a.large".into()),
+            queue: Some("biffix-t-cpu-spot".into()),
+            ..Default::default()
+        }),
         ..testing::task_view(key, state, None, Some(&format!("job-{key}")))
     }
 }
@@ -263,8 +267,16 @@ fn steps_are_ordered_producer_first_and_tasks_link_step_to_tool() {
         vec![
             "#usage/align%3Asample%3DA/attempts",
             "#usage/align%3Asample%3DA/instanceType",
+            "#usage/align%3Asample%3DA/jobQueue",
             "#usage/align%3Asample%3DA/estimatedCost",
         ]
+    );
+    // The Batch queue it ran on (its queue-class's), as AWS reported it.
+    let queue = entity(&c, "#usage/align%3Asample%3DA/jobQueue");
+    assert_eq!(queue["value"], "biffix-t-cpu-spot");
+    assert_eq!(
+        queue["propertyID"],
+        "https://github.com/nh13/biffix/blob/main/docs/provenance.md#jobqueue"
     );
 
     let control = entity(&c, "#step-run/align%3Asample%3DA");
