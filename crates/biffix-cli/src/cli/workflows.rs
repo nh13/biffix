@@ -64,7 +64,9 @@ pub(crate) enum WorkflowsCommand {
         /// --project is required. A deploy with no projects refuses the registration.
         #[arg(long)]
         project: Option<String>,
-        /// Worker queue-class this version references (repeatable).
+        /// Worker queue-class this version uses (repeatable). The first is where its tasks run
+        /// unless biffix.yaml `queues:` names a default, and every queue-class `queues:` names must
+        /// be one of these.
         #[arg(long = "queue-class")]
         queue_class: Vec<String>,
         /// Register even if the working tree is dirty (recorded in the output). Only with

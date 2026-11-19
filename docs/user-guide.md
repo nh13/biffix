@@ -159,9 +159,10 @@ What each key does:
 | `image`, `images` | The container images, by name. `image:` is shorthand for `images: {default: …}`. See below. |
 | `plugins` | Nextflow only: the pipeline's own plugins as `id@version`. Runs are offline, so a plugin Nextflow would load implicitly (`nf-tower`/`nf-wave` for a `tower`, `wave` or `fusion` scope; from 26.10 `nf-agent`/`nf-agent-pi` for an `agent` scope) must be declared, in the pipeline's `plugins {}` and here. |
 | `cache` | Snakemake only: reuse results of `cache: True` rules across runs (kept per project). |
+| `queues` | Which worker queue-class each task runs on: a `default`, and tasks picked `by_label` (Nextflow) or `by_name`. See [Choosing queues](#choosing-queues). |
 
-Unknown keys are warned about, not silently ignored, except inside an `images:` entry, where an
-unknown key is refused. The full field-by-field reference is the
+Unknown keys are warned about, not silently ignored, except inside an `images:` entry or
+`queues:`, where an unknown key is refused. The full field-by-field reference is the
 doc comments in
 [`crates/biffix-workflow/src/manifest.rs`](../crates/biffix-workflow/src/manifest.rs); the
 form it produces follows [`schemas/formschema.schema.json`](../schemas/formschema.schema.json).
@@ -229,6 +230,62 @@ For Snakemake, biffix adds its pinned Snakemake runtime to each image (tasks run
 `python -m snakemake` inside the image), so images must be glibc-based. An image that already
 carries exactly the pinned Snakemake can opt out with `runtime: own`.
 
+### Choosing queues
+
+A deployment offers a menu of worker queue-classes (spot and on-demand, small and large hosts;
+see [deploying.md](deploying.md)). By default every task of a run goes to one of them. To send
+heavy steps to large hosts and the rest to small ones, name queue-classes in `queues:`, never
+the deployment's Batch queue names, so the workflow runs unchanged on any deployment that offers
+those queue-classes:
+
+```yaml
+queues:
+  default: small-spot          # every task no selector below picks
+  by_label:                    # Nextflow only: process labels, e.g. nf-core's
+    process_high: large-spot
+    process_long: large-spot
+  by_name:                     # a process (Nextflow) or rule (Snakemake) by name
+    MULTIQC: small-ondemand
+```
+
+Register with `--queue-class` for every queue-class the block names (here `--queue-class
+small-spot --queue-class large-spot --queue-class small-ondemand`): a version lists the
+queue-classes it uses, and registration refuses a `queues:` entry outside that list, or a
+queue-class the deployment does not offer. Labels and names are exact (no patterns): a label as
+Nextflow's `label` directive accepts it, a process name, alias or fully qualified name
+(`NFCORE_RNASEQ:RNASEQ:MULTIQC`), or a Snakemake rule name. Without `default`, tasks no selector
+picks run on the first `--queue-class`, else the deployment's first. The order of `--queue-class`
+is part of a version only in that case (several queue-classes and no `default`): registering again
+with another first is a new build. (Versions registered with several queue-classes and no `default`
+before that rule existed register again once as a new build after the upgrade, even with
+unchanged inputs.) Prefer `default` to choose it.
+
+How each engine applies it:
+
+- **Nextflow.** biffix adds `process.queue` for the default and a `withLabel` or `withName`
+  selector setting `queue` for each entry to the config it passes with `-c`. Nextflow ranks a
+  generic setting below the process definition, a `withLabel` selector above that, and a
+  `withName` selector above all, so a `by_name` entry wins over a `by_label` one, and both win
+  over a `queue` directive in the process itself. The file is read after the pipeline's own
+  config, so for the same selector biffix's queue wins; a more specific selector in the
+  pipeline's config (a `withName` setting `queue` for a process biffix picks by label) still
+  wins. Leave `queue` out of the pipeline's config and let biffix set it. A process carrying two
+  labels that `by_label` sends to different queue-classes gets one of them, depending on config
+  order: give each process at most one such label, or pick it `by_name`.
+- **Snakemake.** The default is the AWS Batch executor's queue, which a rule's own `batch_queue`
+  resource still overrides; each `by_name` entry is passed as
+  `--set-resources <rule>:batch_queue=<queue>`, which overrides the rule's own. Rules have no
+  labels, so `by_label` is refused. A rule name that is not in the workflow is ignored by
+  Snakemake. Rules that share a `group:` run as one AWS Batch job, on one queue, so they must
+  share a queue-class: give every rule of a group the same one, or none of them.
+
+A selector that matches nothing assigns nothing, and those tasks run on the default. For a
+Snakemake workflow, `biffix workflows register` warns about a `by_name` entry naming a rule the
+Snakefile does not define (when it can see every rule: not through a dynamic `include:` or a
+module). A Nextflow workflow's process names and labels are not known until it runs, so nothing
+checks them at registration: check where tasks ran instead. The Batch queue each task ran on is in
+the API's task view (`host.queue`) and in the run's provenance crate (`jobQueue`).
+
 ### Previewing the form
 
 ```sh
@@ -271,7 +328,8 @@ Options worth knowing:
   stay relative to the root. The version records the path (shown on its Provenance tab), and
   `reregister` keeps it.
 - `--image` sets a default task image from the command line.
-- `--queue-class` names the worker queue-classes the version uses (repeatable).
+- `--queue-class` names the worker queue-classes the version uses (repeatable). The first is
+  where its tasks run unless `queues:` says otherwise; see [Choosing queues](#choosing-queues).
 
 Registering the same source with the same inputs again is refused (exit code 6) and names the
 existing version.

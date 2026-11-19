@@ -78,6 +78,10 @@ The keys, grouped as in [the example](../infra/biffix-deploy.example.yaml):
   entry sets `capacity` (`SPOT` or `ON_DEMAND`), `instances` (family keys or exact instance types),
   `max_vcpus` (its spend ceiling), and optionally `ebs_gb`, `ebs_throughput`, `ebs_iops` and
   `imds_hop_limit`. `instance_families` overrides what a family key such as `c` means.
+  Workflows refer to entries by `name` (`--queue-class` and `queues:` in `biffix.yaml`), never
+  by Batch queue name, and every project's coordinator may submit tasks to any worker entry, so
+  renaming or removing one breaks the versions that name it (registration checks the names
+  against the menu as it is then).
   `coordinator_image_tag` names the coordinator base image; leave it unset when deploying a
   release. `host_aws_cli` overrides the pinned AWS CLI every Batch host installs.
 - **Projects.** `projects` (required) lists the isolation boundaries. Each has an `id`, and
