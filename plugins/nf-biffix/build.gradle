@@ -45,8 +45,30 @@ nextflowPlugin {
     requirePlugins = ["nf-amazon@>=${amazonVersion}".toString()]
 }
 
-repositories {
-    mavenCentral()
+// The nextflow-plugin Gradle plugin adds the repositories: mavenLocal, Maven Central, then Seqera's
+// Maven repository. Nextflow's own modules (io.nextflow, io.seqera) in the releases this builds
+// against are published only to Seqera's, and every other module only to Maven Central, so neither
+// is asked for the other's. Seqera's repository is an S3 bucket that answers 403, not 404, for a
+// module it does not hold, so a module Gradle went on to look for there (when Maven Central
+// throttled CI's shared address) failed the build with Seqera's 403s; and Maven Central, asked
+// first, would answer 404 for every Nextflow module. Seqera's is found by its URL, as the plugin
+// writes it (a plugin bump that moves it shows as Nextflow modules that do not resolve). Any other
+// repository (mavenLocal, with a locally published Nextflow or nf-amazon; a mirror an init script
+// adds) is left as it is.
+repositories.withType(MavenArtifactRepository).configureEach { MavenArtifactRepository repo ->
+    final url = repo.url.toString()
+    if( url.contains('maven.seqera.io') ) {
+        repo.content {
+            includeGroupAndSubgroups 'io.nextflow'
+            includeGroupAndSubgroups 'io.seqera'
+        }
+    }
+    else if( repo.url.host in ['repo.maven.apache.org', 'repo1.maven.org'] ) {
+        repo.content {
+            excludeGroupAndSubgroups 'io.nextflow'
+            excludeGroupAndSubgroups 'io.seqera'
+        }
+    }
 }
 
 dependencies {

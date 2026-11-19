@@ -236,7 +236,22 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
+      # Each line resolves its own Nextflow and nf-amazon, so it keeps its own Gradle cache, keyed on
+      # both. setup-java's `cache: gradle` (the job above keeps it) is keyed on the build files
+      # alone, which all three jobs share: the lines restored whichever job saved first and
+      # downloaded their own modules on every run, from a Maven Central that throttles CI's shared
+      # addresses. setup-gradle's open-source cache provider keys the same way. Restoring by prefix
+      # does not grow the cache without bound: Gradle drops modules unused for 30 days.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: >-
+            gradle-nextflow-${{ matrix.nextflow }}-nf-amazon-${{ matrix.nf-amazon }}-${{
+            hashFiles('plugins/nf-biffix/**/*.gradle*',
+            'plugins/nf-biffix/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-nextflow-${{ matrix.nextflow }}-
       - name: gradle build + test
         working-directory: plugins/nf-biffix
         env:
