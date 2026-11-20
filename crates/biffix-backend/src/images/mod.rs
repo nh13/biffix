@@ -182,6 +182,7 @@ pub(crate) fn next_step(
 /// pinned runtime (a glibc build of CPython), so it needs glibc; a `runtime: own` image runs its
 /// own Snakemake, which must be exactly the pinned release, with exactly the storage plugin the
 /// runtime pins (what a task loads; the logger and executor plugins run only in the coordinator).
+/// While that plugin is a commit build (`<release>+g<sha12>`), the refusal says how to get it.
 fn capability_problem(
     engine: Engine,
     engine_version: &str,
@@ -219,7 +220,15 @@ fn capability_problem(
     };
     mismatch("Snakemake", caps.snakemake.as_ref(), engine_version).or_else(|| {
         storage_s3.and_then(|want| {
-            mismatch("snakemake-storage-plugin-s3", caps.storage_s3.as_ref(), want)
+            let problem = mismatch("snakemake-storage-plugin-s3", caps.storage_s3.as_ref(), want)?;
+            // A local label (`0.3.6+g<sha12>`) is a build of one commit, not a PyPI release.
+            Some(match want.split_once("+g") {
+                Some((_, commit)) => format!(
+                    "{problem} (a build of plugin commit {commit}: install it from that commit with \
+                     its version set to {want}, or drop `runtime: own`)"
+                ),
+                None => problem,
+            })
         })
     })
 }
@@ -768,7 +777,25 @@ mod tests {
         );
         let plugin = sm("bash=1,snakemake=9.27.0,storage_s3=0.3.5", true).unwrap();
         assert!(plugin.contains("snakemake-storage-plugin-s3 0.3.5"), "{plugin}");
+        assert!(!plugin.contains("a build of plugin commit"), "{plugin}");
         assert!(sm("bash=1,snakemake=9.27.0", true).unwrap().contains("plugin-s3 none"));
+
+        // A commit build of the plugin: its release does not pass for it, and the refusal says how
+        // to get the build; exactly the build passes.
+        let pin = "0.3.6+g8129cca56f7c";
+        let built = |c: &str| {
+            capability_problem(Engine::Snakemake, "9.27.0", Some(pin), &image("x", true), &caps(c))
+        };
+        let release = built("bash=1,snakemake=9.27.0,storage_s3=0.3.6").unwrap();
+        assert!(
+            release.contains(&format!(
+                "carries snakemake-storage-plugin-s3 0.3.6, but this version runs \
+                 snakemake-storage-plugin-s3 {pin} (a build of plugin commit 8129cca56f7c: install \
+                 it from that commit with its version set to {pin}, or drop `runtime: own`)"
+            )),
+            "{release}"
+        );
+        assert_eq!(built(&format!("bash=1,snakemake=9.27.0,storage_s3={pin}")), None);
     }
 
     fn imported(caps: &str) -> ImageArtifact {

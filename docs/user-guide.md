@@ -232,7 +232,11 @@ values that are not plain strings for you to declare by hand. Review the result 
 
 For Snakemake, biffix adds its pinned Snakemake runtime to each image (tasks run
 `python -m snakemake` inside the image), so images must be glibc-based. An image that already
-carries exactly the pinned Snakemake can opt out with `runtime: own`.
+carries exactly the pinned Snakemake and `snakemake-storage-plugin-s3` can opt out with
+`runtime: own`. While biffix pins a commit build of the storage plugin (a version such as
+`0.3.6+g8129cca56f7c`, which no PyPI release or published image carries), such an image must
+install the plugin from that commit with its version set to the pinned one; a refusal names both.
+Without `runtime: own`, biffix adds the pinned plugin for you.
 
 ### Choosing queues
 

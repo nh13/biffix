@@ -331,16 +331,25 @@ When a gap is really in Snakemake or Nextflow tooling, the fix belongs upstream:
 feature, a logger plugin, a richer parameter schema. biffix carries a local workaround only while
 the upstream change is in review.
 
-The one current exception is the Snakemake AWS Batch executor. The coordinator installs it from a
-fork pinned to an exact commit (`docker/coordinator/wheels.env`). The fork is upstream plus six
-open pull requests biffix depends on: job-state events that carry the Batch job id, a strict
-container image map in which a task naming an unmapped image fails instead of pulling it, a
-per-project task log group, a job definition map with which every job runs on a definition
-registered ahead of time and the executor registers none, privileged containers made opt-in, and
-a rule queue map that sends rules to job queues from the command line without replacing the
-workflow profile's `set-resources`. Other features biffix uses, such as a rule's own
-`batch_queue` resource and spot retry attempts, are already upstream. The pin moves back to an
-upstream release once all six have merged.
+There are two current exceptions. The first is the Snakemake AWS Batch executor. The coordinator
+installs it from a fork pinned to an exact commit (`docker/coordinator/wheels.env`). The fork is
+upstream plus six open pull requests biffix depends on: job-state events that carry the Batch job
+id, a strict container image map in which a task naming an unmapped image fails instead of pulling
+it, a per-project task log group, a job definition map with which every job runs on a definition
+registered ahead of time and the executor registers none, privileged containers made opt-in, and a
+rule queue map that sends rules to job queues from the command line without replacing the workflow
+profile's `set-resources`. Other features biffix uses, such as a rule's own `batch_queue` resource
+and spot retry attempts, are already upstream. The pin moves back to an upstream release once all
+six have merged.
+
+The second is the Snakemake S3 storage plugin. The Snakemake runtime builds it from a fork commit
+(`storage_s3_source` in `crates/biffix-workflow/src/runtime/pins.rs`, branch
+`biffix-pin/2026-11-20`): release 0.3.6 plus an open pull request
+(snakemake/snakemake-storage-plugin-s3#68) that keeps each file's modification time in its S3
+object metadata. Without it, an S3 clock a fraction of a second ahead of the host can make a task's
+fresh output look older than the input it was made from, and Snakemake removes it. The built
+wheel's version names the commit (`0.3.6+g<sha12>`), so the runtime is never mistaken for the
+release. The pin moves back to a release once the pull request has merged.
 
 ## The RunEvent contract
 
