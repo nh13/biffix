@@ -458,6 +458,251 @@ def test_derive_writes_each_immutable_tag_once_and_reuses_what_checks_out(
     assert "reusing it" in again.stderr
 
 
+def test_derived_config_accepts_omitted_docker_defaults(tmp_path: Path, registry: Seeded) -> None:
+    reg, _ = registry
+    defaults: Obj = {
+        "Hostname": "",
+        "Domainname": "",
+        "User": "",
+        "WorkingDir": "",
+        "AttachStdin": False,
+        "AttachStdout": False,
+        "AttachStderr": False,
+        "Tty": False,
+        "OpenStdin": False,
+        "StdinOnce": False,
+        "Volumes": None,
+        "OnBuild": None,
+    }
+    base = _img("amd64", ["sha256:base-amd"])
+    base["config"].update(defaults)
+    derived = _img(
+        "amd64", ["sha256:base-amd", "sha256:rt-amd"], ["/entry", "/opt/biffix/shim-exec"]
+    )
+    base_id, derived_id = reg.put(base), reg.put(derived)
+    got = _import_step(
+        tmp_path,
+        reg,
+        f'DIGEST=checked; derived_config_matches "{REPO}@{derived_id}" "{REPO}@{base_id}"',
+    )
+    assert got.returncode == 0, got.stderr
+
+
+@pytest.mark.parametrize(
+    "base_config,derived_config",
+    [
+        ({"Env": []}, {}),
+        ({"Env": None}, {}),
+        ({"Labels": {}}, {}),
+        ({"Labels": None}, {}),
+        ({"Volumes": {}}, {}),
+        ({"OnBuild": []}, {}),
+        ({"ExposedPorts": {}}, {}),
+        ({"ExposedPorts": None}, {}),
+        ({"Shell": []}, {}),
+        ({"Shell": None}, {}),
+        ({"StopSignal": ""}, {}),
+        ({"Image": ""}, {}),
+        ({"MacAddress": ""}, {}),
+        ({"ArgsEscaped": False}, {}),
+        ({"NetworkDisabled": False}, {}),
+        ({"Healthcheck": None}, {}),
+        ({"Healthcheck": {"Test": []}}, {"Healthcheck": {}}),
+        ({"Healthcheck": {"Test": None}}, {"Healthcheck": {}}),
+        ({"Healthcheck": {"Interval": 0}}, {"Healthcheck": {}}),
+        ({"Healthcheck": {"Timeout": 0}}, {"Healthcheck": {}}),
+        ({"Healthcheck": {"StartPeriod": 0}}, {"Healthcheck": {}}),
+        ({"Healthcheck": {"Retries": 0}}, {"Healthcheck": {}}),
+        (
+            {
+                "Healthcheck": {
+                    "Test": ["CMD", "true"],
+                    "Interval": 0,
+                    "Timeout": 0,
+                    "StartPeriod": 0,
+                    "Retries": 0,
+                }
+            },
+            {"Healthcheck": {"Test": ["CMD", "true"]}},
+        ),
+    ],
+)
+def test_derived_config_accepts_crane_serialized_defaults(
+    tmp_path: Path, registry: Seeded, base_config: Obj, derived_config: Obj
+) -> None:
+    # Literal round trips from crane 0.22.1 Config/HealthConfig: an allocated healthcheck stays {}.
+    reg, _ = registry
+    base = _img("amd64", ["sha256:base-amd"])
+    base["config"].update(base_config)
+    derived = _img(
+        "amd64", ["sha256:base-amd", "sha256:rt-amd"], ["/entry", "/opt/biffix/shim-exec"]
+    )
+    derived["config"].update(derived_config)
+    base_id, derived_id = reg.put(base), reg.put(derived)
+    got = _import_step(
+        tmp_path,
+        reg,
+        f'DIGEST=checked; derived_config_matches "{REPO}@{derived_id}" "{REPO}@{base_id}"',
+    )
+    assert got.returncode == 0, got.stderr
+
+
+@pytest.mark.parametrize("preserved", [False, True], ids=["removed", "preserved"])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("Hostname", "host"),
+        ("Domainname", "example.org"),
+        ("User", "1000"),
+        ("WorkingDir", "/analysis"),
+        ("Image", "base:tag"),
+        ("MacAddress", "02:42:ac:11:00:02"),
+        ("StopSignal", "SIGTERM"),
+        ("AttachStdin", True),
+        ("AttachStdout", True),
+        ("AttachStderr", True),
+        ("Tty", True),
+        ("OpenStdin", True),
+        ("StdinOnce", True),
+        ("ArgsEscaped", True),
+        ("NetworkDisabled", True),
+        ("Env", ["SAFE=1"]),
+        ("Volumes", {"/data": {}}),
+        ("OnBuild", ["RUN false"]),
+        ("Labels", {"purpose": "test"}),
+        ("ExposedPorts", {"80/tcp": {}}),
+        ("Shell", ["/bin/bash"]),
+        ("Healthcheck", {}),
+        ("Healthcheck", {"Test": ["NONE"]}),
+        ("Healthcheck", {"Test": ["CMD", "true"]}),
+        ("Healthcheck", {"Interval": 1}),
+        ("Healthcheck", {"Timeout": 1}),
+        ("Healthcheck", {"StartPeriod": 1}),
+        ("Healthcheck", {"Retries": 1}),
+        ("Healthcheck", {"Unknown": 0}),
+        ("Privileged", True),
+        ("Unknown", False),
+        ("Unknown", None),
+    ],
+)
+def test_derived_config_preserves_nondefault_metadata(
+    tmp_path: Path, registry: Seeded, field: str, value: object, preserved: bool
+) -> None:
+    reg, _ = registry
+    base = _img("amd64", ["sha256:base-amd"])
+    base["config"][field] = value
+    derived = _img(
+        "amd64", ["sha256:base-amd", "sha256:rt-amd"], ["/entry", "/opt/biffix/shim-exec"]
+    )
+    if preserved:
+        derived["config"][field] = value
+    base_id, derived_id = reg.put(base), reg.put(derived)
+    got = _import_step(
+        tmp_path,
+        reg,
+        f'DIGEST=checked; derived_config_matches "{REPO}@{derived_id}" "{REPO}@{base_id}"',
+    )
+    assert (got.returncode == 0) is preserved, got.stderr
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["base", "derived"])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("Hostname", False),
+        ("Domainname", 0),
+        ("User", []),
+        ("WorkingDir", {}),
+        ("Image", False),
+        ("MacAddress", 0),
+        ("StopSignal", None),
+        ("AttachStdin", 0),
+        ("AttachStdout", 0),
+        ("AttachStderr", 0),
+        ("Tty", 0),
+        ("OpenStdin", 0),
+        ("StdinOnce", 0),
+        ("ArgsEscaped", 0),
+        ("NetworkDisabled", 0),
+        ("Env", {}),
+        ("Labels", []),
+        ("Volumes", []),
+        ("OnBuild", {}),
+        ("ExposedPorts", []),
+        ("Shell", {}),
+        ("Healthcheck", []),
+        ("Healthcheck", False),
+    ],
+)
+def test_derived_config_rejects_wrong_typed_defaults(
+    tmp_path: Path, registry: Seeded, field: str, value: object, reverse: bool
+) -> None:
+    reg, _ = registry
+    base = _img("amd64", ["sha256:base-amd"])
+    derived = _img(
+        "amd64", ["sha256:base-amd", "sha256:rt-amd"], ["/entry", "/opt/biffix/shim-exec"]
+    )
+    (derived if reverse else base)["config"][field] = value
+    base_id, derived_id = reg.put(base), reg.put(derived)
+    got = _import_step(
+        tmp_path,
+        reg,
+        f'DIGEST=checked; derived_config_matches "{REPO}@{derived_id}" "{REPO}@{base_id}"',
+    )
+    assert got.returncode != 0
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("Test", ["CMD", "true"]),
+        ("Interval", 1),
+        ("Timeout", 1),
+        ("StartPeriod", 1),
+        ("Retries", 1),
+        ("Unknown", 0),
+    ],
+)
+def test_derived_config_rejects_removed_healthcheck_metadata(
+    tmp_path: Path, registry: Seeded, field: str, value: object
+) -> None:
+    reg, _ = registry
+    base = _img("amd64", ["sha256:base-amd"])
+    base["config"]["Healthcheck"] = {field: value}
+    derived = _img(
+        "amd64", ["sha256:base-amd", "sha256:rt-amd"], ["/entry", "/opt/biffix/shim-exec"]
+    )
+    derived["config"]["Healthcheck"] = {}
+    base_id, derived_id = reg.put(base), reg.put(derived)
+    got = _import_step(
+        tmp_path,
+        reg,
+        f'DIGEST=checked; derived_config_matches "{REPO}@{derived_id}" "{REPO}@{base_id}"',
+    )
+    assert got.returncode != 0
+
+
+@pytest.mark.parametrize("field", ["Test", "Interval", "Timeout", "StartPeriod", "Retries"])
+@pytest.mark.parametrize("value", [False, "", {}])
+def test_derived_config_rejects_wrong_typed_healthcheck_defaults(
+    tmp_path: Path, registry: Seeded, field: str, value: object
+) -> None:
+    reg, _ = registry
+    base = _img("amd64", ["sha256:base-amd"])
+    base["config"]["Healthcheck"] = {field: value}
+    derived = _img(
+        "amd64", ["sha256:base-amd", "sha256:rt-amd"], ["/entry", "/opt/biffix/shim-exec"]
+    )
+    derived["config"]["Healthcheck"] = {}
+    base_id, derived_id = reg.put(base), reg.put(derived)
+    got = _import_step(
+        tmp_path,
+        reg,
+        f'DIGEST=checked; derived_config_matches "{REPO}@{derived_id}" "{REPO}@{base_id}"',
+    )
+    assert got.returncode != 0
+
+
 def _index(*children: tuple[str, str]) -> Obj:
     return {
         "kind": "index",
