@@ -406,7 +406,8 @@ export interface SingleJobSpec {
    */
   cpus?: number | null;
   /**
-   * An exact instance type of that queue-class (`c6id.8xlarge`).
+   * An instance type of that queue-class (`c6id.8xlarge`) used to size the whole-host request.
+   * Batch may place the run on another same-size type in that queue-class.
    */
   instance?: string | null;
   /**

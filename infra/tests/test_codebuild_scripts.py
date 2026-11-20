@@ -458,39 +458,48 @@ def test_derive_writes_each_immutable_tag_once_and_reuses_what_checks_out(
     assert "reusing it" in again.stderr
 
 
-def test_derived_config_accepts_omitted_docker_defaults(tmp_path: Path, registry: Seeded) -> None:
-    reg, _ = registry
-    defaults: Obj = {
-        "Hostname": "",
-        "Domainname": "",
-        "User": "",
-        "WorkingDir": "",
-        "AttachStdin": False,
-        "AttachStdout": False,
-        "AttachStderr": False,
-        "Tty": False,
-        "OpenStdin": False,
-        "StdinOnce": False,
-        "Volumes": None,
-        "OnBuild": None,
-    }
+def _config_matches(
+    tmp_path: Path, reg: Registry, base_config: Obj, derived_config: Obj
+) -> subprocess.CompletedProcess[str]:
+    """import.sh's derived_config_matches over a base image with `base_config` merged into its
+    config and its derive (the runtime layer and the shim-exec entrypoint added) with
+    `derived_config` merged into its own."""
     base = _img("amd64", ["sha256:base-amd"])
-    base["config"].update(defaults)
+    base["config"].update(base_config)
     derived = _img(
         "amd64", ["sha256:base-amd", "sha256:rt-amd"], ["/entry", "/opt/biffix/shim-exec"]
     )
+    derived["config"].update(derived_config)
     base_id, derived_id = reg.put(base), reg.put(derived)
     got = _import_step(
         tmp_path,
         reg,
         f'DIGEST=checked; derived_config_matches "{REPO}@{derived_id}" "{REPO}@{base_id}"',
     )
-    assert got.returncode == 0, got.stderr
+    return got
+
+
+# The Docker defaults crane 0.22.1 omits from a config it writes.
+OMITTED_DOCKER_DEFAULTS: Obj = {
+    "Hostname": "",
+    "Domainname": "",
+    "User": "",
+    "WorkingDir": "",
+    "AttachStdin": False,
+    "AttachStdout": False,
+    "AttachStderr": False,
+    "Tty": False,
+    "OpenStdin": False,
+    "StdinOnce": False,
+    "Volumes": None,
+    "OnBuild": None,
+}
 
 
 @pytest.mark.parametrize(
     "base_config,derived_config",
     [
+        (OMITTED_DOCKER_DEFAULTS, {}),
         ({"Env": []}, {}),
         ({"Env": None}, {}),
         ({"Labels": {}}, {}),
@@ -532,18 +541,7 @@ def test_derived_config_accepts_crane_serialized_defaults(
 ) -> None:
     # Literal round trips from crane 0.22.1 Config/HealthConfig: an allocated healthcheck stays {}.
     reg, _ = registry
-    base = _img("amd64", ["sha256:base-amd"])
-    base["config"].update(base_config)
-    derived = _img(
-        "amd64", ["sha256:base-amd", "sha256:rt-amd"], ["/entry", "/opt/biffix/shim-exec"]
-    )
-    derived["config"].update(derived_config)
-    base_id, derived_id = reg.put(base), reg.put(derived)
-    got = _import_step(
-        tmp_path,
-        reg,
-        f'DIGEST=checked; derived_config_matches "{REPO}@{derived_id}" "{REPO}@{base_id}"',
-    )
+    got = _config_matches(tmp_path, reg, base_config, derived_config)
     assert got.returncode == 0, got.stderr
 
 
@@ -589,19 +587,7 @@ def test_derived_config_preserves_nondefault_metadata(
     tmp_path: Path, registry: Seeded, field: str, value: object, preserved: bool
 ) -> None:
     reg, _ = registry
-    base = _img("amd64", ["sha256:base-amd"])
-    base["config"][field] = value
-    derived = _img(
-        "amd64", ["sha256:base-amd", "sha256:rt-amd"], ["/entry", "/opt/biffix/shim-exec"]
-    )
-    if preserved:
-        derived["config"][field] = value
-    base_id, derived_id = reg.put(base), reg.put(derived)
-    got = _import_step(
-        tmp_path,
-        reg,
-        f'DIGEST=checked; derived_config_matches "{REPO}@{derived_id}" "{REPO}@{base_id}"',
-    )
+    got = _config_matches(tmp_path, reg, {field: value}, {field: value} if preserved else {})
     assert (got.returncode == 0) is preserved, got.stderr
 
 
@@ -638,17 +624,8 @@ def test_derived_config_rejects_wrong_typed_defaults(
     tmp_path: Path, registry: Seeded, field: str, value: object, reverse: bool
 ) -> None:
     reg, _ = registry
-    base = _img("amd64", ["sha256:base-amd"])
-    derived = _img(
-        "amd64", ["sha256:base-amd", "sha256:rt-amd"], ["/entry", "/opt/biffix/shim-exec"]
-    )
-    (derived if reverse else base)["config"][field] = value
-    base_id, derived_id = reg.put(base), reg.put(derived)
-    got = _import_step(
-        tmp_path,
-        reg,
-        f'DIGEST=checked; derived_config_matches "{REPO}@{derived_id}" "{REPO}@{base_id}"',
-    )
+    wrong: Obj = {field: value}
+    got = _config_matches(tmp_path, reg, {} if reverse else wrong, wrong if reverse else {})
     assert got.returncode != 0
 
 
@@ -667,18 +644,7 @@ def test_derived_config_rejects_removed_healthcheck_metadata(
     tmp_path: Path, registry: Seeded, field: str, value: object
 ) -> None:
     reg, _ = registry
-    base = _img("amd64", ["sha256:base-amd"])
-    base["config"]["Healthcheck"] = {field: value}
-    derived = _img(
-        "amd64", ["sha256:base-amd", "sha256:rt-amd"], ["/entry", "/opt/biffix/shim-exec"]
-    )
-    derived["config"]["Healthcheck"] = {}
-    base_id, derived_id = reg.put(base), reg.put(derived)
-    got = _import_step(
-        tmp_path,
-        reg,
-        f'DIGEST=checked; derived_config_matches "{REPO}@{derived_id}" "{REPO}@{base_id}"',
-    )
+    got = _config_matches(tmp_path, reg, {"Healthcheck": {field: value}}, {"Healthcheck": {}})
     assert got.returncode != 0
 
 
@@ -688,18 +654,7 @@ def test_derived_config_rejects_wrong_typed_healthcheck_defaults(
     tmp_path: Path, registry: Seeded, field: str, value: object
 ) -> None:
     reg, _ = registry
-    base = _img("amd64", ["sha256:base-amd"])
-    base["config"]["Healthcheck"] = {field: value}
-    derived = _img(
-        "amd64", ["sha256:base-amd", "sha256:rt-amd"], ["/entry", "/opt/biffix/shim-exec"]
-    )
-    derived["config"]["Healthcheck"] = {}
-    base_id, derived_id = reg.put(base), reg.put(derived)
-    got = _import_step(
-        tmp_path,
-        reg,
-        f'DIGEST=checked; derived_config_matches "{REPO}@{derived_id}" "{REPO}@{base_id}"',
-    )
+    got = _config_matches(tmp_path, reg, {"Healthcheck": {field: value}}, {"Healthcheck": {}})
     assert got.returncode != 0
 
 

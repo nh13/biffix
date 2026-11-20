@@ -218,13 +218,14 @@ fn pinned_storage_s3() -> String {
 }
 
 /// An own-runtime image must carry the pinned storage plugin exactly: while the pin is a commit
-/// build (`<release>+g<sha12>`), the PyPI release it is built from does not pass for it. A release
-/// pin has nothing to check here.
+/// build (`<release>+g<sha12>`), the PyPI release it is built from does not pass for it (and the
+/// refusal names the commit); a release pin refuses any other release.
 #[tokio::test]
 async fn an_image_with_its_own_snakemake_must_carry_the_pinned_storage_plugin() {
     let pinned = pinned_storage_s3();
-    let Some((release, _)) = pinned.split_once('+') else {
-        return;
+    let (release, commit_build) = match pinned.split_once('+') {
+        Some((release, _)) => (release.to_string(), true),
+        None => ("0.0.1".to_string(), false),
     };
     let h = harness();
     let own_image = "docker.io/snakemake/snakemake:v9.27.0";
@@ -239,7 +240,9 @@ async fn an_image_with_its_own_snakemake_must_carry_the_pinned_storage_plugin() 
         "carries snakemake-storage-plugin-s3 {release}, but this version runs \
          snakemake-storage-plugin-s3 {pinned}"
     );
-    assert!(d["not_ready"][0].as_str().unwrap().contains(&want), "{d}");
+    let refusal = d["not_ready"][0].as_str().unwrap();
+    assert!(refusal.contains(&want), "{d}");
+    assert_eq!(refusal.contains("install the plugin from that commit"), commit_build, "{d}");
 }
 
 #[tokio::test]

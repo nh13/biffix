@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import io
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
-from test_lib import RealSnakemake, module
+from helpers import RealSnakemake, module
 
 
 @pytest.mark.parametrize("explicit_default", [False, True])
@@ -95,9 +97,14 @@ def test_profile_jobs_cannot_disable_host_cpu_budget(tmp_path: Path, jobs: int) 
 
 
 def test_profile_global_resources_are_merged_with_host_memory_cap(tmp_path: Path) -> None:
+    # The profile's own limit survives, and its larger mem_mb does not lift the host's cap: with
+    # 1500 MiB for jobs of about 1000 MB each, the two jobs cannot overlap (serial_workflow fails
+    # if they do), as they could under the profile's 80000.
     sm = RealSnakemake(tmp_path)
-    profile(sm, "resources:\n  license_tokens: 1\n  mem_mb: 80000\n")
-    got = sm.run(serial_workflow("    resources: license_tokens=1\n"), "all", cpus=2)
+    profile(sm, "resources:\n  license_tokens: 2\n  mem_mb: 80000\n")
+    got = sm.run(
+        serial_workflow("    resources: license_tokens=1\n"), "all", cpus=2, memory_mib=1500
+    )
     assert got.returncode == 0, got.stderr
     assert (sm.src / "a.txt").exists() and (sm.src / "b.txt").exists()
 
@@ -186,7 +193,9 @@ def test_python_run_blocks_cannot_claim_an_image_they_do_not_run_in(
         assert json.loads(sm.task_images.read_text()) == {}
     else:
         assert got.returncode != 0
-        assert "run:" in got.stderr and "script:" in got.stderr
+        assert "rule work: its Python run: block cannot execute in its assigned task image" in (
+            got.stderr
+        )
         assert not (sm.src / "done.txt").exists()
         assert not sm.task_images.exists()
 
@@ -219,28 +228,85 @@ def test_failed_conversion_reads_only_the_bounded_log_tail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sj = module("single_job")
+    run_logs = module("run_logs")
     images, logs = tmp_path / "images", tmp_path / "logs"
     images.mkdir()
     logs.mkdir()
     apptainer = tmp_path / "apptainer"
-    apptainer.write_text('#!/bin/sh\nprintf "discard-this-prefix final-diagnostic"\nexit 1\n')
+    # A log far longer than the tail the failure keeps.
+    apptainer.write_text(
+        '#!/bin/sh\nhead -c 100000 /dev/zero | tr "\\0" x\nprintf " final-diagnostic"\nexit 1\n'
+    )
     apptainer.chmod(0o755)
     monkeypatch.setattr(sj, "FAILURE_TAIL_BYTES", 16)
-    real_open = Path.open
+    read: list[int] = []
+    real_open = run_logs._open_regular
 
-    class BoundedReader(io.BytesIO):
-        def read(self, size: int | None = -1) -> bytes:
-            assert size is not None and 0 <= size <= 16, "failed conversion read an unbounded log"
-            return super().read(size)
+    class Counting:
+        """A real file whose reads are counted (tail_bytes needs its fileno and seek)."""
 
-    def bounded_open(path: Path, mode: str = "r") -> object:
-        if path.suffix == ".log" and mode == "rb":
-            with real_open(path, "rb") as stream:
-                return BoundedReader(stream.read())
-        return real_open(path, mode)
+        def __init__(self, fh: BinaryIO) -> None:
+            self.fh = fh
 
-    monkeypatch.setattr(Path, "open", bounded_open)
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.fh, name)
+
+        def read(self, size: int = -1) -> bytes:
+            got = self.fh.read(size)
+            read.append(len(got))
+            return got
+
+    @contextmanager
+    def counting_open(path: Path) -> Iterator[Counting]:
+        with real_open(path) as fh:
+            yield Counting(fh)
+
+    # Count reads through the real no-follow opener, not a bypass of its file checks.
+    monkeypatch.setattr(run_logs, "_open_regular", counting_open)
     conversion = sj.Conversion(str(apptainer), images, logs, {})
     conversion.pull("tool:1", {})
     assert conversion.failure.endswith("final-diagnostic")
-    assert "discard-this-prefix" not in conversion.failure
+    assert "xxxxxxxxxxxxxxxxxxxx" not in conversion.failure
+    assert read and sum(read) <= 16, read
+
+
+@pytest.mark.parametrize("profile_mem_mb", [None, 5000, 1000])
+def test_older_snakemake_resources_get_the_host_cap_and_full_defaults(
+    monkeypatch: pytest.MonkeyPatch, profile_mem_mb: int | None
+) -> None:
+    """A Snakemake 9 release before `snakemake.resources.Resource` keeps plain-number limits and a
+    `DefaultResources`: the cap is the least of the host's and the profile's, both memory units are
+    capped, and bare defaults become Snakemake's full ones."""
+    from types import SimpleNamespace
+
+    import snakemake
+
+    class DefaultResources:
+        def __init__(self, args: list[str] | None = None) -> None:
+            self.args = args
+            self.parsed = {"_cores": 1, "_nodes": 1, "tmpdir": "/tmp", "mem_mb": "full"}
+
+    old = SimpleNamespace(DefaultResources=DefaultResources)
+    monkeypatch.setattr(snakemake, "resources", old)
+    bare = SimpleNamespace(args=["tmpdir=/tmp"], parsed={"_cores": 1, "_nodes": 1, "tmpdir": "/t"})
+    settings = SimpleNamespace(nodes=100, default_resources=bare)
+    limits: dict[str, int | None] = {"_cores": 2, "_nodes": 100}
+    if profile_mem_mb is not None:
+        limits["mem_mb"] = profile_mem_mb
+    workflow = SimpleNamespace(resource_settings=settings, global_resources=limits)
+    module("single_job").configure_local_resources(workflow, 1500)
+    host_mb = 1500 * 1048576 // 1000000
+    want_mb = host_mb if profile_mem_mb is None else min(profile_mem_mb, host_mb)
+    assert limits == {"_cores": 2, "_nodes": None, "mem_mb": want_mb, "mem_mib": 1500}
+    assert settings.nodes is None
+    assert isinstance(settings.default_resources, DefaultResources)
+    assert settings.default_resources.args == ["tmpdir=/tmp"]
+
+
+def test_a_snakemake_without_the_resource_internals_is_refused() -> None:
+    from types import SimpleNamespace
+
+    with pytest.raises(RuntimeError, match="global_resources"):
+        module("single_job").configure_local_resources(
+            SimpleNamespace(resource_settings=SimpleNamespace()), 1500
+        )
