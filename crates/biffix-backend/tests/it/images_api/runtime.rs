@@ -195,17 +195,51 @@ async fn an_image_with_its_own_snakemake_must_match_the_pinned_release() {
     // An image with its own Snakemake is never derived.
     assert!(h.cloud.image_derives.lock().unwrap().is_empty());
 
-    // The same declaration over an image with the pinned release runs it as imported.
+    // The same declaration over an image with the pinned release, and exactly the pinned storage
+    // plugin (a commit build's `+g<sha12>` included), runs it as imported.
     let own_image = "docker.io/snakemake/snakemake:v9.27.0";
     let (_, view) = register(&h, &snakemake_body("def", own_image, true)).await;
     let id = view["id"].as_str().unwrap().to_string();
-    let sm9 = imported("bash=1,libc=musl,snakemake=9.27.0,storage_s3=0.3.6");
+    let storage = pinned_storage_s3();
+    let sm9 = imported(&format!("bash=1,libc=musl,snakemake=9.27.0,storage_s3={storage}"));
     set_import(&h, &content_key(&h, &id, "default"), BuildState::Succeeded, 1, &outputs(&sm9));
     sweep_ok(&h).await;
     let d = detail(&h, &id).await;
     assert_eq!(d["state"], "ready", "{d}");
     assert!(d["images"][0].get("derived_state").is_none(), "{d}");
     assert!(h.cloud.image_derives.lock().unwrap().is_empty());
+}
+
+/// The storage plugin version the Snakemake 9 runtime pins.
+fn pinned_storage_s3() -> String {
+    let version = biffix_workflow::engines::EngineVersion::parse("9.27.0").unwrap();
+    let recipe = biffix_workflow::runtime::recipe_for("snakemake", version).unwrap();
+    recipe.storage_s3().unwrap().to_string()
+}
+
+/// An own-runtime image must carry the pinned storage plugin exactly: while the pin is a commit
+/// build (`<release>+g<sha12>`), the PyPI release it is built from does not pass for it. A release
+/// pin has nothing to check here.
+#[tokio::test]
+async fn an_image_with_its_own_snakemake_must_carry_the_pinned_storage_plugin() {
+    let pinned = pinned_storage_s3();
+    let Some((release, _)) = pinned.split_once('+') else {
+        return;
+    };
+    let h = harness();
+    let own_image = "docker.io/snakemake/snakemake:v9.27.0";
+    let (_, view) = register(&h, &snakemake_body("def", own_image, true)).await;
+    let id = view["id"].as_str().unwrap().to_string();
+    let caps = imported(&format!("bash=1,libc=musl,snakemake=9.27.0,storage_s3={release}"));
+    set_import(&h, &content_key(&h, &id, "default"), BuildState::Succeeded, 1, &outputs(&caps));
+    sweep_ok(&h).await;
+    let d = detail(&h, &id).await;
+    assert_eq!(d["state"], "failed", "{d}");
+    let want = format!(
+        "carries snakemake-storage-plugin-s3 {release}, but this version runs \
+         snakemake-storage-plugin-s3 {pinned}"
+    );
+    assert!(d["not_ready"][0].as_str().unwrap().contains(&want), "{d}");
 }
 
 #[tokio::test]

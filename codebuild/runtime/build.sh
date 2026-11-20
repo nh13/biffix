@@ -28,8 +28,13 @@
 # Everything the layer installs is pinned by the recipe or checked against the base image:
 #   - Snakemake: a python-build-standalone CPython (sha256), and a hash-locked package set resolved
 #     by uv (sha256) as of the recipe's cutoff date, for each architecture. The biffix-owned wheels
-#     come from the base image's /opt/biffix/wheels (their manifest must match the recipe), so no
-#     package is built from git here.
+#     come from the base image's /opt/biffix/wheels (their manifest must match the recipe). The one
+#     package built from git here is the storage plugin, when the recipe pins a commit of it
+#     (BIFFIX_RT_STORAGE_S3_REPO/_SHA, an unreleased fix): exactly that commit, checked out by sha,
+#     built per runtime rather than into the base image's wheels because a task loads it (it is
+#     part of the runtime, not of the coordinator), so a re-pin needs no new base image. Its build
+#     backend is resolved by uv (unhashed) as of the same cutoff; the wheel's own dependencies are
+#     hash-locked with the rest.
 #   - Nextflow: the release's self-contained `-dist` launcher and the nf-amazon / nf-cloudcache
 #     releases it defaults to, each checked against the recipe's sha256, nf-biffix from the base
 #     image, and the plugins the workflow itself declares (BIFFIX_RT_NF_WORKFLOW_PLUGINS:
@@ -190,6 +195,80 @@ SHIM
 }
 
 # ── Snakemake ──
+
+# Print the storage plugin's requirement line: the PyPI release BIFFIX_RT_STORAGE_S3 or, with
+# BIFFIX_RT_STORAGE_S3_REPO and _SHA, a wheel built here from exactly that commit (a fix not yet
+# released). The built wheel's version is BIFFIX_RT_STORAGE_S3, the checkout's own release plus a
+# local label naming the commit (`0.3.6+g<sha12>`), so the layer's probe and an own-runtime image's
+# capability check tell it from the release. Args: uv, a scratch dir.
+storage_s3_requirement() {
+  local uv=$1 dir=$2
+  if [ -z "${BIFFIX_RT_STORAGE_S3_REPO:-}${BIFFIX_RT_STORAGE_S3_SHA:-}" ]; then
+    echo "snakemake-storage-plugin-s3==${BIFFIX_RT_STORAGE_S3}"
+    return
+  fi
+  local repo=${BIFFIX_RT_STORAGE_S3_REPO:-} sha=${BIFFIX_RT_STORAGE_S3_SHA:-} try
+  { [ -n "$repo" ] && [ -n "$sha" ]; } ||
+    die "BIFFIX_RT_STORAGE_S3_REPO and BIFFIX_RT_STORAGE_S3_SHA must be set together"
+  [[ $repo =~ ^(https|file)://[^[:space:]]+$ ]] || die "bad BIFFIX_RT_STORAGE_S3_REPO '$repo'"
+  [[ $sha =~ ^[0-9a-f]{40}$ ]] || die "bad BIFFIX_RT_STORAGE_S3_SHA '$sha'"
+  [[ $BIFFIX_RT_STORAGE_S3 =~ ^[0-9]+(\.[0-9]+)*\+g${sha:0:12}$ ]] ||
+    die "BIFFIX_RT_STORAGE_S3 '$BIFFIX_RT_STORAGE_S3' is not <release>+g<sha12> of commit $sha"
+  local src="$dir/storage-s3-src" out="$dir/storage-s3-dist" got wheel
+  rm -rf "$src" "$out"
+  # Explicit `|| die`s: this runs in a command substitution, which does not inherit `set -e`.
+  git init -q "$src" || die "cannot create $src"
+  # Retried as `fetch` retries its downloads.
+  for try in 1 2 3; do
+    git -C "$src" fetch -q --depth 1 "$repo" "$sha" && break
+    [ "$try" -lt 3 ] || die "cannot fetch $sha from $repo"
+    sleep $((try * 5))
+  done
+  git -C "$src" -c advice.detachedHead=false checkout -q FETCH_HEAD || die "cannot check out $sha"
+  got=$(git -C "$src" rev-parse HEAD)
+  [ "$got" = "$sha" ] || die "fetched $got from $repo, not $sha"
+  # The release the checkout declares must be the pin's public part; then it becomes the pin.
+  python3 - "$src/pyproject.toml" "$BIFFIX_RT_STORAGE_S3" <<'PY' || die "cannot set the storage plugin's version"
+import re, sys
+path, pin = sys.argv[1], sys.argv[2]
+public = pin.split("+", 1)[0]
+lines = open(path).read().split("\n")
+section, hits = None, []
+for i, line in enumerate(lines):
+    m = re.match(r"\s*\[([^\]]+)\]\s*$", line)
+    if m:
+        section = m.group(1).strip()
+    elif section in ("project", "tool.poetry"):
+        v = re.match(r'(\s*version\s*=\s*)"([^"]*)"(\s*)$', line)
+        if v:
+            hits.append((i, v))
+if len(hits) != 1:
+    sys.exit(f"{path}: expected one package version, found {len(hits)}")
+i, v = hits[0]
+if v.group(2) != public:
+    sys.exit(f"the checkout is version {v.group(2)}, but the pin {pin} is a build of {public}")
+lines[i] = f'{v.group(1)}"{pin}"{v.group(3)}'
+open(path, "w").write("\n".join(lines))
+PY
+  "$uv" build --quiet --wheel --python python3 --exclude-newer "$BIFFIX_RT_EXCLUDE_NEWER" \
+    --out-dir "$out" "$src" >&2 || die "cannot build the storage plugin at $sha"
+  wheel=$(find "$out" -name 'snakemake_storage_plugin_s3-*.whl')
+  [ -n "$wheel" ] && [ "$(wc -l <<<"$wheel")" -eq 1 ] || die "expected one storage plugin wheel in $out"
+  got=$(python3 - "$wheel" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    meta = [n for n in z.namelist() if n.endswith(".dist-info/METADATA")]
+    text = z.read(meta[0]).decode() if len(meta) == 1 else ""
+print(next((l.split(":", 1)[1].strip() for l in text.splitlines() if l.startswith("Version:")), ""))
+PY
+  )
+  [ "$got" = "$BIFFIX_RT_STORAGE_S3" ] || die "the storage plugin wheel is version '$got', not $BIFFIX_RT_STORAGE_S3"
+  # The wheel's bytes depend on the build backend, so they are recorded rather than pinned (the
+  # resolved lock, kept with the runtime's artifacts, carries the same sha256).
+  log "storage plugin $got built from $repo at $sha: $(sha256sum "$wheel" | cut -d' ' -f1)"
+  echo "snakemake-storage-plugin-s3 @ file://${wheel}"
+}
+
 build_snakemake_layers() {
   : "${BIFFIX_RT_PYTHON_RELEASE:?}" "${BIFFIX_RT_PYTHON_VERSION:?}" "${BIFFIX_RT_UV_VERSION:?}"
   : "${BIFFIX_RT_STORAGE_S3:?}" "${BIFFIX_RT_EXCLUDE_NEWER:?}"
@@ -201,11 +280,13 @@ build_snakemake_layers() {
   executor=$(find "$WHEELS" -name 'snakemake_executor_plugin_aws_batch-*.whl' -print -quit)
   logger=$(find "$WHEELS" -name "snakemake_logger_plugin_biffix-${BIFFIX_RT_LOGGER_VERSION}-*.whl" -print -quit)
   { [ -n "$executor" ] && [ -n "$logger" ]; } || die "base image lacks the executor or logger wheel"
+  local storage
+  storage=$(storage_s3_requirement "$uv" "$WORK")
   # The biffix-owned plugins by file, so the resolver can never substitute a PyPI release of the
   # same name; Snakemake is exact and exempt from the cutoff (a newer 9.x must still resolve).
   cat >"$WORK/requirements.in" <<EOF
 snakemake==${BIFFIX_RT_ENGINE_VERSION}
-snakemake-storage-plugin-s3==${BIFFIX_RT_STORAGE_S3}
+${storage}
 snakemake-executor-plugin-aws-batch @ file://${executor}
 snakemake-logger-plugin-biffix @ file://${logger}
 EOF
@@ -245,6 +326,10 @@ EOF
   [ "$got" = "$BIFFIX_RT_ENGINE_VERSION" ] || die "smoke: snakemake --version is $got"
   "$WORK/layer-amd64/opt/biffix/sm/bin/python3" -c \
     'import snakemake_executor_plugin_aws_batch, snakemake_storage_plugin_s3, snakemake_logger_plugin_biffix, boto3'
+  local s3
+  s3=$("$WORK/layer-amd64/opt/biffix/sm/bin/python3" -c \
+    'import importlib.metadata as m; print(m.version("snakemake-storage-plugin-s3"))')
+  [ "$s3" = "$BIFFIX_RT_STORAGE_S3" ] || die "smoke: snakemake-storage-plugin-s3 is $s3"
   log "smoke: snakemake $got and its plugins import (amd64)"
   # The coordinator's cache-rule helper reads a workflow through Snakemake's internals, which move
   # between releases: it must name exactly the `cache: True` rule of this workflow, on this one.

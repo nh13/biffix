@@ -96,17 +96,21 @@ beside it), #65 (`--aws-batch-privileged`, which makes privileged containers opt
 (`--aws-batch-rule-queues`, a rule → job queue map that, unlike `--set-resources`, keeps the
 workflow profile's `set-resources`), plus small log-noise fixes to upstream's own code. A rule's
 own `batch_queue` resource (#40) and spot reclaim retries (#62) are already upstream. Re-pin to
-upstream once they merge. Every re-pin appends its commit to `JOB_DEFINITION_MAP_EXECUTORS`
-(`runtime/mod.rs`): a version whose runtime pins an executor or nf-biffix from before the
-job-definition map is refused at launch until re-registered. A coordinator feature a version can
-depend on, which an older coordinator would ignore rather than refuse (the `queues:` selectors),
-bumps the coordinator contract (`COORDINATOR_CONTRACT` in `wheels.env` and `runtime/mod.rs`, kept
-equal by a test): the base image records it in its wheels manifest, a version that uses the
-feature records the contract in its runtime recipe, and the runtime build refuses a lower base, so
-no variant of that runtime (an older base's included) drops the feature. `lib/snakemake.sh` always passes the spot-attempts and image-map settings, and the
-job-definition map (or, without one, the log group), so a re-pin must keep an executor that has
-all of them. Task job definitions are registered by the backend at launch, never by workflow
-code (`crates/biffix-backend/src/aws/task_definitions.rs`; the coordinator IAM denies every
+upstream once they merge. The Snakemake runtime also builds the S3 storage plugin from a fork
+commit (`storage_s3_source` in `runtime/pins.rs`, branch `biffix-pin/2026-11-20`: 0.3.6 plus
+upstream PR #68, file modification times kept in S3 metadata), versioned `0.3.6+g<sha12>`; re-pin
+to the release that ships it. Every executor re-pin appends its commit to
+`JOB_DEFINITION_MAP_EXECUTORS` (`runtime/mod.rs`): a version whose runtime pins an executor or
+nf-biffix from before the job-definition map is refused at launch until re-registered. A coordinator
+feature a version can depend on, which an older coordinator would ignore rather than refuse (the
+`queues:` selectors), bumps the coordinator contract (`COORDINATOR_CONTRACT` in `wheels.env` and
+`runtime/mod.rs`, kept equal by a test): the base image records it in its wheels manifest, a version
+that uses the feature records the contract in its runtime recipe, and the runtime build refuses a
+lower base, so no variant of that runtime (an older base's included) drops the feature.
+`lib/snakemake.sh` always passes the spot-attempts and image-map settings, and the job-definition
+map (or, without one, the log group), so a re-pin must keep an executor that has all of them. Task
+job definitions are registered by the backend at launch, never by workflow code
+(`crates/biffix-backend/src/aws/task_definitions.rs`; the coordinator IAM denies every
 job-definition write). `plugins/nf-biffix` also provides the `awsbatch` executor (a subclass of
 nf-amazon's) that runs each task on the backend's definition for its image; bumping nf-biffix's
 version means bumping `nf_biffix_version` in `crates/biffix-workflow/src/runtime/pins.rs` too.
