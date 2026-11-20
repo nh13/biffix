@@ -118,6 +118,13 @@ def test_probe_reads_bash_libc_and_the_newest_versions() -> None:
         (["9.27.0a5", "9.27.0rc2", "9.27.0b9"], "9.27.0rc2"),
         (["9.27.0", "9.27.0.post1"], "9.27.0.post1"),
         (["9.27", "9.27.1", "9.3.0"], "9.27.1"),
+        # A local version (a commit build) sorts after its plain release, whichever comes first.
+        (["9.27.0", "9.27.0+g8129cca56f7c"], "9.27.0+g8129cca56f7c"),
+        (["9.27.0+g8129cca56f7c", "9.27.0"], "9.27.0+g8129cca56f7c"),
+        (["9.27.0+g8129cca56f7c", "9.27.1"], "9.27.1"),
+        # Local segments compare one by one, a number above a letter-led segment.
+        (["9.27.0+abc.5", "9.27.0+abc.10"], "9.27.0+abc.10"),
+        (["9.27.0+1", "9.27.0+abc"], "9.27.0+1"),
     ],
 )
 def test_probe_orders_pre_and_post_releases_as_pep_440_does(
@@ -126,6 +133,16 @@ def test_probe_orders_pre_and_post_releases_as_pep_440_does(
     site = "usr/lib/python3/site-packages"
     listing = [f"{site}/snakemake-{v}.dist-info/" for v in versions]
     assert f",snakemake={newest}," in _probe(listing)
+
+
+def test_probe_reports_a_storage_plugin_commit_build_over_its_release() -> None:
+    # An import probes the whole file system, so a second Python environment can hold the plain
+    # release beside the commit build the runtime pins.
+    listing = [
+        "opt/biffix/sm/lib/python3.12/site-packages/snakemake_storage_plugin_s3-0.3.6+g8129cca56f7c.dist-info/",
+        "usr/lib/python3/site-packages/snakemake_storage_plugin_s3-0.3.6.dist-info/",
+    ]
+    assert ",storage_s3=0.3.6+g8129cca56f7c," in _probe(listing)
 
 
 def test_probe_tells_musl_and_no_libc() -> None:
@@ -1569,6 +1586,240 @@ def test_a_malformed_workflow_plugin_entry_is_refused(tmp_path: Path, entry: str
     assert got.returncode != 0
     assert f"bad BIFFIX_RT_NF_WORKFLOW_PLUGINS entry '{entry}'" in got.stderr
     assert not (tmp_path / "nf/workflow-plugins").exists()
+
+
+# ── runtime/build.sh storage_s3_requirement ──
+
+# A stand-in `uv build`: records its arguments, and writes a wheel whose METADATA carries the
+# version the checkout's pyproject.toml declares (the one the function rewrote), or FAKE_UV_VERSION;
+# FAKE_UV_FAIL=1 fails the build, FAKE_UV_EXTRA=1 also writes a second wheel.
+FAKE_UV = r"""#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >> "$FAKE_UV_LOG"
+[ "$1" = build ]
+[ -z "${FAKE_UV_FAIL:-}" ] || exit 1
+out= src=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --out-dir) out=$2; shift 2 ;;
+    --python|--exclude-newer) shift 2 ;;
+    *) src=$1; shift ;;
+  esac
+done
+mkdir -p "$out"
+python3 - "$src/pyproject.toml" "$out" "${FAKE_UV_VERSION:-}" <<'PY'
+import re, sys, zipfile
+text = open(sys.argv[1]).read()
+version = sys.argv[3] or re.search(r'^version = "([^"]*)"', text, re.M).group(1)
+dist = f"snakemake_storage_plugin_s3-{version}"
+meta = f"Metadata-Version: 2.1\nName: snakemake-storage-plugin-s3\nVersion: {version}\n"
+with zipfile.ZipFile(f"{sys.argv[2]}/{dist}-py3-none-any.whl", "w") as z:
+    z.writestr(f"{dist}.dist-info/METADATA", meta)
+PY
+[ -z "${FAKE_UV_EXTRA:-}" ] || cp "$out"/*.whl "$out/snakemake_storage_plugin_s3-9-py3-none-any.whl"
+"""
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _poetry(version: str) -> str:
+    return (
+        f'[tool.poetry]\nname = "snakemake-storage-plugin-s3"\nversion = "{version}"\n\n'
+        '[tool.poetry.dependencies]\npython = "^3.11"\n\n'
+        '[build-system]\nrequires = ["poetry-core"]\n'
+    )
+
+
+def _plugin_repo(
+    tmp_path: Path, version: str = "0.3.6", pyproject: str | None = None
+) -> tuple[Path, str]:
+    """A git repository of the plugin at one commit, whose pyproject declares `version` (or is
+    `pyproject`)."""
+    repo = tmp_path / "plugin"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text(pyproject if pyproject is not None else _poetry(version))
+    _git(repo, "init", "-q")
+    _git(repo, "add", "pyproject.toml")
+    _git(repo, "commit", "-q", "-m", "c")
+    # A later commit, so the pinned one is not the branch tip.
+    (repo / "later").write_text("x")
+    _git(repo, "add", "later")
+    _git(repo, "commit", "-q", "-m", "later")
+    return repo, _git(repo, "rev-parse", "HEAD~1")
+
+
+# The storage plugin checkout's build backend, as a recipe pins it (`name==version@<sha256>`), and
+# the constraint the build writes for it.
+BUILD_REQUIRES = f"poetry-core==2.5.0@{'9' * 64} build==1.2@{'8' * 64}"
+BUILD_CONSTRAINTS = (
+    f"poetry-core==2.5.0 --hash=sha256:{'9' * 64}\nbuild==1.2 --hash=sha256:{'8' * 64}\n"
+)
+
+
+def _storage_requirement(
+    tmp_path: Path, env: dict[str, str]
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    fake = tmp_path / "fake-uv"
+    fake.write_text(FAKE_UV)
+    fake.chmod(0o755)
+    work = tmp_path / "work"
+    work.mkdir()
+    log = tmp_path / "uv.log"
+    fns = _function(RUNTIME_BUILD, "storage_s3_requirement")
+    full = {
+        "HOME": str(tmp_path),
+        "FAKE_UV_LOG": str(log),
+        "BIFFIX_RT_EXCLUDE_NEWER": "2026-09-26T00:00:00Z",
+        **env,
+    }
+    # A stand-in `sleep`, so a refused fetch's retries take no time.
+    sleep = f'sleep() {{ echo "$1" >> "{tmp_path}/slept"; }}'
+    body = f'{fns}\n{sleep}\nstorage_s3_requirement "{fake}" "{work}"'
+    return _common(body, full), log
+
+
+def test_a_released_storage_plugin_is_required_from_pypi(tmp_path: Path) -> None:
+    got, log = _storage_requirement(tmp_path, {"BIFFIX_RT_STORAGE_S3": "0.3.6"})
+    assert got.returncode == 0, got.stderr
+    assert got.stdout == "snakemake-storage-plugin-s3==0.3.6\n"
+    assert not log.exists()
+
+
+def test_a_storage_plugin_commit_is_built_into_a_wheel_of_the_pinned_version(
+    tmp_path: Path,
+) -> None:
+    repo, sha = _plugin_repo(tmp_path)
+    pin = f"0.3.6+g{sha[:12]}"
+    got, log = _storage_requirement(
+        tmp_path,
+        {
+            "BIFFIX_RT_STORAGE_S3": pin,
+            "BIFFIX_RT_STORAGE_S3_REPO": f"file://{repo}",
+            "BIFFIX_RT_STORAGE_S3_SHA": sha,
+            "BIFFIX_RT_STORAGE_S3_BUILD_REQUIRES": BUILD_REQUIRES,
+        },
+    )
+    assert got.returncode == 0, got.stderr
+    wheel = tmp_path / f"work/storage-s3-dist/snakemake_storage_plugin_s3-{pin}-py3-none-any.whl"
+    assert got.stdout == f"snakemake-storage-plugin-s3 @ file://{wheel}\n"
+    assert wheel.exists()
+    # Exactly the pinned commit (not the branch tip), its version rewritten to the pin, built with
+    # the recipe's resolution cutoff.
+    src = tmp_path / "work/storage-s3-src"
+    assert _git(src, "rev-parse", "HEAD") == sha
+    assert not (src / "later").exists()
+    assert f'version = "{pin}"' in (src / "pyproject.toml").read_text()
+    assert "--exclude-newer 2026-09-26T00:00:00Z" in log.read_text()
+    # Its build backend exactly as pinned, hash-checked before it runs.
+    constraints = tmp_path / "work/storage-s3-build-constraints.txt"
+    assert constraints.read_text() == BUILD_CONSTRAINTS
+    assert f"--build-constraints {constraints} --require-hashes" in log.read_text()
+
+
+def _pinned_env(
+    tmp_path: Path, checkout_version: str = "0.3.6", pyproject: str | None = None
+) -> dict[str, str]:
+    repo, sha = _plugin_repo(tmp_path, checkout_version, pyproject)
+    env = {
+        "BIFFIX_RT_STORAGE_S3": f"0.3.6+g{sha[:12]}",
+        "BIFFIX_RT_STORAGE_S3_REPO": f"file://{repo}",
+        "BIFFIX_RT_STORAGE_S3_SHA": sha,
+        "BIFFIX_RT_STORAGE_S3_BUILD_REQUIRES": BUILD_REQUIRES,
+    }
+    return env
+
+
+@pytest.mark.parametrize(
+    "pyproject",
+    [
+        '[project]\nname = "snakemake-storage-plugin-s3"\nversion = "0.3.6"\n',
+        _poetry("0.3.6"),
+    ],
+    ids=["project", "poetry"],
+)
+def test_the_storage_plugin_version_is_set_in_either_table(tmp_path: Path, pyproject: str) -> None:
+    env = _pinned_env(tmp_path, pyproject=pyproject)
+    got, _ = _storage_requirement(tmp_path, env)
+    assert got.returncode == 0, got.stderr
+    text = (tmp_path / "work/storage-s3-src/pyproject.toml").read_text()
+    assert f'version = "{env["BIFFIX_RT_STORAGE_S3"]}"' in text
+    assert 'version = "0.3.6"' not in text
+
+
+@pytest.mark.parametrize(
+    ("case", "want"),
+    [
+        ("missing_sha", "must be set together"),
+        ("missing_repo", "must be set together"),
+        ("short_sha", "bad BIFFIX_RT_STORAGE_S3_SHA"),
+        ("bad_repo", "bad BIFFIX_RT_STORAGE_S3_REPO"),
+        ("unlabelled_pin", "is not <release>+g<sha12>"),
+        ("injected_pin", "is not <release>+g<sha12>"),
+        ("unknown_commit", "cannot fetch"),
+        ("other_release", "the checkout is version 0.3.5, but the pin"),
+        ("wrong_wheel_version", "the storage plugin wheel is version '0.3.6', not"),
+        ("dynamic_version", "expected one package version, found 0"),
+        ("two_versions", "expected one package version, found 2"),
+        ("build_fails", "cannot build the storage plugin at"),
+        ("two_wheels", "expected one storage plugin wheel"),
+        ("no_build_requires", "BIFFIX_RT_STORAGE_S3_BUILD_REQUIRES is empty"),
+        ("unhashed_build_requires", "bad build requirement 'poetry-core==2.5.0'"),
+        ("ranged_build_requires", "bad build requirement 'poetry-core>=2@"),
+    ],
+)
+def test_a_storage_plugin_commit_that_does_not_check_out_is_refused(
+    tmp_path: Path, case: str, want: str
+) -> None:
+    pyproject = {
+        "dynamic_version": '[project]\nname = "x"\ndynamic = ["version"]\n',
+        "two_versions": '[project]\nname = "x"\nversion = "0.3.6"\n\n' + _poetry("0.3.6"),
+    }.get(case)
+    checkout = "0.3.5" if case == "other_release" else "0.3.6"
+    env = _pinned_env(tmp_path, checkout, pyproject)
+    sha = env["BIFFIX_RT_STORAGE_S3_SHA"]
+    if case == "missing_sha":
+        del env["BIFFIX_RT_STORAGE_S3_SHA"]
+    elif case == "missing_repo":
+        del env["BIFFIX_RT_STORAGE_S3_REPO"]
+    elif case == "short_sha":
+        env["BIFFIX_RT_STORAGE_S3_SHA"] = sha[:12]
+    elif case == "bad_repo":
+        env["BIFFIX_RT_STORAGE_S3_REPO"] = "git@github.com:x/y.git"
+    elif case == "unlabelled_pin":
+        env["BIFFIX_RT_STORAGE_S3"] = "0.3.6"
+    elif case == "injected_pin":
+        env["BIFFIX_RT_STORAGE_S3"] = f'0.3.6"\nx = "+g{sha[:12]}'
+    elif case == "unknown_commit":
+        unknown = "0" * 40
+        env["BIFFIX_RT_STORAGE_S3_SHA"] = unknown
+        env["BIFFIX_RT_STORAGE_S3"] = f"0.3.6+g{unknown[:12]}"
+    elif case == "wrong_wheel_version":
+        env["FAKE_UV_VERSION"] = "0.3.6"
+    elif case == "build_fails":
+        env["FAKE_UV_FAIL"] = "1"
+    elif case == "two_wheels":
+        env["FAKE_UV_EXTRA"] = "1"
+    elif case == "no_build_requires":
+        del env["BIFFIX_RT_STORAGE_S3_BUILD_REQUIRES"]
+    elif case == "unhashed_build_requires":
+        env["BIFFIX_RT_STORAGE_S3_BUILD_REQUIRES"] = "poetry-core==2.5.0"
+    elif case == "ranged_build_requires":
+        env["BIFFIX_RT_STORAGE_S3_BUILD_REQUIRES"] = f"poetry-core>=2@{'9' * 64}"
+    got, _ = _storage_requirement(tmp_path, env)
+    assert got.returncode != 0, got.stdout
+    assert want in got.stderr, got.stderr
+    assert got.stdout == ""
+    # A refused fetch is retried, with a growing pause, before the build gives up.
+    if case == "unknown_commit":
+        assert (tmp_path / "slept").read_text() == "5\n10\n"
 
 
 # ── runtime/build.sh check_nf_workflow_plugins ──

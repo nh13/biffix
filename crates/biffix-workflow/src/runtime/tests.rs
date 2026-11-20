@@ -81,6 +81,7 @@ fn fixed_snakemake() -> RuntimeRecipe {
             },
             uv: UvBuild { version: "0.1.0".into(), sha256_x86_64: "ux".into() },
             storage_s3: "0.3.0".into(),
+            storage_s3_source: None,
             executor_sha: "e".into(),
             logger_version: "0.1.0".into(),
             exclude_newer: "2026-01-01T00:00:00Z".into(),
@@ -263,6 +264,15 @@ fn the_runtime_names_its_own_plugin_versions() {
     }
 }
 
+/// A [`GitSource`] of `repo` at `sha`, built with `build_requires`.
+fn git_source(repo: &str, sha: &str, build_requires: &[&str]) -> GitSource {
+    GitSource {
+        repo: repo.into(),
+        sha: sha.into(),
+        build_requires: build_requires.iter().map(|r| (*r).to_string()).collect(),
+    }
+}
+
 #[test]
 fn any_pin_change_changes_the_key() {
     let base = recipe("snakemake", "9.27.0").unwrap();
@@ -287,6 +297,21 @@ fn any_pin_change_changes_the_key() {
         with(&|p| p.uv.version = "x".into()),
         with(&|p| p.uv.sha256_x86_64 = "x".into()),
         with(&|p| p.storage_s3 = "x".into()),
+        // Set and unset the source, and change each of its fields, whatever the live pin has.
+        with(&|p| {
+            p.storage_s3_source = match p.storage_s3_source {
+                Some(_) => None,
+                None => Some(GitSource {
+                    repo: "r".into(),
+                    sha: "s".into(),
+                    build_requires: Vec::new(),
+                }),
+            }
+        }),
+        with(&|p| p.storage_s3_source = Some(git_source("x", "y", &[]))),
+        with(&|p| p.storage_s3_source = Some(git_source("x", "z", &[]))),
+        with(&|p| p.storage_s3_source = Some(git_source("w", "y", &[]))),
+        with(&|p| p.storage_s3_source = Some(git_source("x", "y", &["b==1@00"]))),
         with(&|p| p.executor_sha = "x".into()),
         with(&|p| p.logger_version = "x".into()),
         with(&|p| p.exclude_newer = "x".into()),
@@ -341,6 +366,72 @@ fn any_pin_change_changes_the_key() {
     for other in changed.iter().chain(&nf_changed) {
         assert!(keys.insert(runtime_key(other)), "{other:?}");
     }
+}
+
+/// A plugin built from a git commit is named by both, in the key and the build's environment; a
+/// recipe without one serializes (and keys) as before the field existed.
+#[test]
+fn a_storage_plugin_source_reaches_the_key_and_the_build_env() {
+    let plain = fixed_snakemake();
+    let json = serde_json::to_value(&plain).unwrap();
+    assert!(json["pins"].get("storage_s3_source").is_none(), "{json}");
+    let RuntimeRecipe::Snakemake { recipe_version, engine_version, mut pins, coordinator_contract } =
+        plain.clone()
+    else {
+        unreachable!()
+    };
+    pins.storage_s3_source = Some(GitSource {
+        repo: "https://g/r.git".into(),
+        sha: "abc".into(),
+        build_requires: vec!["a==1@00".into(), "b==2@11".into()],
+    });
+    let sourced =
+        RuntimeRecipe::Snakemake { recipe_version, engine_version, pins, coordinator_contract };
+    assert_ne!(runtime_key(&plain), runtime_key(&sourced));
+    let env = sourced.build_env();
+    assert_eq!(env["BIFFIX_RT_STORAGE_S3_REPO"], "https://g/r.git");
+    assert_eq!(env["BIFFIX_RT_STORAGE_S3_SHA"], "abc");
+    assert_eq!(env["BIFFIX_RT_STORAGE_S3_BUILD_REQUIRES"], "a==1@00 b==2@11");
+    assert!(!plain.build_env().contains_key("BIFFIX_RT_STORAGE_S3_REPO"));
+    assert!(!plain.build_env().contains_key("BIFFIX_RT_STORAGE_S3_SHA"));
+    let round: RuntimeRecipe =
+        serde_json::from_value(serde_json::to_value(&sourced).unwrap()).unwrap();
+    assert_eq!(round, sourced);
+}
+
+/// A plugin pinned to a git commit carries that commit in its version's local label
+/// (`<release>+g<sha12>`), which is what the built wheel reports and image probes see, so the
+/// fork can never pass for the PyPI release; the commit is a full sha on an https repository. A
+/// release pin has no local label (the build would ask PyPI for a version it never has).
+#[test]
+fn a_storage_plugin_pinned_to_a_commit_names_it_in_its_version() {
+    let sm = snakemake_9();
+    let Some(source) = &sm.storage_s3_source else {
+        assert!(!sm.storage_s3.contains('+'), "{}", sm.storage_s3);
+        assert!(EngineVersion::parse(&sm.storage_s3).is_some(), "{}", sm.storage_s3);
+        return;
+    };
+    assert!(source.repo.starts_with("https://") && source.repo.ends_with(".git"), "{source:?}");
+    assert!(
+        source.sha.len() == 40
+            && source.sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+        "{source:?}"
+    );
+    // Its build backend runs code at build time: every build requirement exact and hash-checked
+    // (what codebuild/runtime/build.sh accepts).
+    assert!(!source.build_requires.is_empty(), "{source:?}");
+    for req in &source.build_requires {
+        let (spec, hash) = req.split_once('@').expect("a sha256");
+        let (name, version) = spec.split_once("==").expect("an exact version");
+        assert!(!name.is_empty() && !version.is_empty() && !version.contains(' '), "{req}");
+        assert!(
+            hash.len() == 64 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+            "{req}"
+        );
+    }
+    let (public, local) = sm.storage_s3.split_once('+').expect("a local version label");
+    assert!(EngineVersion::parse(public).is_some(), "{public}");
+    assert_eq!(local, format!("g{}", &source.sha[..12]));
 }
 
 #[test]
@@ -421,7 +512,17 @@ fn the_runtime_build_reads_every_build_env_variable() {
         .unwrap()
         .with_workflow_plugins(vec![plugin("nf-schema", "2.7.2")])
         .unwrap();
-    for r in [fixed_snakemake(), recipe("nextflow", "25.10.4").unwrap(), with_plugins] {
+    // A Snakemake recipe with a storage plugin source, whatever the live pin has.
+    let RuntimeRecipe::Snakemake { recipe_version, engine_version, mut pins, coordinator_contract } =
+        fixed_snakemake()
+    else {
+        unreachable!()
+    };
+    pins.storage_s3_source =
+        Some(GitSource { repo: "r".into(), sha: "s".into(), build_requires: Vec::new() });
+    let sourced =
+        RuntimeRecipe::Snakemake { recipe_version, engine_version, pins, coordinator_contract };
+    for r in [fixed_snakemake(), sourced, recipe("nextflow", "25.10.4").unwrap(), with_plugins] {
         for name in r.build_env().keys() {
             if let Some(arch) = name.strip_prefix(per_arch) {
                 assert!(["X86_64", "AARCH64"].contains(&arch), "{name}");

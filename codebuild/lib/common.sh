@@ -176,7 +176,8 @@ archive() {
 # probe [<prefix>]: capabilities from a `tar -t` listing on stdin (nothing is executed): a bash, the
 # C library (glibc or musl), and the Snakemake and plugin versions installed — the newest
 # `<name>-<version>.dist-info` found (under <prefix> only, when given), in PEP 440 order as far as
-# the stdlib allows (a dev release before a pre-release before the final, then a post release). A
+# the stdlib allows (a dev release before a pre-release before the final, then a post release; a
+# local version, such as a commit build's `+g<sha>`, after the same version without one). A
 # version is matched only in the characters a normalized PEP 440 version has: the names come from
 # the image.
 probe() {
@@ -196,11 +197,14 @@ def order(v):
     numbers = [int(x) for x in release.split(".")]
     while numbers and numbers[-1] == 0:
         numbers.pop()
-    rest = rest.split("+")[0].lower()
+    rest, _, local = rest.lower().partition("+")
     pre = re.search(r"rc|a|b", rest)
     phase = 3 if "post" in rest else 0 if "dev" in rest and not pre else 1 if rest else 2
     rank = {"a": 0, "b": 1, "rc": 2}[pre.group(0)] if pre else 0
-    return numbers, phase, rank, [int(x) for x in re.findall(r"[0-9]+", rest)]
+    # A local version sorts after the same version without one, segment by segment: a number
+    # above a letter-led segment, numbers by value, the rest as text.
+    segments = [(1, int(x), "") if x.isdigit() else (0, 0, x) for x in re.split(r"[._-]", local) if x]
+    return numbers, phase, rank, [int(x) for x in re.findall(r"[0-9]+", rest)], segments
 def version(dist):
     pattern = re.compile(r"/" + dist.replace("_", "[-_]") + r"-([0-9][0-9A-Za-z.+!_]*)\.dist-info(/|$)")
     found = {m.group(1) for n in names if n.startswith(prefix) for m in [pattern.search(n)] if m}
