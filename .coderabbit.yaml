@@ -1,0 +1,242 @@
+# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+#
+# CodeRabbit review configuration for biffix (an AWS-native control plane for Snakemake and
+# Nextflow runs).
+#
+# What bites here is not style. The UI shows projections of one event log, so a fold that depends
+# on arrival order, or a RunEvent change that is not additive, corrupts every run's view or breaks
+# a producer released on another schedule (an engine plugin baked into an older runtime). IAM is
+# the authorization engine, so a policy, tag condition or resource pattern is a security boundary.
+# The coordinator runs workflow code beside a run-scoped capability token, as bash under
+# `set -euo pipefail`. And the runtime build pins everything it installs by sha256. The path
+# instructions below aim the review at those failure modes.
+#
+# WHAT CI ALREADY ENFORCES (.github/workflows/ci.yml and audit.yml): cargo fmt, clippy -D warnings,
+# cargo test (including the Postgres-backed suites and migrations), the schemas/ and UI types drift
+# gates, MSRV, cargo-deny, ruff/mypy/pytest for every Python project, the CDK synth tests,
+# svelte-check/prettier/vitest/playwright, nf-biffix's gradle tests on every pinned Nextflow
+# release, actionlint and shellcheck. Do not spend a comment re-deriving any of it.
+#
+# MAINTENANCE: the instructions name files, symbols and invariants. Re-read and update them when
+# those move; a stale instruction silently misdirects the reviewer. Every `path:` glob below
+# matched at least one tracked file when this revision was written.
+
+language: en-US
+
+# NB: CodeRabbit caps tone_instructions at 250 characters, and exceeding it discards this WHOLE
+# file (schema validation fails). The value below is 212 characters; re-count after any edit.
+tone_instructions: >-
+  Concise and technical. Lead with the risk and a one-line fix; skip praise and restating code.
+  Favor fold determinism, additive contracts and IAM boundaries over style. Skip lint and format
+  nits; CI enforces them.
+
+reviews:
+  # Surface borderline correctness and security findings, not only high-confidence ones: a false
+  # positive costs less than an order-dependent fold or a widened IAM grant.
+  profile: assertive
+  high_level_summary: true
+  high_level_summary_instructions: >-
+    Open with a one-line risk verdict covering, in order: (1) does it change the RunEvent, wire,
+    FormSchema or API contract, and is the change additive with schemas/ and the UI types
+    regenerated; (2) does it change a projection or the fold, and does it stay a pure,
+    order-independent function of the event set; (3) does it change IAM, a job definition, or
+    what the coordinator exposes to workflow code. State "none" for each axis that does not
+    apply. Do not restate the diff.
+  poem: false
+  collapse_walkthrough: false
+  # Findings are advisory; never auto-block a merge on a review verdict.
+  request_changes_workflow: false
+  suggested_reviewers: false
+  estimate_code_review_effort: true
+  enable_prompt_for_ai_agents: true
+
+  # Reviews run on demand only, requested by crq (`@coderabbitai review`), as in fgumi and
+  # ferro-hgvs. CodeRabbit's fair-use limit counts requests per developer across every repo, and
+  # an automatic review on PR open or on each push spends that shared allowance unasked (and
+  # fires before crq can pause it). On-demand reviews still reach a stacked PR whatever its base
+  # branch, so `base_branches` is not needed; the profile and path instructions apply to them.
+  auto_review:
+    enabled: false
+    auto_incremental_review: false
+    drafts: false
+    # Inert while auto-review is off; kept so the intent survives re-enabling it.
+    ignore_title_keywords:
+      - "chore(deps"
+      - "chore: release"
+
+  # Generated, vendored or lock files. These patterns also drive CodeRabbit's sparse checkout, so
+  # an excluded path is absent from its working tree. The generated files are drift-checked in CI
+  # against the Rust types they come from, which is where a review belongs.
+  path_filters:
+    - "!**/target/**"
+    - "!**/*.lock"
+    - "!**/package-lock.json"
+    - "!**/node_modules/**"
+    - "!ui/build/**"
+    - "!ui/src/lib/generated/**"
+    - "!schemas/*.json"
+    - "!CHANGELOG.md"
+    # moby's default seccomp profile, vendored verbatim with its LICENSE and NOTICE; biffix's
+    # additions are made by seccomp_profile.sh, which is reviewed.
+    - "!infra/biffix_infra/host/moby-*"
+
+  path_instructions:
+    - path: "crates/biffix-core/src/reducer/**/*.rs"
+      instructions: >-
+        The fold: everything the UI shows is a projection, and the invariant is projection ==
+        fold(events in ts order), with incremental folding in any arrival order converging to
+        the same projection. Flag any state that depends on arrival order rather than on the
+        event set: a first-wins assignment where a min/max latch (`keep_min`, `keep_min_micros`)
+        or a set union belongs, a flag that can clear, a field one path resets and another does
+        not. A new projection field must be covered by every reset that should clear it (for
+        example `RunProjection::reset_engine_generation`) and by `recompute_state` where it
+        drives state. Fixes belong in the reducer and a replay, never in patched rows. Require a
+        test that folds the new case in every permutation (`assert_incremental_equals_replay`).
+    - path: "crates/biffix-core/src/{event,wire}/**/*.rs"
+      instructions: >-
+        The RunEvent and wire contracts are a versioned public API that producers released on
+        other schedules bind to (engine plugins baked into older runtimes). A change must be
+        additive and unknown-field tolerant: new fields `#[serde(default,
+        skip_serializing_if = ...)]`, enums open (an `Unknown` variant keeps the raw value), no
+        renames, removals or retyped fields. Require `schemas/` to be regenerated (`cargo xtask
+        emit-schemas`) and, when it reaches the API, the UI types and `ui/mock/`. A new
+        `RunEvent` field is defaulted once in `biffix_core::testing`.
+    - path: "crates/biffix-core/src/{dedup,translate}.rs"
+      instructions: >-
+        Dedup keys decide which facts reach the log: two distinct facts with one key lose one
+        silently, and one fact with two keys is folded twice. Check the `:`-join invariant
+        documented on `dedup::engine` still holds for any new part or discriminator, and that a
+        redelivery of the same fact produces the same key.
+    - path: "crates/biffix-db/migrations/*.sql"
+      instructions: >-
+        Applied migrations are immutable: sqlx checksums each file, and `migrate.rs` pins the
+        version and checksum of every applied one. Flag any edit to an existing migration. A
+        new one must be numbered next, appended to `APPLIED` in `migrate.rs`, and its columns
+        added to the fold's upsert in `biffix_db::projection`.
+    - path: "infra/biffix_infra/{stacks,constructs}/**/*.py"
+      instructions: >-
+        IAM is the authorization engine. Treat every policy, condition key, tag condition and
+        resource pattern as a security boundary: flag a wildcard resource or action that widens
+        what a principal can reach, a condition that a request can satisfy without the intended
+        tag (IAM checks a submit's queue and job definition separately, which is why biffix
+        pairs them with a request tag), and a role trust that admits more subjects than the
+        deploy config names. One deploy is one tenant in one AWS account; nothing may reach
+        another project's bucket, KMS key, jobs or logs. Resources are managed through CDK, not
+        by the backend creating them at runtime.
+    - path: "docker/coordinator/lib/**"
+      instructions: >-
+        The coordinator runs a workflow's own code on the same host as a run-scoped capability
+        token and the project's role. Flag anything that puts the token or role credentials into
+        a task's environment, a log, a failure message or an uploaded file. The shell libraries
+        run under `set -euo pipefail` and are sourced into `entrypoint.sh`: flag a command
+        substitution or pipeline whose failure is silently ignored, an unquoted expansion of a
+        path or workflow-controlled value, and a `local x=$(...)` that masks a failure. The
+        environment contract the backend injects is documented in `entrypoint.sh`; a new
+        variable must be documented there and set by the backend.
+    - path: "codebuild/**"
+      instructions: >-
+        These scripts run inline in CodeBuild (the build stack inlines them into buildspecs) and
+        build what runs every workflow task. Everything installed must be pinned and verified:
+        flag a download without a sha256 check, a resolution without the recipe's cutoff, an
+        unpinned or mutable reference, and a write to an immutable tag outside `tag_once`.
+        Outputs reach the backend through `emit`, so a value must be one line and match a
+        declared output. Inputs are the `BIFFIX_RT_*` contract built by `RuntimeRecipe::
+        build_env`; a test ties the two, so a new variable needs both sides.
+    - path: "crates/biffix-workflow/src/runtime/**/*.rs"
+      instructions: >-
+        The runtime recipe is hashed into the runtime key that names every built runtime. A new
+        recipe field must be left out of the serialization when unset, so existing recipes keep
+        their keys (`the_runtime_key_is_pinned`), and any pin change must change the key
+        (`any_pin_change_changes_the_key`). A pin to a fork names its branch, which is never
+        force-pushed, and the docs that list the forks (CLAUDE.md, docs/architecture.md).
+    - path: "crates/biffix-backend/src/**/*.rs"
+      instructions: >-
+        Authorization is IAM's and RBAC's: flag a handler that reads or writes another project's
+        data without the project check its siblings make. Errors returned to clients must not
+        carry SQL text or another project's data. A change to a request or response
+        type is an API change: the OpenAPI document, `ui/src/lib/generated/`, and the mock in
+        `ui/mock/` move with it.
+    - path: "plugins/**"
+      instructions: >-
+        The engine plugins are released independently (PyPI, the Nextflow registry) and baked
+        into runtimes, so the events they post must stay within the wire contract older
+        backends accept, and a behaviour change needs a version bump (nf-biffix's also in
+        `crates/biffix-workflow/src/runtime/pins.rs`). A plugin must never fail the engine's
+        run because biffix's ingest is unreachable.
+    - path: "ui/src/**/*.{ts,svelte}"
+      instructions: >-
+        SvelteKit with Svelte 5 runes. Never name a variable `state` (it collides with the
+        `$state` rune). The API types under `src/lib/generated/` are generated from the
+        backend; never hand-edit them, and keep `ui/mock/` able to answer every operation the
+        contract defines.
+
+  tools:
+    # CI runs these with the repo's own configuration; a second copy only duplicates findings.
+    clippy:
+      enabled: false
+    ruff:
+      enabled: false
+    shellcheck:
+      enabled: false
+    actionlint:
+      enabled: false
+    # Not covered by CI.
+    gitleaks:
+      enabled: true
+    # No yamllint config here: its defaults (80-column lines, document start) would flag every
+    # workflow and deploy YAML, and actionlint already gates the workflows in CI.
+    yamllint:
+      enabled: false
+    # Static analysis of the workflows themselves: actions are pinned by commit sha, which is
+    # worth checking mechanically.
+    zizmor:
+      enabled: true
+    # The docs are long-form prose with intentional formatting.
+    markdownlint:
+      enabled: false
+    languagetool:
+      enabled: false
+    github-checks:
+      # The full CI run takes several minutes; wait for it (the schema maximum) rather than
+      # review without its signal.
+      timeout_ms: 900000
+
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    description:
+      mode: "off"
+    title:
+      mode: warning
+      requirements: >-
+        Conventional-commit format: `<type>[(scope)][!]: <description>`, where type is one of
+        feat, fix, build, chore, ci, docs, perf, refactor, style, test. The description is
+        lowercase imperative and does not end with a period. A scope, when present, names the
+        component (for example `core`, `backend`, `coordinator`, `infra`, `ui`, `nf-biffix`).
+    custom_checks:
+      - name: "No machine-local paths"
+        mode: "error"
+        instructions: >-
+          This repository is public. FAIL if any added or modified line contains a
+          machine-specific absolute path matching `/Users/`, `/home/`, `/Volumes/` or
+          `C:\\Users\\`. Use a repo-relative path, an environment variable or an explicit
+          placeholder instead. PASS if no such path appears.
+
+  # The repo's test conventions (fold permutations, real engines, stand-in AWS) are too specific
+  # for generated stubs.
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+
+knowledge_base:
+  learnings:
+    scope: "local"
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "CLAUDE.md"
+      - "CONTRIBUTING.md"
+      - "docs/architecture.md"
+      - "docs/developing.md"
