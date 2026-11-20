@@ -71,7 +71,16 @@ def test_a_missing_or_unreadable_file_means_no_images(
 
 @pytest.mark.parametrize(
     "raw, expected",
-    [("1", 1), ("2", 2), ("", None), ("0", None), ("-1", None), ("no", None), ("4294967296", None)],
+    [
+        ("1", 1),
+        ("2", 2),
+        (" 2 ", 2),
+        ("", None),
+        ("0", None),
+        ("-1", None),
+        ("no", None),
+        ("4294967296", None),
+    ],
 )
 def test_every_fact_names_the_positive_coordinator_attempt(
     monkeypatch: pytest.MonkeyPatch, raw: str, expected: int | None

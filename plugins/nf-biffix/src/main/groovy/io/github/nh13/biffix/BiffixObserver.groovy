@@ -180,7 +180,8 @@ class BiffixObserver implements TraceObserverV2 {
      */
     private void emit(Map<String, Object> body) {
         final event = BiffixEvents.envelope(SCHEMA_VERSION, runId, now(), body)
-        if (coordinatorAttempt != null && coordinatorAttempt > 0) {
+        // batchAttempt admits only a positive attempt.
+        if (coordinatorAttempt != null) {
             event.coordinator_attempt = coordinatorAttempt
         }
         // The durable copy first, so an event the live POST drops is still replayed at exit.

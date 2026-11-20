@@ -1,9 +1,10 @@
-"""A single-job run's task images: converted to Apptainer image files before the engine starts, and
-put where each engine looks for them.
+"""A single-job run's task images, converted to Apptainer image files before the engine starts and
+put where each engine looks for them; and, for Snakemake, the wrapper Snakefile that runs the
+workflow on one host (each rule in its image, within the host's CPU and memory budget).
 
 Usage: single_job.py convert <images.json> <images dir> <log dir> <failure file> [<image>...]
        single_job.py snakefile-wrapper <snakefile> <wrapper> <images.json> <images dir> \
-           <default image> <task images file> check|no-check [<task memory MiB>]
+           <default image> <task images file> check|no-check <task memory MiB>
 
 <images.json> is the run's image map (declared image -> the tenant image to run), or "" for none;
 each <image> is one more tenant image the run may name as itself (the version's default image).
@@ -22,7 +23,11 @@ container to the image file of the image its job on AWS Batch would run (set_rul
 `aws_batch_container_image` through the map, else <default image> ("" for none). A rule naming an
 image the map does not, or naming it with anything but a plain string, fails the run before any job
 starts, as does (with `check`) an image file the conversion did not leave in <images dir>. So a
-single-job run pulls no image, as tasks do not on AWS Batch.
+single-job run pulls no image, as tasks do not on AWS Batch. Before the workflow is parsed, the
+wrapper also caps the memory of the jobs running at once at <task memory MiB> on top of the
+workflow profile's own resource limits, and clears the remote-execution `nodes` limit that would
+lift Snakemake's CPU budget (configure_local_resources); it keeps the workflow's own default
+target (`workflow.include(..., overwrite_default_target=True)`).
 """
 
 from __future__ import annotations
@@ -122,6 +127,8 @@ class Conversion:
 
     def pull(self, image: str, credentials: dict[str, str]) -> None:
         """Pull one image (unless another has failed), recording why when it fails."""
+        # Imported here, not at the top: the wrapper Snakefile loads this module without lib/ on
+        # sys.path, and only `convert` (run as a script, from lib/) reads a log.
         from run_logs import tail_bytes
 
         if self.failed.is_set():
@@ -321,11 +328,11 @@ def plan_rule_images(
     images: dict[str, str | None] = {}
     problems: list[str] = []
     for rule in rules:
-        if rule.local:
-            images[rule.name] = None
-            continue
         if rule.problem is not None:
             problems.append(f"rule {rule.name}: {rule.problem}")
+            continue
+        if rule.local:
+            images[rule.name] = None
             continue
         if rule.image is None:
             images[rule.name] = default_image or None
@@ -405,7 +412,8 @@ def set_rule_containers(
     images, problems = plan_rule_images(planned, read_map(map_path), default_image)
     problems += [
         f"rule {rule.name}: its Python run: block cannot execute in its assigned task image; "
-        "use script: instead, or declare it local if it should run in the coordinator"
+        "use script: instead, or declare it local (outside any group) if it should run in the "
+        "coordinator"
         for rule in rules
         if images.get(rule.name) and rule.is_run
     ]
@@ -436,9 +444,22 @@ def configure_local_resources(workflow: Any, memory_mib: int) -> None:
     Clearing nodes is essential: Snakemake lifts its CPU limit whenever nodes is set, even
     with the local executor. Mutate the effective resources rather than passing --resources,
     which would discard the workflow profile's other limits.
+
+    This reaches into Snakemake internals no option exposes: `workflow.resource_settings` (its
+    `nodes` and `default_resources`), `workflow.global_resources`, and the `cached_property` cache
+    `ResourceSettings._parsed_default_resources`. A release without the first two fails here,
+    loudly, rather than running unbounded.
     """
     from snakemake import resources as sm_resources
 
+    missing = [
+        name for name in ("resource_settings", "global_resources") if not hasattr(workflow, name)
+    ]
+    if missing:
+        raise RuntimeError(
+            "biffix cannot set this Snakemake's single-job resource limits: its workflow has no "
+            + ", ".join(missing)
+        )
     settings = workflow.resource_settings
     settings.nodes = None
     limits = workflow.global_resources
@@ -472,11 +493,12 @@ def snakefile_wrapper(
     default_image: str,
     task_images_file: str,
     check_files: bool,
-    memory_mib: int | None = None,
+    memory_mib: int,
 ) -> None:
-    """Write the wrapper Snakefile: it includes `snakefile`, then sets every rule's container
-    (set_rule_containers, from this file). Snakemake has no option for that outside a remote
-    executor."""
+    """Write the wrapper Snakefile: it sets the host's resource budget (configure_local_resources,
+    `memory_mib` for the jobs running at once), includes `snakefile` keeping its default target,
+    then sets every rule's container (set_rule_containers, from this file). Snakemake has no option
+    for the containers outside a remote executor."""
     args = ", ".join(json.dumps(a) for a in (map_path, images_dir, default_image, task_images_file))
     Path(wrapper).write_text(
         "# Written by biffix for a single-job run (lib/single_job.py): the workflow, with every\n"
@@ -490,12 +512,8 @@ def snakefile_wrapper(
         "_biffix = _biffix_importlib.module_from_spec(_biffix_spec)\n"
         "_biffix_sys.modules[_biffix_spec.name] = _biffix\n"
         "_biffix_spec.loader.exec_module(_biffix)\n"
-        + (
-            f"_biffix.configure_local_resources(workflow, {memory_mib})\n"
-            if memory_mib is not None
-            else ""
-        )
-        + f"workflow.include({json.dumps(str(Path(snakefile).resolve()))}, "
+        f"_biffix.configure_local_resources(workflow, {memory_mib})\n"
+        f"workflow.include({json.dumps(str(Path(snakefile).resolve()))}, "
         "overwrite_default_target=True)\n"
         f"_biffix.set_rule_containers(workflow, {args}, {check_files!r})\n"
     )
@@ -514,7 +532,7 @@ def main(argv: list[str]) -> int:
             default_image,
             task_images_file,
             check,
-            *memory,
+            memory,
         ]:
             snakefile_wrapper(
                 snakefile,
@@ -524,7 +542,7 @@ def main(argv: list[str]) -> int:
                 default_image,
                 task_images_file,
                 check == "check",
-                int(memory[0]) if memory else None,
+                int(memory),
             )
             return 0
         case _:

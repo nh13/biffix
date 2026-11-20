@@ -752,7 +752,7 @@
           "minimum": 0
         },
         "instance": {
-          "description": "An exact instance type of that queue-class (`c6id.8xlarge`).",
+          "description": "An instance type of that queue-class (`c6id.8xlarge`) used to size the whole-host request.\nBatch may place the run on another same-size type in that queue-class.",
           "type": [
             "string",
             "null"

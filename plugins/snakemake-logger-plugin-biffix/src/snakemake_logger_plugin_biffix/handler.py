@@ -177,6 +177,16 @@ def _is_jobid(jobid: object) -> TypeGuard[int]:
     return isinstance(jobid, int) and not isinstance(jobid, bool)
 
 
+def coordinator_attempt(raw: str | None) -> int | None:
+    """``AWS_BATCH_JOB_ATTEMPT`` as the wire's positive ``coordinator_attempt`` (at most 2^32 - 1),
+    or None when unset or not one. Surrounding whitespace is ignored, as nf-biffix ignores it."""
+    value = (raw or "").strip()
+    if not (value.isascii() and value.isdecimal()):
+        return None
+    attempt = int(value)
+    return attempt if 0 < attempt <= 0xFFFFFFFF else None
+
+
 class LogHandler(LogHandlerBase):
     """Emits biffix RunEvents from Snakemake log records."""
 
@@ -237,6 +247,10 @@ class LogHandler(LogHandlerBase):
         # The rule → image file of a single-job run (see TASK_IMAGES_ENV), read on first need.
         self._task_images_file = os.environ.get(TASK_IMAGES_ENV) or None
         self._task_images: dict[str, str] | None = None
+        # Batch restarts a single-job run from scratch after losing its host. Every fact,
+        # including run_started, names that generation (the coordinator's attempt), so the fold can
+        # tell the lost host's facts from the retry's.
+        self._coordinator_attempt = coordinator_attempt(os.environ.get("AWS_BATCH_JOB_ATTEMPT"))
 
         self._init_state()
         atexit.register(self._cleanup)
@@ -342,13 +356,8 @@ class LogHandler(LogHandlerBase):
 
     # ── dispatch to both sinks ──
     def _dispatch(self, event: dict[str, object]) -> None:
-        # Batch restarts a single-job run from scratch after losing its host. Every fact, including
-        # run_started, must identify that generation so lost local work cannot satisfy the retry.
-        raw_attempt = os.environ.get("AWS_BATCH_JOB_ATTEMPT", "")
-        if raw_attempt.isascii() and raw_attempt.isdecimal():
-            attempt = int(raw_attempt)
-            if 0 < attempt <= 0xFFFFFFFF:
-                event["coordinator_attempt"] = attempt
+        if self._coordinator_attempt is not None:
+            event["coordinator_attempt"] = self._coordinator_attempt
         try:
             self._writer.write(event)
         except OSError:
