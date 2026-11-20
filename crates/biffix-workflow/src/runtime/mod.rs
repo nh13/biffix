@@ -504,6 +504,15 @@ impl RuntimeRecipe {
         }
     }
 
+    /// The commit a Snakemake runtime builds `snakemake-storage-plugin-s3` from, when it is not a
+    /// PyPI release ([`SnakemakePins::storage_s3_source`]).
+    pub fn storage_s3_source(&self) -> Option<&GitSource> {
+        match self {
+            Self::Snakemake { pins, .. } => pins.storage_s3_source.as_ref(),
+            Self::Nextflow { .. } => None,
+        }
+    }
+
     /// The recipe as the environment variables the runtime buildspec reads
     /// (`codebuild/runtime/build.sh`); this map is that script's whole input contract.
     pub fn build_env(&self) -> BTreeMap<&'static str, String> {

@@ -235,7 +235,8 @@ For Snakemake, biffix adds its pinned Snakemake runtime to each image (tasks run
 carries exactly the pinned Snakemake and `snakemake-storage-plugin-s3` can opt out with
 `runtime: own`. While biffix pins a commit build of the storage plugin (a version such as
 `0.3.6+g8129cca56f7c`, which no PyPI release or published image carries), such an image must
-install the plugin from that commit with its version set to the pinned one; a refusal names both.
+install the plugin from that commit with its version set to the pinned one; a refusal names the
+repository, the commit and the version.
 Without `runtime: own`, biffix adds the pinned plugin for you.
 
 ### Choosing queues
@@ -515,7 +516,9 @@ Things to know:
   either mode's metadata usable by the other. So a single-job run does not re-run a finished job
   only because its image changed. A "Try again" or "Re-run" of a single-job run in the web app is
   a single-job run again, on the same queue-class with the same sizing type, not necessarily the
-  same actual host type. If the host is lost, Batch runs the job again from the start.
+  same actual host type. If the host is lost, Batch runs the job again: a Nextflow run starts
+  over, and a Snakemake run picks up after the jobs the lost host finished (their outputs are
+  already in S3).
 - **Spot is not used.** Single-job hosts are on-demand.
 - **One host per run.** A workflow too big for one host runs one sample per run (an experiment
   groups them), or one Batch job per task.

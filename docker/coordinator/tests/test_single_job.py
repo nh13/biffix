@@ -178,7 +178,9 @@ def test_wrapper_never_overwrites_an_existing_entrypoint(tmp_path: Path) -> None
     original = 'include: "rules/steps.smk"\n'
     snakefile.write_text(original)
     with pytest.raises(FileExistsError):
-        single_job().snakefile_wrapper(str(snakefile), str(snakefile), "", "", "", "", False)
+        single_job().snakefile_wrapper(
+            str(snakefile), str(snakefile), "", "", "", "", False, memory_mib=61440
+        )
     assert snakefile.read_text() == original
 
 
@@ -187,13 +189,21 @@ def test_unique_wrappers_are_siblings_and_preserve_relative_include(tmp_path: Pa
     original = 'include: "rules/steps.smk"\n'
     snakefile.write_text(original)
     helper = single_job()
-    first = Path(helper.snakefile_wrapper(str(snakefile), "", "", "", "", "", False))
-    second = Path(helper.snakefile_wrapper(str(snakefile), "", "", "", "", "", False))
+    first = Path(
+        helper.snakefile_wrapper(str(snakefile), "", "", "", "", "", False, memory_mib=61440)
+    )
+    second = Path(
+        helper.snakefile_wrapper(str(snakefile), "", "", "", "", "", False, memory_mib=61440)
+    )
     assert first != second and first != snakefile and second != snakefile
     assert first.parent == second.parent == snakefile.parent
+    text = first.read_text()
+    assert f"workflow.include({ascii(str(snakefile))}, overwrite_default_target=True)\n" in text
+    assert text.count("workflow.include(") == 1
     assert (
-        f"workflow.include({ascii(str(snakefile))}, overwrite_default_target=True)\n"
-        in first.read_text()
+        text.index("_biffix.configure_local_resources(workflow, 61440)")
+        < text.index("workflow.include(")
+        < text.index("_biffix.set_rule_containers(")
     )
     assert snakefile.read_text() == original
 
@@ -211,7 +221,7 @@ def test_unique_wrapper_parses_relative_includes_with_real_snakemake(tmp_path: P
         'rule step:\n    output: "done"\n    shell: "touch {output}"\n'
     )
     wrapper = single_job().snakefile_wrapper(
-        str(snakefile), "", "", "", "", str(workflow / "task-images.json"), False
+        str(snakefile), "", "", "", "", str(workflow / "task-images.json"), False, memory_mib=61440
     )
     result = subprocess.run(
         [
@@ -287,35 +297,6 @@ def test_local_rule_does_not_inherit_token_but_logger_still_authenticates(tmp_pa
         server.server_close()
 
 
-def test_memory_helper_failure_stops_single_job_setup(tmp_path: Path) -> None:
-    """A failed resource helper must not produce an uncapped Snakemake invocation."""
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            """set -euo pipefail
-source "$LIB_DIR/common.sh"
-source "$LIB_DIR/snakemake.sh"
-run_setup_step() { printf '%s\\n' "$WORK/wrapper"; }
-snakemake_memory_resources() { return 42; }
-WORK=$TEST_ROOT SNAKEFILE=$TEST_ROOT/Snakefile SJ_IMAGES=$TEST_ROOT SJ_CPUS=2
-SJ_TASK_MEMORY_MIB=2048 BIFFIX_ENGINE_VERSION=9.15.0 SCRATCH=$TEST_ROOT SJ_BIN=$TEST_ROOT
-ARGS=()
-touch "$WORK/wrapper"
-snakemake_single_job_args
-printf 'engine-would-start\\n'
-""",
-        ],
-        env=os.environ | {"LIB_DIR": str(LIB), "TEST_ROOT": str(tmp_path)},
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert result.returncode != 0
-    assert "could not determine Snakemake's single-job memory resources" in result.stderr
-    assert "engine-would-start" not in result.stdout
-
-
 def test_wrapper_cli_prints_unique_path(tmp_path: Path) -> None:
     snakefile = tmp_path / ".biffix-container.smk"
     snakefile.touch()
@@ -331,6 +312,7 @@ def test_wrapper_cli_prints_unique_path(tmp_path: Path) -> None:
             "",
             "",
             "no-check",
+            "61440",
         ],
         capture_output=True,
         text=True,

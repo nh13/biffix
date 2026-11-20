@@ -4,17 +4,18 @@
 //! A version allows it, with an optional default size, in `biffix.yaml` (`single_job:`, frozen into
 //! the FormSchema at registration); a run selects it at submit and may override the size. Both
 //! spell it as a [`SingleJobSpec`]: the run's spec is laid over the version's ([`SingleJobSpec::over`])
-//! and the result names the single-job queue-class and [`SingleJobSize`] the backend resolves to an
-//! exact instance type.
+//! and the result names the single-job queue-class and [`SingleJobSize`] the backend resolves to
+//! the instance type that sizes the run's whole-host request (Batch may place it on another
+//! same-size type of the queue-class).
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// A single-job run's size: an exact instance type, or the vCPUs and memory the run needs (the
-/// smallest instance type of the queue-class that has both is used).
+/// A single-job run's size: the instance type that sizes its whole-host request, or the vCPUs and
+/// memory the run needs (the smallest instance type of the queue-class that has both sizes it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SingleJobSize {
-    /// An exact instance type (`c6id.8xlarge`).
+    /// An instance type of the queue-class (`c6id.8xlarge`) that sizes the request.
     Instance(String),
     /// At least this many vCPUs and GiB of memory.
     Resources { cpus: u32, memory_gib: u32 },
@@ -28,7 +29,8 @@ pub struct SingleJobSpec {
     /// the deploy's first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_class: Option<String>,
-    /// An exact instance type of that queue-class (`c6id.8xlarge`).
+    /// An instance type of that queue-class (`c6id.8xlarge`) used to size the whole-host request.
+    /// Batch may place the run on another same-size type in that queue-class.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance: Option<String>,
     /// The vCPUs the run needs (with `memory_gib`).
