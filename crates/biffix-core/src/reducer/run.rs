@@ -92,8 +92,9 @@ pub struct RunProjection {
     /// The session biffix launched the engine with, from the anchor (Nextflow: the cloud-cache key
     /// under `<output_prefix>.nextflow/cache/`). `None` for Snakemake and pre-resume runs.
     pub engine_session_id: Option<String>,
-    /// The session the engine itself reported on `run_started`. Kept apart from the anchor's value
-    /// so both stay pure set-once facts; readers prefer this one via
+    /// The session the engine itself reported on `run_started`: the newest coordinator
+    /// generation's (the least, should one generation report two), and cleared when a single-job
+    /// run starts a new generation. Kept apart from the anchor's value; readers prefer this one via
     /// [`RunProjection::effective_session_id`] (it is what the engine actually ran as).
     pub reported_session_id: Option<String>,
     /// The run this one resumed (`--resume-from`), from the anchor.
@@ -173,6 +174,8 @@ pub struct RunProjection {
     pub(super) cancel_order: Option<Stamp>,
     /// Single-job engine facts are scoped to the highest observed coordinator generation.
     pub(super) coordinator_attempt: u32,
+    /// The coordinator generation `reported_session_id` came from (0: none yet).
+    pub(super) reported_session_generation: u32,
     pub(super) engine_running_seen: bool,
     pub(super) engine_succeeded: bool,
     pub(super) engine_failed_at_micros: Option<i64>,
@@ -187,7 +190,7 @@ impl RunProjection {
     }
 
     /// The engine session this run executed as: the id the engine reported on `run_started`,
-    /// else the one biffix launched it with. A pure function of two set-once fields.
+    /// else the one biffix launched it with. A pure function of two order-independent fields.
     pub fn effective_session_id(&self) -> Option<&str> {
         self.reported_session_id.as_deref().or(self.engine_session_id.as_deref())
     }
@@ -256,6 +259,7 @@ impl RunProjection {
             anchor_order: None,
             cancel_order: None,
             coordinator_attempt: 1,
+            reported_session_generation: 0,
             engine_running_seen: false,
             engine_succeeded: false,
             engine_failed_at_micros: None,
@@ -379,26 +383,35 @@ impl RunProjection {
         self.failed_at_micros.into_iter().chain(self.engine_failed_at_micros).min()
     }
 
-    /// Discard local work lost with a single-job host, without erasing AWS/control-plane facts.
-    pub(super) fn reset_engine_generation(&mut self, generation: u32) {
+    /// Start single-job coordinator generation `generation`: discard the engine facts of the
+    /// lost host's generation, without erasing AWS/control-plane facts. With `keep_tasks` (a
+    /// Snakemake run, whose retry keeps the finished work: see `fold::generation_scoped`) the
+    /// tasks and their outputs stay; otherwise they are discarded too.
+    ///
+    /// Every engine-derived run field is reset here: a new one must be added, or a lost host's
+    /// value would outlive it.
+    pub(super) fn reset_engine_generation(&mut self, generation: u32, keep_tasks: bool) {
         self.coordinator_attempt = generation;
-        // Batch attempts (if any) remain authoritative, even on a malformed single-job run.
-        self.tasks.retain(|_, task| {
-            if task.attempts.is_empty() {
-                false
-            } else {
-                let attempts = std::mem::take(&mut task.attempts);
-                *task = TaskProjection::new(task.task_key.clone());
-                task.attempts = attempts;
-                true
-            }
-        });
+        if !keep_tasks {
+            // Batch attempts (if any) remain authoritative, even on a malformed single-job run.
+            self.tasks.retain(|_, task| {
+                if task.attempts.is_empty() {
+                    false
+                } else {
+                    let attempts = std::mem::take(&mut task.attempts);
+                    *task = TaskProjection::new(task.task_key.clone());
+                    task.attempts = attempts;
+                    true
+                }
+            });
+            self.outputs.clear();
+        }
         self.completed = None;
         self.total = None;
-        self.outputs.clear();
         self.dag_nodes.clear();
         self.dag_edges.clear();
         self.reported_session_id = None;
+        self.reported_session_generation = 0;
         self.engine_running_seen = false;
         self.engine_succeeded = false;
         self.engine_failed_at_micros = None;

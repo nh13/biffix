@@ -4,7 +4,10 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use crate::event::{EventData, OutputRole, RunEvent, RunPreparing, RunSubmitted, TaskVerdict};
+use crate::event::{
+    EventData, OutputRole, RunEvent, RunPreparing, RunSubmitted, TaskVerdict,
+    MAX_COORDINATOR_GENERATION,
+};
 use crate::ids::{Attempt, BatchJobId, InstanceId, RunId, TaskKey};
 use crate::reducer::keep::{keep_latest, keep_min, keep_min_by, keep_min_micros};
 use crate::reducer::{
@@ -46,6 +49,24 @@ pub struct Projection {
     /// Engine facts received before a mode anchor. Replayed once when a single-job anchor arrives;
     /// tasks-mode anchors discard the buffer because their eager aggregate already is correct.
     unanchored_engine: BTreeMap<String, BTreeMap<String, RunEvent>>,
+}
+
+/// Whether a single-job engine fact belongs to one coordinator generation, so a newer generation
+/// replaces it. A Nextflow retry starts over from nothing (its work dir was on the lost host), so
+/// all its facts are. A Snakemake retry keeps the work the lost host finished: each job's outputs
+/// were uploaded to S3 as it ended and the run's metadata is restored from there, so the retry
+/// skips those jobs and never reports them again. Its task facts (and their outputs) therefore
+/// stay; only the run-level facts (progress, DAG, session, running and terminal state) are the
+/// newest generation's.
+fn generation_scoped(e: &RunEvent) -> bool {
+    !(keeps_finished_tasks(&e.source)
+        && (e.task_key.is_some() || matches!(e.data, EventData::TaskOutputs { .. })))
+}
+
+/// Whether a retried single-job coordinator of this engine keeps the tasks the lost host finished
+/// (see [`generation_scoped`]).
+fn keeps_finished_tasks(source: &EventSource) -> bool {
+    *source == EventSource::Snakemake
 }
 
 /// The coordinator (head-job) lifecycle events. They bind on `coordinator_binding` and drive Run
@@ -410,24 +431,33 @@ impl Projection {
 
     /// Apply a run-scoped event (engine run_*, coordinator_*, control-plane, or an
     /// engine task_* that already carries run_id + task_key).
+    ///
+    /// A single-job run's engine facts are scoped to its coordinator generation (a Batch retry
+    /// after losing the host): see [`generation_scoped`].
     fn apply_run_scoped(&mut self, run: &RunId, e: &RunEvent) {
-        let engine = matches!(e.source, EventSource::Snakemake | EventSource::Nextflow)
-            && !matches!(e.data, EventData::Unknown(_));
+        let engine = e.source.is_engine() && !matches!(e.data, EventData::Unknown(_));
         if engine {
             let rp = self.run_mut(run);
             let anchored = rp.anchor_order.is_some() || rp.preparing_seen;
             if !anchored {
+                // Applied eagerly below (right for a tasks-mode run) and kept until the anchor
+                // says whether the run is single-job, which replays it by generation.
                 self.unanchored_engine
                     .entry(run.as_str().into())
                     .or_default()
                     .insert(e.dedup_key.clone(), e.clone());
             } else if rp.single_job.is_some() {
-                let generation = e.coordinator_attempt.map_or(1, std::num::NonZeroU32::get);
-                if generation < rp.coordinator_attempt {
+                let generation = e.coordinator_generation();
+                if generation > MAX_COORDINATOR_GENERATION {
                     return;
                 }
-                if generation > rp.coordinator_attempt {
-                    rp.reset_engine_generation(generation);
+                if generation_scoped(e) {
+                    if generation < rp.coordinator_attempt {
+                        return;
+                    }
+                    if generation > rp.coordinator_attempt {
+                        rp.reset_engine_generation(generation, keeps_finished_tasks(&e.source));
+                    }
                 }
             }
         }
@@ -435,14 +465,22 @@ impl Projection {
         if matches!(e.data, EventData::RunSubmitted(_) | EventData::RunPreparing(_)) {
             if let Some(buffered) = self.unanchored_engine.remove(run.as_str()) {
                 if self.run_mut(run).single_job.is_some() {
-                    let generation = buffered
+                    let buffered: Vec<&RunEvent> = buffered
                         .values()
-                        .map(|e| e.coordinator_attempt.map_or(1, std::num::NonZeroU32::get))
+                        .filter(|e| e.coordinator_generation() <= MAX_COORDINATOR_GENERATION)
+                        .collect();
+                    let generation = buffered
+                        .iter()
+                        .filter(|e| generation_scoped(e))
+                        .map(|e| e.coordinator_generation())
                         .max()
                         .unwrap_or(1);
-                    self.run_mut(run).reset_engine_generation(generation);
-                    for fact in buffered.values().filter(|e| {
-                        e.coordinator_attempt.map_or(1, std::num::NonZeroU32::get) == generation
+                    let keep = buffered.iter().any(|e| keeps_finished_tasks(&e.source));
+                    self.run_mut(run).reset_engine_generation(generation, keep);
+                    // The facts a reset kept (a Snakemake run's tasks) were applied eagerly
+                    // already; the rest are the newest generation's.
+                    for fact in buffered.into_iter().filter(|e| {
+                        generation_scoped(e) && e.coordinator_generation() == generation
                     }) {
                         self.apply_run_fact(run, fact);
                     }
@@ -653,9 +691,17 @@ impl Projection {
             }
             EventData::RunStarted { session_id } => {
                 rp.engine_running_seen = true;
-                // Generation-bearing starts can recur; conflicting sessions settle on the least
-                // within a generation (or across starts in tasks mode), independent of arrival.
-                keep_min(&mut rp.reported_session_id, session_id.as_deref());
+                // Each coordinator generation starts the engine again, so the newest generation's
+                // session is the one that ran last; conflicting sessions within one generation
+                // settle on the least. Both are independent of arrival order.
+                let generation = e.coordinator_generation();
+                if generation > rp.reported_session_generation {
+                    rp.reported_session_generation = generation;
+                    rp.reported_session_id = None;
+                }
+                if generation == rp.reported_session_generation {
+                    keep_min(&mut rp.reported_session_id, session_id.as_deref());
+                }
             }
             EventData::CoordinatorRunning { .. } => {
                 rp.running_seen = true;
@@ -714,15 +760,11 @@ impl Projection {
             EventData::WorkDeleted {} => {
                 keep_min_micros(&mut rp.work_deleted_at_micros, e.ts.as_micros());
             }
-            EventData::RunSucceeded {}
-                if matches!(e.source, EventSource::Snakemake | EventSource::Nextflow) =>
-            {
+            EventData::RunSucceeded {} if e.source.is_engine() => {
                 rp.engine_succeeded = true;
                 keep_min_micros(&mut rp.engine_completed_at_micros, e.ts.as_micros());
             }
-            EventData::RunFailed { .. }
-                if matches!(e.source, EventSource::Snakemake | EventSource::Nextflow) =>
-            {
+            EventData::RunFailed { .. } if e.source.is_engine() => {
                 keep_min_micros(&mut rp.engine_failed_at_micros, e.ts.as_micros());
                 keep_min_micros(&mut rp.engine_completed_at_micros, e.ts.as_micros());
             }
