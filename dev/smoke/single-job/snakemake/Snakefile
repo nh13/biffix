@@ -1,0 +1,50 @@
+rule all:
+    """Require the final two-step acceptance result."""
+    input:
+        result="world.txt"
+    output: []
+    log: []
+
+rule ubuntu_hello:
+    """Prove the first task runs inside the Ubuntu Apptainer image."""
+    input: []
+    output:
+        greeting="hello.txt"
+    log:
+        "logs/ubuntu_hello.log"
+    resources:
+        mem_mb=256,
+        aws_batch_container_image="public.ecr.aws/docker/library/ubuntu:24.04"
+    shell:
+        """
+        (
+            . /etc/os-release
+            test "$ID" = ubuntu
+            test "$VERSION_ID" = 24.04
+            test -d /.singularity.d
+            printf 'hello ubuntu 24.04\n' > {output.greeting:q}
+        ) > {log:q} 2>&1
+        """
+
+rule ubuntu_world:
+    """Consume the first task's output in a second nested task."""
+    input:
+        greeting="hello.txt"
+    output:
+        result="world.txt"
+    log:
+        "logs/ubuntu_world.log"
+    resources:
+        mem_mb=256,
+        aws_batch_container_image="public.ecr.aws/docker/library/ubuntu:24.04"
+    shell:
+        """
+        (
+            . /etc/os-release
+            test "$ID" = ubuntu
+            test "$VERSION_ID" = 24.04
+            test -d /.singularity.d
+            cat {input.greeting:q} > {output.result:q}
+            printf 'world ubuntu 24.04\n' >> {output.result:q}
+        ) > {log:q} 2>&1
+        """

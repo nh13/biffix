@@ -1,0 +1,13 @@
+engine: snakemake
+engine_version: "9.27.0"
+entrypoint: Snakefile
+schema: config.schema.json
+single_job: {}
+images:
+  ubuntu:
+    ref: public.ecr.aws/docker/library/ubuntu:24.04
+form:
+  title: Single-job Snakemake acceptance
+reports:
+  - {name: Greeting, path: hello.txt, kind: file}
+  - {name: Result, path: world.txt, kind: file}
