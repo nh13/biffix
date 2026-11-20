@@ -1,0 +1,15 @@
+engine: nextflow
+engine_version: "25.10.4"
+entrypoint: main.nf
+single_job: {}
+plugins: [nf-schema@2.7.2]
+images:
+  ubuntu:
+    ref: public.ecr.aws/docker/library/ubuntu:24.04
+params:
+  outdir: {format: s3-dir, output: true}
+form:
+  title: Single-job Nextflow acceptance
+reports:
+  - {name: Greeting, path: results/hello.txt, kind: file}
+  - {name: Result, path: results/world.txt, kind: file}
