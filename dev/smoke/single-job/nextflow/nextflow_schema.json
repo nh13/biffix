@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Single-job Nextflow acceptance",
+  "type": "object",
+  "properties": {
+    "outdir": {
+      "type": "string",
+      "description": "S3 directory for published acceptance files"
+    }
+  },
+  "required": ["outdir"],
+  "additionalProperties": false
+}
