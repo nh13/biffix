@@ -54,7 +54,7 @@ aws-sdk-pricing = { version = "1", default-features = false, features = ["defaul
 # The `aws_lc_rs` backend keeps jsonwebtoken 9's (ring's) RS256 key policy, 2048-8192-bit moduli,
 # and aws-lc-rs is already in every binary through rustls. `rust_crypto` would put the `rsa` crate
 # in production and change the accepted key sizes. No PEM: keys come from the JWKS.
-jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["aws_lc_rs"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "form", "query"] }
 urlencoding = "2"
 lambda_runtime = "1"
