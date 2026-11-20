@@ -73,7 +73,13 @@ pub fn aws_ec2_interruption(instance: &InstanceId, ts_micros: i64) -> String {
 /// the `<ts micros>:<name>` discriminators `event/control_plane.rs` builds). The key reads back
 /// unambiguously only because every other part is colon-free and positionally fixed (`source` a
 /// fixed lowercase tag, `attempt` a decimal number, `kind` an enum tag, `run_id` biffix-minted
-/// without `:`), `disc` is always last, and whether there is one is fixed by `kind`. Even so, a
+/// without `:`) and `disc` is always last. Whether there is a `disc` is fixed by `kind`, with two
+/// exceptions that `translate::from_engine` builds: a `task_created` naming its image adds an
+/// `image`-tagged disc (the legacy image-less key is unchanged), and every fact of a coordinator
+/// generation above 1 has `coordinator-<generation>:` before its disc (or as its disc), so a
+/// retried single-job coordinator's facts never dedupe against the lost generation's; generation 1
+/// keeps the legacy keys, and no other disc starts with `coordinator-` (an engine-chosen one that
+/// would, an `execution_id`, is escaped with a leading `~`, as is one starting with `~`). Even so, a
 /// `task_key` that itself ends in `:<digits>:<kind>` can meet an earlier key plus a colon-bearing
 /// `disc`: no real key has that shape. A new part that can contain `:` goes after `kind` or is
 /// escaped or length-prefixed, or two distinct facts could collide onto one key and one event would

@@ -260,9 +260,9 @@ fn a_local_task_s_image_is_the_one_its_task_created_names_in_any_order() {
     );
 }
 
-#[test]
-fn single_job_host_retry_discards_lost_success_at_generation_start() {
-    let mut anchor = run_anchor(1.0, "r1");
+/// A single-job run's anchor.
+fn single_job_anchor(ts: f64, run: &str) -> RunEvent {
+    let mut anchor = run_anchor(ts, run);
     if let EventData::RunSubmitted(ref mut a) = anchor.data {
         a.single_job = Some(biffix_core::event::SingleJobUse {
             queue_class: "whole-host".into(),
@@ -271,24 +271,37 @@ fn single_job_host_retry_discards_lost_success_at_generation_start() {
             memory_mib: 120_000,
         });
     }
+    anchor
+}
+
+/// An engine fact from `source`, built from its wire JSON as the ingest route does.
+fn engine_wire(source: EventSource, value: serde_json::Value) -> RunEvent {
+    biffix_core::translate::from_engine(source, &serde_json::from_value(value).unwrap())
+}
+
+/// A Nextflow engine fact from its wire JSON.
+fn nf(value: serde_json::Value) -> RunEvent {
+    engine_wire(EventSource::Nextflow, value)
+}
+
+/// A Snakemake engine fact from its wire JSON.
+fn sm(value: serde_json::Value) -> RunEvent {
+    engine_wire(EventSource::Snakemake, value)
+}
+
+#[test]
+fn single_job_host_retry_discards_lost_success_at_generation_start() {
+    let anchor = single_job_anchor(1.0, "r1");
     let terminal = |ts, kind, generation| {
-        biffix_core::translate::from_engine(
-            EventSource::Nextflow,
-            &serde_json::from_value(serde_json::json!({
-                "ts": ts, "run_id": "r1", "kind": kind, "task_key": "align",
-                "attempt": 1, "execution_id": format!("{generation}/1"),
-                "coordinator_attempt": generation,
-            }))
-            .unwrap(),
-        )
-    };
-    let started = biffix_core::translate::from_engine(
-        EventSource::Nextflow,
-        &serde_json::from_value(serde_json::json!({
-            "ts": 4.0, "run_id": "r1", "kind": "run_started", "coordinator_attempt": 2,
+        nf(serde_json::json!({
+            "ts": ts, "run_id": "r1", "kind": kind, "task_key": "align",
+            "attempt": 1, "execution_id": format!("{generation}/1"),
+            "coordinator_attempt": generation,
         }))
-        .unwrap(),
-    );
+    };
+    let started = nf(serde_json::json!({
+        "ts": 4.0, "run_id": "r1", "kind": "run_started", "coordinator_attempt": 2,
+    }));
     let log = vec![anchor, terminal(3.0, "task_succeeded", 1), started];
     let p = Projection::replay(&log);
     assert_eq!(p.runs["r1"].task_counts().succeeded, 0);
@@ -301,21 +314,8 @@ fn single_job_host_retry_discards_lost_success_at_generation_start() {
 
 #[test]
 fn generation_start_clears_cache_outputs_progress_and_engine_terminals_not_aws() {
-    let mut anchor = run_anchor(1.0, "r1");
-    if let EventData::RunSubmitted(ref mut a) = anchor.data {
-        a.single_job = Some(biffix_core::event::SingleJobUse {
-            queue_class: "whole-host".into(),
-            instance_type: "r6id.4xlarge".into(),
-            vcpus: 16,
-            memory_mib: 120_000,
-        });
-    }
-    let engine = |value| {
-        biffix_core::translate::from_engine(
-            EventSource::Nextflow,
-            &serde_json::from_value(value).unwrap(),
-        )
-    };
+    let mut anchor = single_job_anchor(1.0, "r1");
+    let engine = nf;
     let old_facts = [
         serde_json::json!({"kind": "task_cached", "task_key": "align"}),
         serde_json::json!({"kind": "task_outputs", "task_key": "align", "outputs": [{"s3_uri": "s3://b/lost"}]}),
@@ -379,22 +379,15 @@ fn generation_start_clears_cache_outputs_progress_and_engine_terminals_not_aws()
 
 #[test]
 fn single_job_generation_keeps_batch_attempts_and_authoritative_control_state_in_any_order() {
-    let mut anchor = run_anchor(1.0, "r1");
-    if let EventData::RunSubmitted(ref mut a) = anchor.data {
-        a.single_job = Some(biffix_core::event::SingleJobUse {
-            queue_class: "whole-host".into(),
-            instance_type: "r6id.4xlarge".into(),
-            vcpus: 16,
-            memory_mib: 120_000,
-        });
-    }
+    let anchor = single_job_anchor(1.0, "r1");
     let started = biffix_core::translate::from_engine_value(EventSource::Nextflow,
         serde_json::json!({"kind": "run_started", "ts": 4.0, "run_id": "r1", "coordinator_attempt": 2})).unwrap();
     let log = vec![
         anchor,
         task_submitted(2.0, "r1", "external", 1, "job-1"),
         aws_succeeded(3.0, "job-1"),
-        engine_cached(3.0, "r1", "local"),
+        // A Nextflow `-resume` cache hit: a retried Nextflow coordinator starts over.
+        RunEvent { source: EventSource::Nextflow, ..engine_cached(3.0, "r1", "local") },
         started,
         control(5.0, "r1", EventData::RunCancelled {}),
         coord(
@@ -414,6 +407,109 @@ fn single_job_generation_keeps_batch_attempts_and_authoritative_control_state_in
     assert!(!p.runs["r1"].tasks.contains_key("local"));
     assert_eq!(p.runs["r1"].coordinator_exit_code, Some(137));
     assert_eq!(p.runs["r1"].coordinator_log_stream.as_deref(), Some("final"));
+    assert_incremental_equals_replay(&log);
+}
+
+#[test]
+fn a_snakemake_host_retry_keeps_the_finished_tasks_it_never_reports_again() {
+    // Generation 1 finished `a` (its output is in S3); the retry skips `a`, runs `b`, and reports
+    // only `b`, its own DAG, progress and session.
+    let gen1 = |ts: f64, value: serde_json::Value| {
+        let mut value = value;
+        value["ts"] = ts.into();
+        value["run_id"] = "r1".into();
+        value["coordinator_attempt"] = 1.into();
+        sm(value)
+    };
+    let gen2 = |ts: f64, value: serde_json::Value| {
+        let mut value = value;
+        value["ts"] = ts.into();
+        value["run_id"] = "r1".into();
+        value["coordinator_attempt"] = 2.into();
+        sm(value)
+    };
+    let log = vec![
+        single_job_anchor(1.0, "r1"),
+        gen1(2.0, serde_json::json!({"kind": "run_started", "session_id": "s1"})),
+        gen1(3.0, serde_json::json!({"kind": "task_succeeded", "task_key": "a"})),
+        gen1(
+            3.5,
+            serde_json::json!({"kind": "task_outputs", "task_key": "a",
+                "outputs": [{"s3_uri": "s3://b/a.txt"}]}),
+        ),
+        gen1(4.0, serde_json::json!({"kind": "run_progress", "completed": 1, "total": 3})),
+        gen2(5.0, serde_json::json!({"kind": "run_started", "session_id": "s2"})),
+        gen2(6.0, serde_json::json!({"kind": "task_succeeded", "task_key": "b"})),
+    ];
+    let p = Projection::replay(&log);
+    let rp = &p.runs["r1"];
+    assert_eq!(rp.tasks["a"].state(), TaskState::Succeeded);
+    assert_eq!(rp.tasks["b"].state(), TaskState::Succeeded);
+    assert_eq!(rp.outputs.len(), 1, "{:?}", rp.outputs);
+    // The run-level facts are the retry's: the lost host's progress and session are gone.
+    assert_eq!((rp.completed, rp.total), (None, None));
+    assert_eq!(rp.reported_session_id.as_deref(), Some("s2"));
+    assert_eq!(rp.state(), RunState::Running);
+    assert_incremental_equals_replay(&log);
+}
+
+#[test]
+fn a_generation_start_clears_the_lost_host_s_failure_dag_and_session() {
+    let gen = |ts: f64, generation: u32, value: serde_json::Value| {
+        let mut value = value;
+        value["ts"] = ts.into();
+        value["run_id"] = "r1".into();
+        value["coordinator_attempt"] = generation.into();
+        nf(value)
+    };
+    let log = vec![
+        single_job_anchor(1.0, "r1"),
+        // A session that sorts after none, so only the reset can clear it.
+        gen(2.0, 1, serde_json::json!({"kind": "run_started", "session_id": "s1"})),
+        gen(
+            3.0,
+            1,
+            serde_json::json!({"kind": "run_dag",
+                "dag": {"nodes": [{"id": "a"}, {"id": "b"}], "edges": [{"from": "a", "to": "b"}]}}),
+        ),
+        gen(4.0, 1, serde_json::json!({"kind": "run_failed", "error": "host lost"})),
+        gen(5.0, 2, serde_json::json!({"kind": "run_started"})),
+    ];
+    let p = Projection::replay(&log);
+    let rp = &p.runs["r1"];
+    assert_eq!(rp.state(), RunState::Running);
+    assert_eq!(rp.completed_at_micros, None);
+    assert!(rp.dag_nodes.is_empty() && rp.dag_edges.is_empty());
+    assert_eq!(rp.reported_session_id, None);
+    assert_incremental_equals_replay(&log);
+}
+
+#[test]
+fn a_single_job_fact_past_the_batch_attempt_limit_changes_nothing() {
+    let log = vec![
+        single_job_anchor(1.0, "r1"),
+        nf(serde_json::json!({"ts": 2.0, "run_id": "r1", "kind": "task_succeeded",
+            "task_key": "align", "attempt": 1, "execution_id": "1/1"})),
+        nf(serde_json::json!({"ts": 3.0, "run_id": "r1", "kind": "run_started",
+            "coordinator_attempt": biffix_core::event::MAX_COORDINATOR_GENERATION + 1})),
+    ];
+    // Ignored outright: no reset, and not even its `run_started`.
+    let p = Projection::replay(&log);
+    assert_eq!(p.runs["r1"].tasks["align"].state(), TaskState::Succeeded);
+    assert_eq!(p.runs, Projection::replay(&log[..2]).runs);
+    assert_incremental_equals_replay(&log);
+}
+
+#[test]
+fn the_newest_generation_s_session_is_the_reported_one_in_any_order() {
+    // Tasks mode: a retried coordinator starts the engine again; its session is the one that ran.
+    let started = |ts: f64, generation: u32, session: &str| {
+        nf(serde_json::json!({"ts": ts, "run_id": "r1", "kind": "run_started",
+            "coordinator_attempt": generation, "session_id": session}))
+    };
+    let log = vec![run_anchor(1.0, "r1"), started(2.0, 1, "s-b"), started(3.0, 2, "s-c")];
+    let p = Projection::replay(&log);
+    assert_eq!(p.runs["r1"].reported_session_id.as_deref(), Some("s-c"));
     assert_incremental_equals_replay(&log);
 }
 

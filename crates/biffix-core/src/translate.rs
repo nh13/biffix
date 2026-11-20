@@ -350,11 +350,12 @@ pub fn from_engine(source: EventSource, ev: &EngineEvent) -> RunEvent {
     };
     // Generation 1 keeps existing keys. Later coordinator starts and all their facts must reach
     // the log independently, even when progress/task identities repeat after losing a host.
+    // A generation-1 disc is kept out of their `coordinator-` namespace (`generation_one_disc`).
     let disc = match ev.coordinator_attempt.map(std::num::NonZeroU32::get) {
         Some(generation) if generation > 1 => {
             Some(format!("coordinator-{generation}:{}", disc.unwrap_or_default()))
         }
-        _ => disc,
+        _ => disc.map(generation_one_disc),
     };
     // The wire kind tag comes from the payload itself (`Kind::as_str`), never a parallel literal.
     let kind = data.kind();
@@ -547,6 +548,19 @@ fn content_disc(value: &serde_json::Value) -> String {
     let mut s = String::new();
     canonical(value, &mut s);
     hex::encode(Sha256::digest(s.as_bytes()))[..16].to_string()
+}
+
+/// A generation-1 (or generation-less) discriminator, kept out of the `coordinator-<n>:` namespace
+/// of a later generation's (`dedup::engine`): one an engine chose that starts with `coordinator-`
+/// (an `execution_id`) or with the escape `~` itself gets a `~` before it. Injective, so two
+/// distinct discs keep two keys, and every disc biffix builds (hex, digits, tags, Batch job ids)
+/// is unchanged, as is every key already in the log.
+fn generation_one_disc(disc: String) -> String {
+    if disc.starts_with("coordinator-") || disc.starts_with('~') {
+        format!("~{disc}")
+    } else {
+        disc
+    }
 }
 
 #[cfg(test)]

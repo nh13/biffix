@@ -342,6 +342,25 @@ fn a_local_terminal_re_run_at_the_same_attempt_is_a_distinct_fact() {
     }
 }
 
+/// A generation-1 discriminator never takes the `coordinator-` prefix a later generation's facts
+/// carry (`dedup::engine`): an engine-chosen `execution_id` spelled like one is escaped, so a
+/// generation-1 terminal and a generation-2 terminal of the same task and attempt keep two keys.
+/// Every other execution id keeps its key.
+#[test]
+fn a_generation_one_execution_id_never_collides_with_a_later_generation_s_key() {
+    let terminal = |id: &str, generation: u32| {
+        let wire = serde_json::json!({"ts": 1.0, "run_id": "r1", "kind": "task_succeeded",
+            "task_key": "FOO (1)", "attempt": 1, "execution_id": id,
+            "coordinator_attempt": generation});
+        translate::from_engine_value(EventSource::Nextflow, wire).unwrap().dedup_key
+    };
+    assert_ne!(terminal("coordinator-2:7", 1), terminal("7", 2));
+    assert!(!terminal("coordinator-2:7", 1).contains(":task_succeeded:coordinator-"));
+    // The escape is injective: an id that already starts with it stays distinct.
+    assert_ne!(terminal("~coordinator-2:7", 1), terminal("coordinator-2:7", 1));
+    assert_eq!(terminal("11", 1), "nextflow:r1:FOO (1):1:task_succeeded:11");
+}
+
 #[test]
 fn coordinator_generation_is_positive_preserved_and_deduped_independently() {
     for kind in [
