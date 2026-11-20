@@ -170,4 +170,17 @@ impl RunEvent {
     pub fn kind(&self) -> Kind {
         self.data.kind()
     }
+
+    /// The coordinator generation the event belongs to: its `coordinator_attempt`, or 1 for an
+    /// event without one (a legacy producer, or a source other than an engine plugin).
+    pub fn coordinator_generation(&self) -> u32 {
+        self.coordinator_attempt.map_or(1, std::num::NonZeroU32::get)
+    }
 }
+
+/// The most attempts AWS Batch gives a job (its `retryStrategy.attempts` is at most 10), so no
+/// real coordinator generation is higher. The fold ignores a single-job engine fact claiming a
+/// higher one, which no coordinator can have sent. Below it, a generation is taken on trust like
+/// every other engine fact: whoever holds the run's capability token (a nested task can read it)
+/// can already post any engine fact for the run, so a forged generation is no new exposure.
+pub const MAX_COORDINATOR_GENERATION: u32 = 10;

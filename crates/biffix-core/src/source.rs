@@ -60,6 +60,13 @@ sources! {
     BiffixControlPlane => "biffix-control-plane",
 }
 
+impl EventSource {
+    /// Whether an engine plugin (inside the coordinator) produced the event.
+    pub fn is_engine(&self) -> bool {
+        matches!(self, EventSource::Snakemake | EventSource::Nextflow)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

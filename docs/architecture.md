@@ -316,14 +316,17 @@ changes is where the tasks run, and the isolation that holds around them:
   rules assigned no image remain allowed. These in-process blocks get no raised OOM score.
 - **Cancel tears everything down.** Stopping the job ends its PID namespace, so no nested
   process or FUSE mount outlives it.
-- **Failure.** A lost host re-runs the whole run (Batch's retry, a second attempt with a clean
-  work directory). Engine events carry the coordinator's Batch attempt number. For single-job
-  runs, the fold uses only the latest generation's local task, output and progress facts: a
-  replacement coordinator's start invalidates successful work lost with the previous host. The
-  old events remain in the log; AWS and control-plane facts remain authoritative. There is no
-  work-directory checkpointing: it would bring back the S3 traffic the mode removes. A single-job
-  run cannot itself be a resume, and a Nextflow one cannot be resumed (its work directory was on
-  the host).
+- **Failure.** A lost host starts the run again (Batch's retry, a second attempt with a clean
+  work directory). Engine events carry the coordinator's Batch attempt number (its generation),
+  and for single-job runs the fold keeps only what the retry still has. A Nextflow retry starts
+  over, so the newest generation's start discards the earlier generations' task, output and
+  progress facts. A Snakemake retry keeps the jobs the lost host finished (each job's outputs went
+  to S3 as it ended, and the run metadata is restored from there), skips them and never reports
+  them again, so their task and output facts stay; only the run-level facts (progress, DAG,
+  session, running and terminal state) are the newest generation's. The old events remain in the
+  log; AWS and control-plane facts remain authoritative. There is no work-directory checkpointing:
+  it would bring back the S3 traffic the mode removes. A single-job run cannot itself be a resume,
+  and a Nextflow one cannot be resumed (its work directory was on the host).
 
 ### Fix it upstream, not in a fork
 
