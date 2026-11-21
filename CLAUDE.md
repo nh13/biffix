@@ -74,9 +74,10 @@ workspace version; the rest are `publish = false`. Releases: release-plz (`relea
 release PR open (only when one of the four changes; running `publish.yml` by hand opens one for a
 release of anything else); merging it lets `.github/workflows/publish.yml` publish the crates and
 push `v<version>`, which runs `release.yml`. The same workflow publishes a plugin version not yet on
-its registry (the Snakemake logger to PyPI, nf-biffix to the Nextflow registry). The four declare their own, older
-`rust-version` (CI's `rust-msrv` job builds them with it); the workspace's matches the toolchain
-`rust-toolchain.toml` pins, since the AWS SDK and sqlx need a newer rustc.
+its registry (the Snakemake logger and executor plugins to PyPI, nf-biffix to the Nextflow
+registry). The four declare their own, older `rust-version` (CI's `rust-msrv` job builds them
+with it); the workspace's matches the toolchain `rust-toolchain.toml` pins, since the AWS SDK and
+sqlx need a newer rustc.
 
 **Coordinator image** (`docker/coordinator`): one image serves as both coordinator and generic
 worker (no ENTRYPOINT; the Batch job definition picks the role). `entrypoint.sh` documents the
@@ -114,6 +115,22 @@ job definitions are registered by the backend at launch, never by workflow code
 job-definition write). `plugins/nf-biffix` also provides the `awsbatch` executor (a subclass of
 nf-amazon's) that runs each task on the backend's definition for its image; bumping nf-biffix's
 version means bumping `nf_biffix_version` in `crates/biffix-workflow/src/runtime/pins.rs` too.
+
+**Single-job runs** (`BIFFIX_EXECUTION=single_job`, `lib/single_job.sh`): the whole run is one Batch
+job on a host of its own, every task in its image through Apptainer nested in the job's container,
+from image files `lib/single_job.py convert` makes before the engine starts. Nextflow uses its local
+executor. Snakemake uses `plugins/snakemake-executor-plugin-biffix` (`--executor biffix`): a remote
+executor, so Snakemake forms group jobs and merges their resources as for AWS Batch, that runs each
+job's own Snakemake (`python -m snakemake …`) as a process on the host, in the image the AWS Batch
+executor would pick (the job's `aws_batch_container_image` through the image map, else the default
+image; its lookup is a copy of the fork's `image_map.py`). It uses only
+`snakemake-interface-executor-plugins`, and reports each job's image to the logger plugin on a
+`remote_job_state` log record with no external job id. Snakemake's scheduler bounds the jobs by the
+host's CPUs and memory; what no option exposes is in the wrapper Snakefile `lib/single_job.py`
+writes (`configure_local_resources`: the profile-merged memory cap, and clearing the nodes limit
+`--jobs` sets, which would lift `--cores`), which also checks every rule's image before any job
+starts (`check_rule_images`). Bumping either Snakemake plugin's version means bumping
+`logger_version` or `single_job_executor_version` in `runtime/pins.rs` too.
 
 **UI** (`ui/`): SvelteKit (Svelte 5 runes) + static adapter, served from S3/CloudFront. API types in
 `src/lib/generated/` are **generated** from the backend's OpenAPI doc (`npm run generate:api` runs
@@ -181,7 +198,11 @@ MYPYPATH=tests/fakes/py uv run mypy --no-warn-unused-configs -p boto3 -p botocor
 ```
 
 Plugins: `cd plugins/snakemake-logger-plugin-biffix && uv sync --dev`, then the same ruff,
-validate-pyproject, mypy and `uv run pytest`;
+validate-pyproject, mypy and `uv run pytest`; the same in `plugins/snakemake-executor-plugin-biffix`,
+whose tests also run on the oldest Snakemake 9, with the interface pins CI's matrix uses
+(`uv run --with snakemake==9.0.0 --with snakemake-interface-executor-plugins==9.3.2
+--with snakemake-interface-common==1.17.4 --with snakemake-storage-plugin-fs==1.0.6
+python -m pytest`; `python -m`, as the project's own `pytest` script runs the locked Snakemake);
 `cd plugins/nf-biffix && ./gradlew --no-daemon test`.
 
 Each Python project resolves only releases at least a week old (`[tool.uv] exclude-newer`), to

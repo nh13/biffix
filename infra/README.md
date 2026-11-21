@@ -114,8 +114,8 @@ trusts third-party *workflow* repos, not the biffix image build.
   fails with *"Not authorized"*. The `sub_claim_prefix` from that API call is the prefix to use.
 - The workflow **builds the biffix engine plugins** before the docker build: the `nf-biffix`
   Nextflow plugin (gradle), then `docker/coordinator/build-wheels.sh` collects it with the Snakemake
-  executor fork (at the sha in `docker/coordinator/wheels.env`) and logger wheels into the image's
-  `/opt/biffix/wheels/`. None of these artifacts is committed.
+  AWS Batch executor fork (at the sha in `docker/coordinator/wheels.env`), logger and single-job
+  executor wheels into the image's `/opt/biffix/wheels/`. None of these artifacts is committed.
 - The image is the **base** coordinator: it has no Snakemake or Nextflow. A workflow version pins
   its engine release, and the backend builds that release into a runtime layer appended to this
   base (the `runtime-build` CodeBuild project, `codebuild/runtime/build.sh`), one coordinator
@@ -344,10 +344,11 @@ cloud account). `publish.yml` publishes the crates by crates.io trusted publishi
 trusts `publish.yml` in this repository) and needs one secret, `RELEASE_PLZ_TOKEN`: a fine-grained
 token with *Contents* and *Pull requests* write on the repository, since a PR opened or a tag pushed
 with `GITHUB_TOKEN` starts no workflow. For the engine plugins it also needs a PyPI trusted
-publisher for `snakemake-logger-plugin-biffix` (workflow `publish.yml`, environment `pypi`) and an
-`NPR_API_KEY` secret (a Nextflow plugin registry access token) for nf-biffix, whose account owns
-the `nf-biffix` name in the registry (claimed under *My plugins*, with the `provider` that
-`plugins/nf-biffix/build.gradle` sets). A release also needs:
+publisher for each of `snakemake-logger-plugin-biffix` and `snakemake-executor-plugin-biffix`
+(workflow `publish.yml`, environment `pypi`; a pending publisher, for a project PyPI does not have
+yet) and an `NPR_API_KEY` secret (a Nextflow plugin registry access token) for nf-biffix, whose
+account owns the `nf-biffix` name in the registry (claimed under *My plugins*, with the `provider`
+that `plugins/nf-biffix/build.gradle` sets). A release also needs:
 
 - **The package made public.** The first release creates the `biffix-coordinator` package on GHCR
   as private (GitHub's default for a new package); set it to public once (the package's
@@ -693,10 +694,10 @@ output, and Nextflow tasks placed on it fail.
 ### Single-job queue-classes (`single_job`)
 
 A queue-class with `single_job: true` runs a whole run as one Batch job on one whole host: the
-engine with its local executor, each task in the image its Batch job would run (converted before the
-run) through apptainer nested in the job's container, its working files on the host's local disks. The backend submits such a run there (it asks
-for the whole host's vCPUs and memory); no coordinator may submit to it, and it is never in the
-task queue-class menu.
+engine with every task on that host, each task in the image its Batch job would run (converted
+before the run) through apptainer nested in the job's container, its working files on the host's
+local disks. The backend submits such a run there (it asks for the whole host's vCPUs and memory);
+no coordinator may submit to it, and it is never in the task queue-class menu.
 
 - **Config.** `capacity: ON_DEMAND`, exact instance types only (`c6id.8xlarge`, not `c`), not
   `coordinator: true`; the loader refuses anything else. Pick types with NVMe instance store
