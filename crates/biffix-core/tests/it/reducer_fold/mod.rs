@@ -118,7 +118,8 @@ fn cancel(ts: f64, run: &str, actor: &str) -> RunEvent {
 }
 
 fn task_created(ts: f64, run: &str, task: &str) -> RunEvent {
-    run_level(ts, run, EventData::TaskCreated { group: None, deps: vec![] }).with_task(task)
+    run_level(ts, run, EventData::TaskCreated { group: None, deps: vec![], image: None })
+        .with_task(task)
 }
 fn engine_succeeded(ts: f64, run: &str, task: &str) -> RunEvent {
     // Engine-reported success for a local rule: Snakemake source, run_id + task_key, NO
@@ -180,6 +181,7 @@ fn run_preparing(ts: f64, run: &str) -> RunEvent {
                 content_key: "k".into(),
             }],
             experiment_id: None,
+            single_job: None,
         })),
     )
 }

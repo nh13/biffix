@@ -135,6 +135,14 @@ pub enum EventData {
         /// in-run upstream.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         deps: Vec<String>,
+        /// The container image a task the engine runs itself (no Batch job: a single-job run's
+        /// task) runs in, as the run's image map names it (the tenant's copy, as on
+        /// [`EventData::TaskSubmitted`]), never the local image file an engine may run it from.
+        /// The task's image when no `task_submitted` names one. Optional + additive: `None` for a
+        /// task with no container, from a plugin that predates it, and on events from before this
+        /// field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        image: Option<String>,
     },
     TaskSubmitted {
         /// The container image the attempt's Batch job runs, as the engine resolved it (the

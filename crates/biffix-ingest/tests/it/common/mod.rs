@@ -73,6 +73,7 @@ pub(crate) fn preparing(run: &str, ts: f64) -> RunEvent {
             resumed_from: None,
             images: vec![],
             experiment_id: None,
+            single_job: None,
         },
     )
 }

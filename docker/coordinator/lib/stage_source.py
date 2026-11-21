@@ -17,6 +17,8 @@ import sys
 import tarfile
 import tempfile
 
+from s3_uri import split
+
 
 def stage_tarball(uri: str, dest: pathlib.Path, want: str) -> None:
     """A single immutable tarball (private-repo support): download it, check it is the tarball
@@ -26,9 +28,10 @@ def stage_tarball(uri: str, dest: pathlib.Path, want: str) -> None:
     import boto3
 
     dest = dest.resolve()
-    if not uri.startswith("s3://"):
-        sys.exit(f"not an s3 uri: {uri}")
-    bucket, _, key = uri[5:].partition("/")
+    try:
+        bucket, key = split(uri)
+    except ValueError as e:
+        sys.exit(str(e))
     if not key:
         sys.exit(f"s3 tarball uri has no key: {uri}")
     dest.mkdir(parents=True, exist_ok=True)
@@ -68,9 +71,10 @@ def stage_prefix(uri: str, dest: pathlib.Path) -> None:
     import boto3
 
     dest = dest.resolve()
-    if not uri.startswith("s3://"):
-        sys.exit(f"not an s3 uri: {uri}")
-    bucket, _, prefix = uri[5:].partition("/")
+    try:
+        bucket, prefix = split(uri)
+    except ValueError as e:
+        sys.exit(str(e))
     # Match at a PATH boundary, not a raw string prefix. A source uri names a directory whose
     # contents stage preserving their paths relative to it; without the trailing-slash anchor a
     # sibling key that merely shares the string prefix (runs/abc/src2/... for prefix runs/abc/src)

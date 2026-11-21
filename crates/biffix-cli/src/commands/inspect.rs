@@ -98,7 +98,8 @@ pub(crate) fn inspect(opts: InspectOpts) -> CliResult<()> {
     }
     // The launch form `register` would freeze: params it shows with nothing to explain them are
     // warned about. A form that cannot be read (`register` would refuse it) is only a warning here.
-    match crate::local::form::derive_form_schema(root, &manifest, engine, None) {
+    let manifest_path = root.join("biffix.yaml");
+    match crate::local::form::derive_form_schema(root, &manifest_path, &manifest, engine, None) {
         Ok(form) => crate::local::form::warn_undocumented_params(&form),
         Err(e) => eprintln!("[biffix] warning: cannot read the launch form: {e}"),
     }

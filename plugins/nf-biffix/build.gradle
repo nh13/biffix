@@ -2,7 +2,7 @@ plugins {
     id 'io.nextflow.nextflow-plugin' version '1.0.0-beta.16'
 }
 
-version = '0.7.0'
+version = '0.8.0'
 
 // The Nextflow release (and the nf-amazon it defaults to) the plugin compiles against: the oldest
 // release biffix runs (engines.rs SUPPORTED), which is also the plugin's declared minimum
@@ -31,12 +31,13 @@ configurations.matching { it.name in testClasspaths }.configureEach {
 nextflowPlugin {
     nextflowVersion = nfVersion
     provider = 'Nils Homer'
-    description = 'Reports Nextflow run and task events to biffix, maps task containers through the run image map, and runs AWS Batch tasks on the job definitions biffix registered for the run'
+    description = 'Reports Nextflow run and task events to biffix, maps task containers through the run image map, runs AWS Batch tasks on the job definitions biffix registered for the run, and launches local tasks without the run ingest token'
     className = 'io.github.nh13.biffix.BiffixPlugin'
     extensionPoints = [
         'io.github.nh13.biffix.BiffixObserverFactory',
         'io.github.nh13.biffix.BiffixContainerResolver',
-        'io.github.nh13.biffix.BiffixAwsBatchExecutor'
+        'io.github.nh13.biffix.BiffixAwsBatchExecutor',
+        'io.github.nh13.biffix.BiffixLocalExecutor'
     ]
     // BiffixAwsBatchExecutor extends nf-amazon's executor, so nf-amazon's classes must be visible to
     // this plugin's class loader (pf4j resolves a plugin's classes through its Plugin-Dependencies)

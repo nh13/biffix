@@ -17,15 +17,9 @@ import os
 import sys
 import tarfile
 
+from s3_uri import split_object
+
 SUBDIRS = ("metadata", "incomplete")
-
-
-def bucket_key(uri: str) -> tuple[str, str]:
-    """The bucket and key of an s3:// uri with both; a ValueError for anything else."""
-    bucket, _, key = uri.removeprefix("s3://").partition("/")
-    if not uri.startswith("s3://") or not bucket or not key:
-        raise ValueError(f"not an s3 object uri: {uri}")
-    return bucket, key
 
 
 def fingerprint(root: str) -> str:
@@ -45,7 +39,7 @@ def fingerprint(root: str) -> str:
 
 def sync(uri: str, root: str, fp_file: str, force: bool) -> None:
     try:
-        bucket, key = bucket_key(uri)
+        bucket, key = split_object(uri)
         current = fingerprint(root)
         try:
             with open(fp_file) as fh:
@@ -78,7 +72,7 @@ def restore(uri: str, root: str, resume: bool) -> None:
     import boto3
     from botocore.exceptions import ClientError
 
-    bucket, key = bucket_key(uri)
+    bucket, key = split_object(uri)
     try:
         body = boto3.client("s3").get_object(Bucket=bucket, Key=key)["Body"].read()
     except ClientError as e:
