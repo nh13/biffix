@@ -142,6 +142,9 @@ reports:                     # outputs the run page should show, relative to the
 
 samples:                     # how tasks map to samples, when the defaults do not fit
   tag: '^(?<sample>[^_]+)_'
+
+single_job:                  # runs may execute as one Batch job on one host
+  instance: c6id.8xlarge     # the default size (or cpus: and memory_gib:)
 ```
 
 What each key does:
@@ -160,6 +163,7 @@ What each key does:
 | `plugins` | Nextflow only: the pipeline's own plugins as `id@version`. Runs are offline, so a plugin Nextflow would load implicitly (`nf-tower`/`nf-wave` for a `tower`, `wave` or `fusion` scope; from 26.10 `nf-agent`/`nf-agent-pi` for an `agent` scope) must be declared, in the pipeline's `plugins {}` and here. |
 | `cache` | Snakemake only: reuse results of `cache: True` rules across runs (kept per project). |
 | `queues` | Which worker queue-class each task runs on: a `default`, and tasks picked `by_label` (Nextflow) or `by_name`. See [Choosing queues](#choosing-queues). |
+| `single_job` | Runs of the version may execute as one Batch job on one host ([single-job runs](#single-job-runs)). Optional `queue_class` (one of the deployment's single-job queue-classes) and a default size: `instance` (an exact instance type) or `cpus` with `memory_gib`. `single_job: {}` allows it at the queue-class's smallest instance type. |
 
 Unknown keys are warned about, not silently ignored, except inside an `images:` entry or
 `queues:`, where an unknown key is refused. The full field-by-field reference is the
@@ -405,6 +409,9 @@ Options:
 - `--image <ref>` (repeatable) adds or overrides an image tasks may name; the run waits until it is
   imported.
 - `--experiment <id>` or `--no-experiment`.
+- `--single-job` runs the whole workflow as one Batch job on one host, for a version that allows
+  it; `--instance <type>`, or `--cpus <n> --memory-gib <m>`, and `--single-job-queue-class <name>`
+  override the version's default size and queue-class. See [single-job runs](#single-job-runs).
 - `--follow` waits for the run to finish: exit code 0 on success, 8 on failure, 9 when cancelled
   (and 1 when it ends in a state this `biffix` is too old to know).
 
@@ -422,6 +429,79 @@ biffix runs experiment <run-id> <experiment-id>   # or --none
 Cancelling a run stops its coordinator and its running jobs. The tasks it ended read `cancelled`:
 those still queued or running, and those that failed only after the cancel was requested. A task
 that had already finished keeps its outcome, so one that failed on its own still reads `failed`.
+
+### Single-job runs
+
+By default a run is one Batch job per task: the engine's AWS Batch executor submits each task
+on its own host, and every intermediate file goes through S3. For a workflow whose run fits on
+one large host and finishes in hours (one sample of a germline pipeline, say), a **single-job**
+run is often much faster and cheaper: the whole run is one Batch job on one host with local NVMe
+disks, the engine runs every task with its local executor, and inputs are read from S3 once. A
+Nextflow run's intermediate files stay on the host's disk; a Snakemake run still publishes every
+rule's output to the run's output prefix, as in a run of one job per task, and only its inputs and
+local copies of its outputs stay on the host.
+
+The engine still drives the DAG and every task still runs in the image its Batch job would run,
+nested in the job's container with [Apptainer](https://apptainer.org/): a Nextflow process's
+`container`, a Snakemake rule's `aws_batch_container_image` (through the run's image map), else the
+version's default image. As on AWS Batch, a Snakemake rule's own `container:` is ignored and a
+local rule runs in the job itself. At the start of the run biffix converts every image in the
+run's image map to Apptainer's format on the host, in parallel, so a missing or broken image fails
+the run in minutes rather than hours in, and an image the map does not name fails it before any
+task starts: no image is pulled while the run runs. Each task's image is recorded, as in a run of
+one job per task (a task that runs without one records none).
+
+To allow it, add `single_job:` to the version's `biffix.yaml` (and register a new version). A run
+then opts in with `--single-job` (`single_job` in `POST /runs`) and gets a whole host of one of the
+deployment's single-job queue-classes:
+
+```sh
+biffix runs submit <version-id> --params params.yaml --single-job                   # the version's size
+biffix runs submit <version-id> --params params.yaml --single-job --instance c6id.8xlarge
+biffix runs submit <version-id> --params params.yaml --single-job --cpus 32 --memory-gib 48
+```
+
+A version's `queues:` assignment does not apply to a single-job run: every task runs on its one
+host.
+
+`--instance` must be one of the types the deployment lists for the queue-class. With
+`--cpus`/`--memory-gib`, the smallest instance type of the queue-class with that many vCPUs and that
+much memory left for tasks (the job's memory less what the engine keeps for itself) is used. The job
+is given every vCPU of the host and its memory less a small reserve for the operating system and
+ECS. The run's details (`GET /runs/{id}`, `single_job`) and its provenance record the queue-class,
+instance type and size; the launch form and the run page do not show single-job settings yet.
+
+Things to know:
+
+- **A Snakemake rule's image must be a plain string.** A rule whose `aws_batch_container_image` is
+  set by a function fails a single-job run before any task starts (biffix sets every rule's
+  container before the run, from its resource).
+- **Task images must contain `bash`.** Both engines run each task's script with it, so an
+  Alpine-only image (BusyBox `sh`) fails.
+- **No per-task CPU or memory limit.** Only the job's own limit applies. The engine is given the
+  host's size less what it needs itself (Nextflow's `executor.cpus`/`memory` and
+  `process.resourceLimits`, as defaults the pipeline's own settings override; Snakemake's
+  `--cores` and `mem_mb`), and tasks run at a higher OOM score than the engine, so when memory
+  runs out the kernel stops a task rather than the run.
+- **x86_64 hosts only, for now.** Apptainer publishes no arm64 package, so single-job
+  queue-classes are x86_64 instance types.
+- Tasks' `/tmp` is on the host's local disk, like the work directory.
+- **Snakemake 9 only.** Snakemake 10 drops its built-in Apptainer support; single-job runs of a
+  Snakemake version pin a 9.x release until an Apptainer software-deployment plugin exists.
+  Tasks run with a clean environment (`--cleanenv`): a job's thread count (`OMP_NUM_THREADS` and
+  the like) reaches it, but a workflow's `envvars:` do not.
+- **No resume.** The work directory lives on the host's disk and is gone when the run ends, so a
+  single-job run cannot be a resume, and a Nextflow single-job run cannot be resumed (a Snakemake
+  one can, in either mode: its outputs and run metadata are in its output prefix). Snakemake runs,
+  in either mode, do not re-run a job only because its software environment changed
+  (`--rerun-triggers mtime params input code`): the two modes record it differently, and this keeps
+  either mode's metadata usable by the other. So a single-job run does not re-run a finished job
+  only because its image changed. A "Try again" or "Re-run" of a single-job run in the web app is
+  a single-job run again, on the same queue-class and instance type; resuming one runs one Batch
+  job per task. If the host is lost, Batch runs the job again from the start.
+- **Spot is not used.** Single-job hosts are on-demand.
+- **One host per run.** A workflow too big for one host runs one sample per run (an experiment
+  groups them), or one Batch job per task.
 
 ## Monitoring a run
 
@@ -452,6 +532,12 @@ The **Provenance** button downloads the run as a Workflow Run RO-Crate; see
 [provenance.md](provenance.md).
 
 ### When a run fails
+
+Whatever the mode, the coordinator copies the engine's log, the generated engine configuration and
+the `.command.*` files of failed tasks that ran on the coordinator itself (in a single-job run, of
+any failed task) to the run's `logs/` folder (`biffix/runs/<run-id>/logs/` in the project bucket)
+every few minutes while the run goes and once more at the end, with a `failure.txt` holding the
+end of the engine's error output when it failed.
 
 The failure summary explains a failed run in plain words: the first failed steps, the sample each
 belongs to, a cause (out of memory, a spot reclaim, a missing or damaged input, a full disk, a

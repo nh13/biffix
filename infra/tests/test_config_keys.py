@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from biffix_infra.config import DeployConfig, HostAwsCli, QueueClass
+from biffix_infra.config.compute import is_accelerated, is_graviton
 from biffix_infra.config.fields import Raw
 from biffix_infra.rbac import RBAC_GROUP_ROLES
 from tests.deploy_config_file import FIXTURE, write_config
@@ -195,6 +196,122 @@ def test_config_rejects_bad_queue_class_capacity(tmp_path: Path) -> None:
                 {"name": "coordinator", "capacity": "ON_DEMAND", "coordinator": True},
                 {"name": "cpu", "capacity": "CHEAP"},
             ],
+        )
+
+
+_COORDINATOR = {"name": "coordinator", "capacity": "ON_DEMAND", "coordinator": True}
+
+
+def _single(name: str, instance: str) -> Raw:
+    return {"name": name, "capacity": "ON_DEMAND", "single_job": True, "instances": [instance]}
+
+
+def test_a_single_job_queue_class_is_neither_a_worker_nor_the_coordinator(tmp_path: Path) -> None:
+    cfg = _load(
+        tmp_path,
+        queue_classes=[
+            {"name": "cpu", "capacity": "SPOT", "instances": ["c"]},
+            _single("single-8xl", "c6id.8xlarge"),
+            _single("single-16xl", "m6id.16xlarge"),
+            _COORDINATOR,
+        ],
+    )
+    assert [qc.name for qc in cfg.single_job_queue_classes] == ["single-8xl", "single-16xl"]
+    assert [qc.name for qc in cfg.worker_queue_classes] == ["cpu"]
+    assert cfg.coordinator_queue_class.name == "coordinator"
+    # Off by default.
+    assert not _load(tmp_path).queue_classes[0].single_job
+
+
+@pytest.mark.parametrize(
+    ("queue_class", "match"),
+    [
+        ({"capacity": "SPOT", "instances": ["c6id.8xlarge"]}, "expected ON_DEMAND"),
+        ({"capacity": "ON_DEMAND"}, "names no instances"),
+        ({"capacity": "ON_DEMAND", "instances": ["c6id.8xlarge", "c"]}, r"families \['c'\]"),
+        (
+            {"capacity": "ON_DEMAND", "instances": ["c6id.8xlarge"], "coordinator": True},
+            "cannot also be the coordinator",
+        ),
+        ({"capacity": "ON_DEMAND", "instances": ["c7gd.8xlarge"]}, r"Graviton.*c7gd\.8xlarge"),
+        ({"capacity": "ON_DEMAND", "instances": ["g5.8xlarge"]}, r"accelerated.*g5\.8xlarge"),
+        # Two runs could share a 16xlarge sized for an 8xlarge.
+        (
+            {"capacity": "ON_DEMAND", "instances": ["c6id.8xlarge", "c6id.16xlarge"]},
+            r"several sizes \['16xlarge', '8xlarge'\].*share .*/scratch",
+        ),
+        # A metal type is the whole machine: z1d.metal is 48 vCPUs, r6id.metal 128.
+        (
+            {"capacity": "ON_DEMAND", "instances": ["z1d.metal", "r6id.metal"]},
+            r"metal types of several families \['r6id', 'z1d'\]",
+        ),
+    ],
+)
+def test_a_single_job_queue_class_is_on_demand_on_exact_types(
+    tmp_path: Path, queue_class: Raw, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        _load(
+            tmp_path,
+            queue_classes=[_COORDINATOR, {"name": "single", "single_job": True, **queue_class}],
+        )
+
+
+# Current EC2 instance families (as of 2026), each with what the single-job checks must make of
+# it: x86 without an accelerator (allowed), Graviton (arm64), accelerated, or both (Graviton GPU).
+_X86 = (
+    # General purpose and burstable.
+    "m5 m5a m5ad m5d m5dn m5n m5zn m6a m6i m6id m6idn m6in m7a m7i m7i-flex m8a m8i t2 t3 t3a mac1 "
+    # Compute.
+    "c4 c5 c5a c5ad c5d c5n c6a c6i c6id c6in c7a c7i c7i-flex c8i "
+    # Memory.
+    "r4 r5 r5a r5ad r5b r5d r5dn r5n r6a r6i r6id r6idn r6in r7a r7i r7iz r8i "
+    "x1 x1e x2idn x2iedn x2iezn x8i z1d u-6tb1 u7i-12tb "
+    # Storage.
+    "d2 d3 d3en h1 i3 i3en i4i i7i i7ie "
+    # HPC.
+    "hpc6a hpc6id hpc7a"
+).split()
+_GRAVITON = (
+    "a1 m6g m6gd m7g m7gd m8g m8gd t4g c6g c6gd c6gn c7g c7gd c7gn c8g c8gd r6g r6gd r7g r7gd "
+    "r8g r8gd x2gd x8g im4gn is4gen i4g i8g hpc7g"
+).split()
+_ACCELERATED = (
+    "g4dn g4ad g5 g6 g6e g6f gr6 gr6f p3 p3dn p4d p4de p5 p5e p5en p6-b200 inf1 inf2 trn1 trn1n "
+    "trn2 dl1 dl2q f1 f2 vt1"
+).split()
+_GRAVITON_ACCELERATED = ["g5g"]
+
+
+@pytest.mark.parametrize(
+    ("family", "graviton", "accelerated"),
+    [
+        *((f, False, False) for f in _X86),
+        *((f, True, False) for f in _GRAVITON),
+        *((f, False, True) for f in _ACCELERATED),
+        *((f, True, True) for f in _GRAVITON_ACCELERATED),
+    ],
+)
+def test_instance_families_are_classified(family: str, graviton: bool, accelerated: bool) -> None:
+    # No x86 family without an accelerator is caught by either check, and every Graviton and
+    # accelerated one is.
+    for size in ("8xlarge", "metal"):
+        instance_type = f"{family}.{size}"
+        assert is_graviton(instance_type) == graviton, instance_type
+        assert is_accelerated(instance_type) == accelerated, instance_type
+
+
+def test_a_single_job_queue_class_may_mix_classes_of_one_size(tmp_path: Path) -> None:
+    single = {**_single("single", "c6id.8xlarge"), "instances": ["c6id.8xlarge", "m6id.8xlarge"]}
+    cfg = _load(tmp_path, queue_classes=[_COORDINATOR, single])
+    assert cfg.single_job_queue_classes[0].instances == ["c6id.8xlarge", "m6id.8xlarge"]
+
+
+def test_single_job_is_a_boolean(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="single_job"):
+        _load(
+            tmp_path,
+            queue_classes=[_COORDINATOR, {**_single("s", "c6id.8xlarge"), "single_job": "yes"}],
         )
 
 
@@ -560,9 +677,12 @@ def test_the_task_job_definition_prefix_is_the_tenant_s_alone(tmp_path: Path) ->
         ([{"id": ""}], "project id ''"),
         ([{"id": "a_b"}], "project id 'a_b'"),
         ([{"id": "a.b"}], "project id 'a.b'"),
-        # Its coordinator template would fall in the variants' name space
-        # (`biffix-<tenant>-coordinator-rt-*`).
+        # Its coordinator template would fall in a variants' name space
+        # (`biffix-<tenant>-coordinator-rt-*`, `…-sj-*`) or be another project's single-job
+        # template (`…-coordinator-single-<id>`).
         ([{"id": "rt-x"}], "project id 'rt-x'.*rt-"),
+        ([{"id": "sj-x"}], "project id 'sj-x'.*sj-"),
+        ([{"id": "single-x"}], "project id 'single-x'.*single-"),
     ],
 )
 def test_config_rejects_projects_the_backend_cannot_route(
@@ -589,3 +709,14 @@ def test_config_accepts_distinct_projects(tmp_path: Path) -> None:
         "c",
         "d",
     ]
+
+
+@pytest.mark.parametrize("name", ["2024", "0"])
+def test_a_queue_class_name_of_digits_only_is_refused(tmp_path: Path, name: str) -> None:
+    # CDK renders the coordinator's queue-class map through JavaScript, which puts integer-like keys
+    # first: such a name would silently become the default worker queue-class.
+    with pytest.raises(ValueError, match="digits only"):
+        _load(
+            tmp_path,
+            queue_classes=[_COORDINATOR, {"name": "cpu"}, {"name": name}],
+        )

@@ -1365,6 +1365,143 @@ describe('the mock API', () => {
     ]);
   });
 
+  it('launches a single-job run at the size submit resolves, and refuses one it cannot serve', async () => {
+    const rnaseq = { workflow_version_id: 'aabbccddeeff:v1', params: {} };
+    const launched = obj(await call('POST', '/runs', { ...rnaseq, single_job: {} }));
+    expect(obj(await call('GET', `/runs/${launched.run_id}`)).single_job).toEqual({
+      queue_class: 'single',
+      instance_type: 'c6id.8xlarge',
+      vcpus: 32,
+      memory_mib: 61184,
+    });
+    const sized = obj(
+      await call('POST', '/runs', { ...rnaseq, single_job: { cpus: 16, memory_gib: 100 } }),
+    );
+    expect(obj(await call('GET', `/runs/${sized.run_id}`)).single_job).toMatchObject({
+      instance_type: 'm6id.8xlarge',
+    });
+    // memory_gib is what the tasks get: a c6id.8xlarge leaves a Nextflow run's tasks 54 GiB.
+    for (const [memory_gib, instance_type] of [
+      [54, 'c6id.8xlarge'],
+      [56, 'm6id.8xlarge'],
+    ] as const) {
+      const run = obj(
+        await call('POST', '/runs', { ...rnaseq, single_job: { cpus: 32, memory_gib } }),
+      );
+      expect(obj(await call('GET', `/runs/${run.run_id}`)).single_job).toMatchObject({
+        instance_type,
+      });
+    }
+    // Naming the version's own queue-class keeps its default size.
+    const named = obj(
+      await call('POST', '/runs', { ...rnaseq, single_job: { queue_class: 'single' } }),
+    );
+    expect(obj(await call('GET', `/runs/${named.run_id}`)).single_job).toMatchObject({
+      instance_type: 'c6id.8xlarge',
+    });
+    const refusals: [Record<string, Json>, string][] = [
+      [
+        { ...rnaseq, single_job: {}, resume_from: 'run_01HGW4resume' },
+        'a single-job run cannot be a resume',
+      ],
+      [
+        { workflow_version_id: 'ddeeff001122:v3', params: {}, single_job: {} },
+        'this workflow version does not allow single-job runs',
+      ],
+      [{ ...rnaseq, single_job: { instance: 'r6id.8xlarge' } }, 'is not one of single-job'],
+      [{ ...rnaseq, single_job: { queue_class: 'huge' } }, 'no single-job queue-class `huge`'],
+      [{ ...rnaseq, single_job: { cpus: 8 } }, 'cpus and memory_gib must be given together'],
+      [
+        { ...rnaseq, single_job: { cpus: 32, memory_gib: 200 } },
+        "leaves 200 GiB for the run's tasks (after what the host, ECS and the nextflow engine keep)",
+      ],
+      [{ ...rnaseq, single_job: { cpus: 0, memory_gib: 64 } }, 'must each be at least 1'],
+      [{ ...rnaseq, single_job: { instance: 'C6ID.8XLARGE' } }, 'is not an exact instance type'],
+    ];
+    for (const [body, message] of refusals) {
+      const bad = await call('POST', '/runs', body);
+      expect(bad.status, JSON.stringify(body)).toBe(400);
+      expect(bad.text, JSON.stringify(body)).toContain(message);
+    }
+    // Sizes are u32s: axum refuses another number while reading the body, before any check.
+    const unreadable: [Record<string, Json>, string][] = [
+      [{ cpus: -1, memory_gib: 64 }, 'single_job.cpus: invalid value: integer `-1`, expected u32'],
+      [
+        { cpus: 32, memory_gib: 1.5 },
+        'single_job.memory_gib: invalid type: floating point `1.5`, expected u32',
+      ],
+      [
+        { cpus: 4294967296, memory_gib: 64 },
+        'single_job.cpus: invalid value: integer `4294967296`, expected u32',
+      ],
+      // Nor a size that is not a number at all.
+      [
+        { cpus: '32', memory_gib: '54' },
+        'single_job.cpus: invalid type: string "32", expected u32',
+      ],
+      [
+        { cpus: 32, memory_gib: '54' },
+        'single_job.memory_gib: invalid type: string "54", expected u32',
+      ],
+      [
+        { cpus: true, memory_gib: 64 },
+        'single_job.cpus: invalid type: boolean `true`, expected u32',
+      ],
+      [{ cpus: [32], memory_gib: 64 }, 'single_job.cpus: invalid type: sequence, expected u32'],
+      [
+        { cpus: 32, memory_gib: { gib: 64 } },
+        'single_job.memory_gib: invalid type: map, expected u32',
+      ],
+    ];
+    for (const [size, message] of unreadable) {
+      const bad = await call('POST', '/runs', { ...rnaseq, single_job: size });
+      expect(bad.status, JSON.stringify(size)).toBe(422);
+      expect(bad.text, JSON.stringify(size)).toContain(message);
+    }
+    // `single_job` is read into a struct (SingleJobRequest): a value that is neither an object nor
+    // null is refused, as is a field of the wrong type.
+    const notStruct = (what: string) =>
+      `single_job: invalid type: ${what}, expected struct SingleJobRequest`;
+    const unreadableRequests: [Json, string][] = [
+      [true, notStruct('boolean `true`')],
+      [false, notStruct('boolean `false`')],
+      [5, notStruct('integer `5`')],
+      [-3, notStruct('integer `-3`')],
+      [1.5, notStruct('floating point `1.5`')],
+      ['single', notStruct('string "single"')],
+      [{ queue_class: 5 }, 'single_job.queue_class: invalid type: integer `5`, expected a string'],
+      [{ instance: true }, 'single_job.instance: invalid type: boolean `true`, expected a string'],
+      // serde reads a struct from an array too, field by field in declaration order.
+      [[1], 'single_job[0]: invalid type: integer `1`, expected a string'],
+      [[null, null, 'x'], 'single_job[2]: invalid type: string "x", expected u32'],
+    ];
+    for (const [singleJob, message] of unreadableRequests) {
+      const bad = await call('POST', '/runs', { ...rnaseq, single_job: singleJob });
+      expect(bad.status, JSON.stringify(singleJob)).toBe(422);
+      expect(bad.text, JSON.stringify(singleJob)).toContain(message);
+    }
+    // One array too long for the struct is not JSON serde can finish reading: a 400.
+    const long = await call('POST', '/runs', {
+      ...rnaseq,
+      single_job: [null, null, null, null, null],
+    });
+    expect(long.status).toBe(400);
+    expect(long.text).toContain('single_job: trailing characters');
+    // serde reads the struct's fields first, so a bad one among them is refused before the extra.
+    const longBad = await call('POST', '/runs', {
+      ...rnaseq,
+      single_job: [1, null, null, null, null],
+    });
+    expect(longBad.status).toBe(422);
+    expect(longBad.text).toContain('single_job[0]: invalid type: integer `1`, expected a string');
+    // An array that reads is the request it spells, positionally.
+    const positional = await call('POST', '/runs', { ...rnaseq, single_job: [null, null, 32, 50] });
+    expect(positional.status, positional.text).toBe(202);
+    expect(obj(await call('GET', `/runs/${obj(positional).run_id}`)).single_job).toMatchObject({
+      instance_type: 'c6id.8xlarge',
+    });
+  });
+
   it('cancels a running run once its coordinator reports, a not-yet-running one at once', async () => {
     expect((await call('POST', '/runs/run_01HGW5cancelme/cancel')).status).toBe(202);
     // The request is recorded, but the run is still running until its coordinator's FAILED is

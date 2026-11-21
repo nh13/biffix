@@ -372,6 +372,7 @@ fn submit_opts(version: &str, inline: &[&str]) -> runs::SubmitOpts {
         resume_from: None,
         run_name: None,
         follow: false,
+        single_job: None,
         reference: None,
         retention: None,
         images: vec![],

@@ -16,6 +16,7 @@
     type WorkflowDetail,
   } from '#lib/api/index.js';
   import { parseSchema } from '#lib/workflows/schema.js';
+  import { singleJobNote, singleJobOf } from '#lib/launch/form.js';
   import {
     fixHref,
     isFixMode,
@@ -49,6 +50,9 @@
 
   const versionId = $derived(run.workflow ?? '');
   const resume = $derived(mode === 'resume');
+  // A single-job run's resume runs one job per task (the server refuses a single-job resume); its
+  // re-run runs as one job again. Said where the user chooses.
+  const singleJobHint = $derived(isFixMode(mode) ? null : singleJobNote(singleJobOf(run), resume));
 
   function start() {
     if (isFixMode(mode)) {
@@ -118,6 +122,7 @@
     >{tryAgainLabel(mode)}</button
   >
   {#if hint}<span class="hint">{tryAgainHint(mode)}</span>{/if}
+  {#if hint && resume && singleJobHint}<span class="hint">{singleJobHint}</span>{/if}
 </span>
 
 {#if asking}
@@ -133,6 +138,7 @@
       {resume ? 'Resume this analysis?' : 'Run this analysis again?'}
     </h2>
     <p>{tryAgainHint(mode)}.</p>
+    {#if singleJobHint}<p>{singleJobHint}</p>{/if}
     <p class="muted">
       It starts as a new analysis; this one stays as it is. Want to change something first?
       <a href={launchFormHref(versionId, run.run_id, { resume })}>Open the launch form</a>.

@@ -3,6 +3,7 @@
   // Re-run's or Resume's pre-fill, a restored draft, an example (with its undo), an import, and (in
   // the Expert form) the experiment it launches into.
   import { launchForm } from './launchForm.svelte';
+  import { singleJobNote } from '../form';
   import { runTabHref } from '#lib/runs/runNav.js';
 
   const form = launchForm();
@@ -27,6 +28,7 @@
     {/if}
     {#if from.images.length}It runs the {from.images.length === 1 ? 'image' : 'images'} that run was submitted
       with again, at the digest it ran: <code>{from.images.join(', ')}</code>.{/if}
+    {#if from.singleJob}{singleJobNote(from.singleJob, from.resume)}{/if}
     {#if from.secrets.length}
       <strong>Secret parameters must be entered again:</strong> {from.secrets.join(', ')}.
     {/if}

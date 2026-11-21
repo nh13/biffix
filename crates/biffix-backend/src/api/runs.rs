@@ -250,8 +250,9 @@ pub(crate) async fn coordinator_logs(
 /// A run with no coordinator yet (one waiting for its submit-time images) may be one the launch
 /// sweep is launching at this moment, so its cancel takes the run's launch claim first (waiting up
 /// to 20 s for a launch in progress, else 503: retry), and re-reads the run under it: a
-/// coordinator bound meanwhile is stopped as any other; otherwise the run ends and its parked
-/// launch is dropped while the claim is held, so no sweep launches it after.
+/// coordinator bound meanwhile is stopped as any other; otherwise the run ends while the claim is
+/// held, so no sweep launches it after. Its parked launch is left for the launch sweep to release,
+/// and the sweep first stops any coordinator an earlier launch may have left running.
 ///
 /// A run not yet confirmed running (`submitted`) is also marked cancelled (`run_cancelled`): its
 /// coordinator may never have started (or never will report), so no terminal would otherwise

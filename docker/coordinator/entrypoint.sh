@@ -37,7 +37,8 @@
 #                             workflow's `cache: True` rules.
 #   BIFFIX_WORKER_IMAGE     - image the engine runs child jobs with (Snakemake --container-image,
 #                             Nextflow process.container): the version's default image, else (a
-#                             Snakemake version with none) this coordinator variant itself
+#                             Snakemake version with none) this coordinator variant itself, except
+#                             in a single-job run (unset: such tasks run in this job itself)
 #   BIFFIX_IMAGE_MAP_URI    - optional s3:// uri of the run's images.json (declared image -> the
 #                             tenant copy to run; crates/biffix-backend/src/images/map.rs). Set =>
 #                             every task image resolves through it and an image not in it fails the
@@ -50,7 +51,21 @@
 #                             image map and required with it (78 without). Every task runs on the
 #                             definition of its image and the engines register none (Snakemake:
 #                             the executor's job definition map; Nextflow: nf-biffix's handler);
-#                             see "Project isolation" below.
+#                             see "Project isolation" below. Not sent, and not read, for a
+#                             single-job run.
+#   BIFFIX_EXECUTION        - "tasks" (the default: every task is a Batch job of its own) |
+#                             "single_job": the whole run in this one job, on a host of its own,
+#                             every task in its image through Apptainer nested in this container
+#                             (lib/single_job.sh); anything else fails the run (78). The job runs as
+#                             the project's run role, with the host's instance store at /scratch
+#                             and /dev/fuse; it needs no worker queue, no job definition map and no
+#                             SNAKEMAKE_AWS_BATCH_JOB_ROLE. Then also, required (78 without):
+#   BIFFIX_SINGLE_JOB_CPUS  - the vCPUs the job was given (its whole host's): the engine's local
+#                             executor runs tasks within them
+#   BIFFIX_SINGLE_JOB_MEMORY_MIB - the memory the job was given, MiB: the engine's tasks get it less
+#                             a reserve for the engine itself, and must get at least 1 GiB (78)
+#                             A single-job run never resumes (BIFFIX_RESUME=1 is refused, 78): a
+#                             later Batch attempt of it starts afresh.
 # Baked into the job definition (infra/biffix_infra/constructs/coordinator.py):
 #   BIFFIX_QUEUE_CLASS_MAP  - JSON {queue_class_name: job_queue_arn}, the WORKER queue-classes only
 #                             (the coordinator's is not in it), in deploy-config order
@@ -61,6 +76,11 @@
 #                             task's log from it, aws.batch.logsGroup; without a job definition map
 #                             the engines name it in their own: Snakemake --aws-batch-log-group; see
 #                             "Project isolation" below)
+#   BIFFIX_SCRATCH_ROOT     - the single-job template only: the host's instance store, a single-job
+#                             run's work root (/scratch; lib/single_job.sh)
+#   BIFFIX_INSTANCE_STORE_MARKER - the single-job template only: the file the host's boot writes
+#                             once it has mounted the instance store at the scratch root, outside
+#                             it and mounted read-only (/var/lib/biffix/instance-store)
 # Optional, from the backend: BIFFIX_QUEUE_CLASS (worker queue-class to submit child jobs to;
 #   default: the map's first), BIFFIX_QUEUE_ASSIGNMENT (JSON {"by_label": {label: queue_class},
 #   "by_name": {name: queue_class}}: the tasks the version sends to another worker queue-class,
@@ -87,7 +107,7 @@
 #   source staging, config materialization, and queue resolution WITHOUT submitting child jobs,
 #   and writes nothing to S3 (no metadata sync, no events.jsonl upload; Nextflow previews with the
 #   local executor and a local work dir, no cloud cache or remote bin dir); it still reads the
-#   source, the image map, the job definition map and any metadata to restore.
+#   source, the image map, the job definition map (tasks mode) and any metadata to restore.
 #   This is the fast local check: `docker run` this image with the real env and BIFFIX_DRY_RUN=1.
 #
 # The process exit code is the run's outcome: AWS Batch reports it via EventBridge, which the

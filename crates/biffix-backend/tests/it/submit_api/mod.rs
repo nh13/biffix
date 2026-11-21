@@ -23,6 +23,7 @@ mod references;
 mod register;
 mod resume;
 mod samplesheets;
+mod single_job;
 mod submit;
 mod try_again;
 

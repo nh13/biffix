@@ -3,7 +3,8 @@
 //! cancel, job owners), [`builds`] (CodeBuild runtime builds and image imports/builds),
 //! [`registry`] (ECR and public registries: image digests), [`objects`] and [`uploads`] (S3:
 //! inputs, outputs, the data browser, presigned and multipart uploads), [`logs`] (CloudWatch Logs:
-//! task logs) and [`alerts`] (SNS: alert recipients).
+//! task logs), [`alerts`] (SNS: alert recipients) and [`ec2`] (EC2: the instance types single-job
+//! runs are sized from).
 //!
 //! - `mint_run_session` records the run's project's base role (the run's blast-radius boundary)
 //!   and mints a per-run capability token. No STS AssumeRole: the coordinator and its children
@@ -22,6 +23,7 @@
 mod alerts;
 mod batch;
 mod builds;
+mod ec2;
 mod errors;
 mod logs;
 mod objects;
@@ -35,6 +37,8 @@ use crate::config::env::ProviderConfig;
 
 pub(crate) struct AwsCloudProvider {
     batch: aws_sdk_batch::Client,
+    /// EC2: the instance types a single-job run is sized from.
+    ec2: aws_sdk_ec2::Client,
     codebuild: aws_sdk_codebuild::Client,
     /// Talks to public image registries (tag → digest at registration).
     http: crate::aws::oci::RegistryClient,
@@ -62,6 +66,7 @@ impl AwsCloudProvider {
     ) -> Self {
         Self {
             batch: aws_sdk_batch::Client::new(&sdk_config),
+            ec2: aws_sdk_ec2::Client::new(&sdk_config),
             codebuild: aws_sdk_codebuild::Client::new(&sdk_config),
             http: crate::aws::oci::RegistryClient::new(),
             base: tokio::sync::OnceCell::new(),

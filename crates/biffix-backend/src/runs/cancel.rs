@@ -35,7 +35,10 @@ async fn read_own_cancel_ahead(state: &AppState, detail: &RunDetailView, actor_i
 /// How long a cancel waits for a launch in progress (the sweep holding the run's launch claim)
 /// before it asks to be retried: a launch is a few AWS calls. Inside the API Lambda's timeout
 /// ([`crate::config::REQUEST_WAIT_BUDGET`]), with room for the cancel's own work after it, so a cancel
-/// that waits it out gets its 503 rather than the gateway's timeout.
+/// that waits it out gets its 503 rather than the gateway's timeout. That work is a few store
+/// writes, and one TerminateJob when the sweep bound a coordinator meanwhile; never the release of
+/// a run's parked launch (listing the queues an earlier launch of it may have left a coordinator
+/// on, stopping what it finds), which the cancel leaves to the launch sweep.
 const CANCEL_LAUNCH_WAIT: std::time::Duration = crate::config::REQUEST_WAIT_BUDGET;
 
 /// How often a waiting cancel tries the claim again.
@@ -142,11 +145,11 @@ pub(crate) async fn cancel_run(
         }
         state.events.record_all(&events).await.map_err(record_err)?;
         read_own_cancel_ahead(state, &detail, actor_id).await;
-        // A run waiting for its images has a parked launch: drop it while the claim is held (if
-        // this fails, the launch sweep drops the launch of a cancelled run).
-        if let Err(e) = state.store.delete_pending_launch(rid).await {
-            tracing::warn!(run_id = %rid, error = %e, "cancel: dropping the run's parked launch failed (the sweep will)");
-        }
+        // A run waiting for its images has a parked launch, left for the launch sweep to release
+        // (it never launches a cancelled run): an earlier launch of it may have left a coordinator
+        // running unbound, on a queue it tried or (for a launch parked before those were
+        // recorded) the deploy's queue for the run, and only the sweep looks for it on Batch,
+        // AWS work this request may have no time left for.
         return Ok(());
     };
     state.events.record_all(&events).await.map_err(record_err)?;

@@ -3,7 +3,12 @@
 // Re-run pre-fill, and the per-version draft. Kept apart from rendering so it is unit-tested.
 
 import { parse as parseYaml, stringify as toYaml } from 'yaml';
-import type { ReferenceBundle, RunSubmitRequest, WorkflowDetail } from '#lib/api/index.js';
+import type {
+  ReferenceBundle,
+  RunSubmitRequest,
+  SingleJobRequest,
+  WorkflowDetail,
+} from '#lib/api/index.js';
 import { localDate } from '#lib/util/date.js';
 import { errorMessage } from '#lib/util/format.js';
 import type { FormField, FormSchema, FormSection } from '#lib/workflows/schema.js';
@@ -355,6 +360,8 @@ export interface RunFacts {
   submit_images?: { declared_ref: string; source_ref: string }[] | null;
   /** The experiment it is in. */
   experiment_id?: string | null;
+  /** How it ran when it ran as one job on a whole host (`RunDetail.single_job`). */
+  single_job?: { queue_class: string; instance_type: string } | null;
 }
 
 export interface Prefill {
@@ -372,6 +379,31 @@ export interface Prefill {
   images: string[];
   /** The prior run's experiment: trying it again lands in the same one. */
   experiment: string | null;
+  /**
+   * The prior run's single-job settings (its queue-class and instance type), when it ran as one job
+   * on a whole host. A re-run sends them again ([`launchRequest`]); a resume cannot (the server
+   * refuses `single_job` with `resume_from`), so it runs one Batch job per task.
+   */
+  singleJob: SingleJobRequest | null;
+}
+
+/** The single-job settings that run `run` as one job again: its queue-class and instance type. */
+export function singleJobOf(run: Pick<RunFacts, 'single_job'>): SingleJobRequest | null {
+  const ran = run.single_job;
+  return ran ? { queue_class: ran.queue_class, instance: ran.instance_type } : null;
+}
+
+/**
+ * What trying a single-job run again does about it, in a sentence (for where the user chooses to
+ * resume or re-run, and the form's banner); `null` for a run that did not run as one job.
+ */
+export function singleJobNote(singleJob: SingleJobRequest | null, resume: boolean): string | null {
+  if (!singleJob) return null;
+  if (resume)
+    return 'That run ran as one job on a whole host; a resume runs each step as its own job instead.';
+  const host = singleJob.instance ? `a whole ${singleJob.instance} host` : 'a whole host';
+  const queue = singleJob.queue_class ? ` (queue-class ${singleJob.queue_class})` : '';
+  return `It runs as one job on ${host} again${queue}.`;
 }
 
 /**
@@ -460,6 +492,7 @@ export function prefillFromRun(run: RunFacts, schema: FormSchema, resume: boolea
     // them); an Operator may, since they are already imported.
     images: (run.submit_images ?? []).map(pinnedSpelling),
     experiment: run.experiment_id ?? null,
+    singleJob: singleJobOf(run),
   };
 }
 
@@ -477,8 +510,16 @@ export interface LaunchRequestInputs {
   /** Samplesheet rows by param. */
   tables: Record<string, SheetRow[]>;
   reference: RefChoice;
-  /** The run it starts from (a Re-run or Resume, a Try again), and that run's pinned images. */
-  from: { runId: string; resume: boolean; images: string[] } | null;
+  /**
+   * The run it starts from (a Re-run or Resume, a Try again), that run's pinned images, and its
+   * single-job settings (`null` when it ran one job per task).
+   */
+  from: {
+    runId: string;
+    resume: boolean;
+    images: string[];
+    singleJob: SingleJobRequest | null;
+  } | null;
   retention: Retention;
   experiment: string | null;
 }
@@ -507,6 +548,9 @@ export function launchRequest(s: LaunchRequestInputs): RunSubmitRequest {
   if (s.from?.resume) request.resume_from = s.from.runId;
   else if (s.from) request.retry_of = s.from.runId;
   if (s.from && s.from.images.length > 0) request.images = s.from.images;
+  // A re-run of a single-job run runs as one job again, on the same queue-class and instance type.
+  // A resume cannot (the server refuses `single_job` with `resume_from`): it runs one job per task.
+  if (s.from?.singleJob && !s.from.resume) request.single_job = s.from.singleJob;
   // Only Nextflow runs have intermediate files to keep or delete.
   if (s.engine === 'nextflow' && s.retention !== 'default') request.retention = s.retention;
   // Only when one is chosen, so a launch outside any experiment sends what it always has.

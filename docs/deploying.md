@@ -71,7 +71,8 @@ The keys, grouped as in [the example](../infra/biffix-deploy.example.yaml):
 - **Network.** `nat_mode` chooses a NAT instance (`instance`, cheap, a single point of failure)
   or a managed NAT gateway (`gateway`, for production). `worker_egress: ecr_s3_only` moves task
   workers to subnets with no internet route, reaching only ECR, ECS, CloudWatch Logs and S3
-  through VPC endpoints.
+  through VPC endpoints. It does not cover single-job queue-classes, whose hosts keep the NAT
+  (each runs a run's coordinator as well as its tasks).
 - **Compute.** `queue_classes` (required) is the menu of AWS Batch compute environments and
   queues workflows can use. Exactly one entry has `coordinator: true`, and it must be `ON_DEMAND`
   (synth refuses a spot coordinator). Each
@@ -81,7 +82,8 @@ The keys, grouped as in [the example](../infra/biffix-deploy.example.yaml):
   Workflows refer to entries by `name` (`--queue-class` and `queues:` in `biffix.yaml`), never
   by Batch queue name, and every project's coordinator may submit tasks to any worker entry, so
   renaming or removing one breaks the versions that name it (registration checks the names
-  against the menu as it is then).
+  against the menu as it is then). An entry with `single_job: true` is a
+  [single-job queue-class](#single-job-queue-classes) instead of a task queue-class.
   `coordinator_image_tag` names the coordinator base image; leave it unset when deploying a
   release. An older base than the release's cannot run a version that uses a coordinator feature
   it predates (`queues:` selectors): its engine runtime fails to build, saying so, rather than
@@ -114,6 +116,47 @@ The keys, grouped as in [the example](../infra/biffix-deploy.example.yaml):
 
 A minimal config for a first deployment sets `tenant`, `region`, `account`, `queue_classes` (the
 example's three entries are a reasonable start), one project, and `cognito_domain_prefix`.
+
+### Single-job queue-classes
+
+A queue-class with `single_job: true` hosts [single-job runs](user-guide.md#single-job-runs): a
+whole run as one Batch job on one host. Without one, no run may execute that way. For example:
+
+```yaml
+queue_classes:
+  - name: single-c6id-8xl
+    capacity: ON_DEMAND
+    single_job: true
+    instances: ["c6id.8xlarge"]
+    max_vcpus: 256
+```
+
+- It must be `ON_DEMAND`, must not also be the coordinator's, and lists **exact instance types
+  with local NVMe instance storage** (`c6id`, `m6id`, `r6id`, `i4i`, …), x86_64 only for now (the
+  coordinator image carries Apptainer on amd64 only, so a Graviton type is refused), and no
+  accelerated (GPU, FPGA or ML chip) type. A host's instance-store disks are striped (when there
+  are several), formatted XFS and mounted at `/scratch`, the run's work directory. The loader does
+  not check that a type has instance storage: on one without, the boot writes no instance-store
+  marker, so every run on it fails at start.
+- **Give each single-job queue-class one size** (the loader refuses mixed sizes). A run asks for
+  its whole host, and Batch could place two runs sized for a smaller type on one larger host of
+  the same queue-class. Define one queue-class per size instead (types of the same size but
+  different families, such as `c6id.8xlarge` and `m6id.8xlarge`, may share one; not metal types,
+  whose size differs by family: `z1d.metal` is 48 vCPUs, `r6id.metal` 128).
+- It gets its own compute environment and launch template: never shared with task queue-classes,
+  never in the task queue-class menu, and no coordinator may submit to it. Its hosts are in the
+  coordinator's subnets (with the NAT route), whatever `worker_egress` says.
+- Its hosts start Docker with a relaxed default seccomp profile (Docker's own default plus `mount`,
+  `umount2`, `unshare` and `setns`), which Apptainer needs to run each task in its own image inside
+  the job's container. That lets any container on these hosts create user namespaces and mount
+  inside them; see [the security model](architecture.md#single-job-runs) before enabling it. AWS
+  does not support custom Docker daemon configurations on the ECS-optimized AMI, so an AWS support
+  case about these hosts may be declined.
+- With one, every project gets a single-job job definition template (its runs run as the
+  project's run role), and each project's run role may pull from the deployment's workflow and
+  build ECR repositories (to convert task images on the host).
+
+The deploy reference ([infra/README.md](../infra/README.md)) lists what is created.
 
 ## Deploy
 

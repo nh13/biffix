@@ -15,7 +15,9 @@
 //! - [`sweep`]: move each parked run's images forward and launch the run once they are runnable
 //!   (stopping first any coordinator a launch whose answer was lost left running), or fail it with
 //!   why they never will be (or once it has waited [`IMAGE_PREPARE_TIMEOUT`], whatever it waited
-//!   on, a step that keeps failing included).
+//!   on, a step that keeps failing included). A run that will never launch keeps its request, for
+//!   cleanup only, while a coordinator an earlier launch of it may have left running cannot be
+//!   stopped ([`release`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -37,7 +39,7 @@ use crate::images::variants::NotRunnable;
 use crate::images::{ImageStatus, VersionContext};
 use crate::register::workflow::{WorkflowSource, WorkflowVersion};
 use crate::runs::submit::{SubmitError, SubmitOutcome, SubmitRequest};
-use crate::store::pending::PendingLaunch;
+use crate::store::pending::{PendingLaunch, PENDING_CLEANUP_KEY, PENDING_ORPHAN_KEY};
 use crate::store::registry::VersionImage;
 use crate::store::StoreError;
 use crate::AppState;
@@ -45,6 +47,15 @@ use crate::AppState;
 /// How long a run may wait for its submit-time images (from when it was parked) before it fails:
 /// an import and a derive (two hours each at most), queueing, and one retry.
 pub(crate) const IMAGE_PREPARE_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// How long after a run was parked the sweep keeps trying to stop a coordinator an earlier launch
+/// of it may have left running unbound, once the run will never launch ([`release`]); then it gives
+/// up, drops the request and logs an error naming the run and the queues. Batch ends a coordinator
+/// that ran after its two attempts' 24 h timeouts, and its capability token expires 72 h after
+/// launch (`crate::auth::capability::DEFAULT_TTL_SECS`), so a week after the run was parked any such
+/// coordinator has long stopped running, or could no longer report; while the week still leaves an
+/// operator days (a weekend included) to restore a listing or terminate grant, or Batch to recover.
+pub(crate) const CLEANUP_GIVE_UP_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Most images one submit may name.
 pub(crate) const MAX_SUBMIT_IMAGES: usize = 32;
@@ -60,8 +71,24 @@ const ORPHAN_AFTER: Duration = Duration::from_secs(10 * 60);
 pub(crate) const LAUNCH_DISABLED: &str = "launching is disabled: this deploy has no capability \
 secret (BIFFIX_CAPABILITY_SECRET_ARN), so a run's coordinator could not report";
 
-/// The [`LaunchPlan`] format this build writes and reads.
-pub(crate) const LAUNCH_PLAN_VERSION: u32 = 1;
+/// The newest [`LaunchPlan`] format this build reads, and the one it writes for a single-job run
+/// ([`LaunchPlan::single_job`]): a build that knows only [`TASKS_LAUNCH_PLAN_VERSION`] would drop
+/// that field and launch the run one Batch job per task, so it must leave such a plan parked.
+pub(crate) const LAUNCH_PLAN_VERSION: u32 = 2;
+
+/// The [`LaunchPlan`] format this build writes for a run that is not single-job: format 1, which it
+/// reads the same as every build since format 1, so a rollback still launches it.
+pub(crate) const TASKS_LAUNCH_PLAN_VERSION: u32 = 1;
+
+/// The format a plan is written as: [`LAUNCH_PLAN_VERSION`] for a single-job run, else
+/// [`TASKS_LAUNCH_PLAN_VERSION`].
+pub(crate) fn launch_plan_version(single_job: bool) -> u32 {
+    if single_job {
+        LAUNCH_PLAN_VERSION
+    } else {
+        TASKS_LAUNCH_PLAN_VERSION
+    }
+}
 
 /// A run's launch request as submit settled it: checked, filled, pruned and validated, its inputs
 /// existence-checked and its samplesheets written. Parked verbatim (`pending_launch`) while the
@@ -74,10 +101,12 @@ pub(crate) const LAUNCH_PLAN_VERSION: u32 = 1;
 /// than it knows parked (for a sweep that knows it, or the timeout) rather than launch it wrongly.
 /// `images` stays required: a plan without it is unreadable, and fails its run loudly, rather than
 /// launching without the run's images. The coordinator queue is not part of it: a parked run
-/// launches on the deploy's queue as it is at launch time.
+/// launches on the deploy's queue as it is at launch time (it records only the queues its launches
+/// were submitted to, [`LaunchPlan::attempted_queues`], to look for what they may have started).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LaunchPlan {
-    /// The plan's format ([`LAUNCH_PLAN_VERSION`] when written).
+    /// The plan's format (as written, [`launch_plan_version`]: [`LAUNCH_PLAN_VERSION`] for a
+    /// single-job run, else [`TASKS_LAUNCH_PLAN_VERSION`]).
     pub version: u32,
     /// The workflow version the run launches (re-read at launch).
     pub version_id: String,
@@ -134,6 +163,53 @@ pub struct LaunchPlan {
     /// anchor names none (`RunProjection::experiment_id`).
     #[serde(default)]
     pub experiment_id: Option<String>,
+    /// The run executes as one Batch job on one whole host, as submit resolved it
+    /// ([`crate::runs::single_job`]). Written only in format [`LAUNCH_PLAN_VERSION`]
+    /// ([`launch_plan_version`]): an older build would launch it one Batch job per task.
+    /// The same record as the run's anchor's (`RunSubmitted.single_job`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_job: Option<biffix_core::event::SingleJobUse>,
+    /// Every job queue (ARN) a launch of the parked run was submitted to, in order: recorded
+    /// before each sweep's SubmitJob, and by submit when it parks a launch whose answer was lost.
+    /// SubmitJob takes no idempotency token, so a coordinator such a launch may have started is
+    /// looked for on each of these as well as the deploy's queue now
+    /// ([`stop_unbound_coordinators`]): a deploy may move the queue while the run waits. Additive,
+    /// with no [`LAUNCH_PLAN_VERSION`] bump: a build that does not know it looks on the current
+    /// queue alone, as builds before it did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempted_queues: Vec<String>,
+}
+
+impl LaunchPlan {
+    /// The job queue (ARN) the run's coordinator is submitted to: the deploy's coordinator queue,
+    /// or, for a single-job run, its queue-class's queue as the deploy has it now. `Err` says why
+    /// there is none (the queue-class was removed while the run waited).
+    pub(crate) fn coordinator_queue(&self, state: &AppState) -> Result<String, String> {
+        queue_for(state, self.single_job.as_ref())
+    }
+}
+
+/// The deploy's job queue (ARN) now for a run's coordinator: the coordinator queue, or, for a
+/// single-job run (`single`), its queue-class's. `Err` says why there is none.
+fn queue_for(
+    state: &AppState,
+    single: Option<&biffix_core::event::SingleJobUse>,
+) -> Result<String, String> {
+    match single {
+        None => Ok(state.deploy.coordinator_queue.clone()),
+        Some(single) => crate::runs::single_job::queue(single, &state.deploy.single_job_queues)
+            .map(str::to_string),
+    }
+}
+
+/// [`queue_for`] a parked run from its stored `plan` as JSON (its `single_job` alone), so a plan
+/// that no longer reads, or one kept for cleanup only, still names it. `None` when there is none.
+fn current_queue(state: &AppState, plan: &serde_json::Value) -> Option<String> {
+    let single = match plan.get("single_job") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(single) => Some(serde_json::from_value(single.clone()).ok()?),
+    };
+    queue_for(state, single.as_ref()).ok()
 }
 
 /// A submit-time image as a version image, for [`crate::images::ensure`]: named by its reference,
@@ -331,6 +407,7 @@ pub(crate) async fn launch_run(
         submit_images,
     } = inputs;
     // The run's image map: every task image resolves through it, strictly (crate::images::map).
+    let single_job = plan.single_job.as_ref();
     let image_map = if project.bucket.is_empty() {
         None
     } else {
@@ -340,6 +417,7 @@ pub(crate) async fn launch_run(
             &state.deploy.worker_image_repo,
             version.engine,
             &variant.image,
+            single_job.is_some(),
         );
         let map = crate::images::map::build_with_overrides(
             version_images,
@@ -354,17 +432,26 @@ pub(crate) async fn launch_run(
             .await
             .map_err(LaunchError::ImageMap)?;
         // Every task runs on a job definition biffix registered (never one the workflow's code
-        // chose), so the run's definitions exist before its coordinator does.
-        let job_definitions =
-            write_job_definitions(state, run_id, &project.launch_project(), &version, &map).await?;
+        // chose), so the run's definitions exist before its coordinator does. A single-job run's
+        // tasks run inside its one job, on no job definition of their own.
+        let job_definitions = match single_job {
+            None => Some(
+                write_job_definitions(state, run_id, &project.launch_project(), &version, &map)
+                    .await?,
+            ),
+            Some(_) => None,
+        };
         Some((crate::aws::batch::RunMapUris { image_map: uri, job_definitions }, map))
     };
+    let coordinator_queue = plan
+        .coordinator_queue(state)
+        .map_err(|e| LaunchError::Submit(SubmitError::Aws(AwsError::Invalid(e))))?;
     let sreq = SubmitRequest {
         run_id: run_id.clone(),
         version,
         source: source.clone(),
         plan: plan.clone(),
-        coordinator_queue: state.deploy.coordinator_queue.clone(),
+        coordinator_queue,
         project: project.launch_project(),
         variant,
         image_source_digest,
@@ -464,6 +551,10 @@ pub struct LaunchSweepReport {
     pub finished: usize,
     /// Parked launches dropped otherwise: the run already launched, or was never recorded.
     pub dropped: usize,
+    /// Parked launches of runs that will never launch (ended, or never recorded), kept for cleanup
+    /// only: a coordinator an earlier launch of the run may have left running unbound could not be
+    /// stopped yet ([`release`]).
+    pub cleaning_up: usize,
     pub errors: usize,
 }
 
@@ -475,6 +566,7 @@ enum Swept {
     Cancelled,
     Finished,
     Dropped,
+    CleaningUp,
 }
 
 /// Which step of a parked run's launch a wait, an error or a failure is at: the `run_failed` stage
@@ -525,7 +617,9 @@ enum StepError {
 /// derives forward first so a build that finished since the last sweep launches now. A run whose
 /// image will never be runnable fails with why; one that has waited [`IMAGE_PREPARE_TIMEOUT`] fails
 /// with what it still waits for, or the error its step keeps hitting. A step that fails before then
-/// is logged and counted, and its launch stays parked for the next sweep.
+/// is logged and counted, and its launch stays parked for the next sweep. A run that will never
+/// launch (failed, cancelled, ended otherwise, never recorded) has its request dropped once no
+/// coordinator an earlier launch of it may have started is running ([`release`]).
 pub async fn sweep(state: &AppState) -> Result<LaunchSweepReport, BuildError> {
     let rows = state.store.list_pending_launches().await?;
     let mut report = LaunchSweepReport { pending: rows.len(), ..Default::default() };
@@ -546,6 +640,7 @@ pub async fn sweep(state: &AppState) -> Result<LaunchSweepReport, BuildError> {
             Ok(Swept::Cancelled) => report.cancelled += 1,
             Ok(Swept::Finished) => report.finished += 1,
             Ok(Swept::Dropped) => report.dropped += 1,
+            Ok(Swept::CleaningUp) => report.cleaning_up += 1,
             Err(e) => {
                 report.errors += 1;
                 tracing::warn!(run_id = %row.run_id, error = %e, "launch sweep: step failed");
@@ -553,6 +648,12 @@ pub async fn sweep(state: &AppState) -> Result<LaunchSweepReport, BuildError> {
         }
     }
     Ok(report)
+}
+
+/// How long ago parked request `row` was parked.
+fn parked_for(row: &PendingLaunch) -> Duration {
+    let now = biffix_core::clock::epoch_micros();
+    Duration::from_micros(u64::try_from(now - row.created_at_micros).unwrap_or(0))
 }
 
 /// One parked launch's step: see [`sweep`]. `listed` is the row as the sweep listed it, which only
@@ -570,33 +671,33 @@ async fn sweep_one(state: &AppState, listed: &PendingLaunch) -> Result<Swept, Bu
         return Ok(Swept::Dropped);
     };
     let row = &row;
-    let now = biffix_core::clock::epoch_micros();
-    let age = Duration::from_micros(u64::try_from(now - row.created_at_micros).unwrap_or(0));
+    let age = parked_for(row);
     let run_state = state.store.run_state(run_id).await?;
     // A launch left a coordinator it could neither record nor stop: never launch again.
     if let Some(job) = row.orphan_job_id() {
-        return settle_orphan(state, run_id, job, run_state.as_deref()).await;
+        return settle_orphan(state, row, job, age, run_state.as_deref()).await;
     }
+    // A run that will never launch keeps its request, for cleanup only, while a coordinator an
+    // earlier launch of it may have left running cannot be stopped ([`release`]).
+    let released = |swept: Swept| async move {
+        Ok(if release(state, row, age).await? { swept } else { Swept::CleaningUp })
+    };
     match run_state.as_deref().map(str::parse::<RunState>) {
         // Not recorded: a submit still recording it, or one whose record failed (an orphan).
-        None if age < ORPHAN_AFTER => return Ok(Swept::Waiting),
-        None => {
-            drop_row(state, run_id).await?;
-            return Ok(Swept::Dropped);
-        }
-        Some(Ok(RunState::Cancelled)) => {
-            drop_row(state, run_id).await?;
-            return Ok(Swept::Cancelled);
-        }
-        Some(Ok(s)) if s.is_terminal() => {
-            drop_row(state, run_id).await?;
-            return Ok(Swept::Finished);
-        }
-        // Launched already (its request outlived the launch): never launch it again.
+        None if age < ORPHAN_AFTER && !row.cleanup_only() => return Ok(Swept::Waiting),
+        None => return released(Swept::Dropped).await,
+        Some(Ok(RunState::Cancelled)) => return released(Swept::Cancelled).await,
+        Some(Ok(s)) if s.is_terminal() => return released(Swept::Finished).await,
+        // Launched already (its request outlived the launch): never launch it again. Its request
+        // is dropped at once: every coordinator an earlier launch started was stopped before the
+        // launch that bound it, and the coordinator Batch lists for it now is its own.
         Some(s) if s != Ok(RunState::PreparingImages) => {
             drop_row(state, run_id).await?;
             return Ok(Swept::Dropped);
         }
+        // Kept for cleanup only: its failure is recorded, though not folded yet. Never launched,
+        // nor failed again.
+        Some(_) if row.cleanup_only() => return released(Swept::Finished).await,
         Some(_) => {}
     }
     let newer = row
@@ -619,7 +720,7 @@ async fn sweep_one(state: &AppState, listed: &PendingLaunch) -> Result<Swept, Bu
             Ok(plan) => advance(state, run_id, &plan).await,
             Err(e) => {
                 let reason = format!("the run's launch request is unreadable: {e}");
-                return fail(state, run_id, Stage::Launch, &reason).await;
+                return fail_parked(state, row, age, Stage::Launch, &reason).await;
             }
         },
     };
@@ -633,7 +734,7 @@ async fn sweep_one(state: &AppState, listed: &PendingLaunch) -> Result<Swept, Bu
                 stage.doing(),
                 IMAGE_PREPARE_TIMEOUT.as_secs() / 3600
             );
-            return fail(state, run_id, stage, &reason).await;
+            return fail_parked(state, row, age, stage, &reason).await;
         }
         Err(StepError::At(_, e) | StepError::Recording(e)) => return Err(e),
     };
@@ -644,7 +745,7 @@ async fn sweep_one(state: &AppState, listed: &PendingLaunch) -> Result<Swept, Bu
             IMAGE_PREPARE_TIMEOUT.as_secs() / 3600,
             wait.reasons.join("; ")
         );
-        return fail(state, run_id, wait.stage, &reason).await;
+        return fail_parked(state, row, age, wait.stage, &reason).await;
     }
     Ok(Swept::Waiting)
 }
@@ -665,7 +766,7 @@ async fn advance(
         Ok(rec) => rec,
         Err(StoreError::NotFound) => {
             let reason = format!("workflow version {} no longer exists", plan.version_id);
-            return failed(state, run_id, Stage::Launch, &reason).await;
+            return refused(state, run_id, plan, Stage::Launch, &reason).await;
         }
         Err(e) => return Err(at_launch(e.into())),
     };
@@ -673,7 +774,7 @@ async fn advance(
     let statuses = ensure_submit_images(state, &ctx, &plan.images).await.map_err(at_images)?;
     match readiness(&statuses) {
         ImagesReadiness::Failed(reason) => {
-            failed(state, run_id, Stage::ImagePreparation, &reason).await
+            refused(state, run_id, plan, Stage::ImagePreparation, &reason).await
         }
         ImagesReadiness::Waiting(reasons) => {
             Ok(Err(Wait { stage: Stage::ImagePreparation, reasons }))
@@ -713,7 +814,7 @@ async fn launch_ready(
     let unready: Vec<String> = images.iter().filter_map(ImageStatus::unready_reason).collect();
     if !unready.is_empty() {
         let reason = format!("the version's images are no longer runnable: {}", unready.join("; "));
-        return failed(state, run_id, Stage::Launch, &reason).await;
+        return refused(state, run_id, plan, Stage::Launch, &reason).await;
     }
     if state.capability.is_none() {
         return wait(LAUNCH_DISABLED.into());
@@ -725,11 +826,11 @@ async fn launch_ready(
         Ok(project) => project,
         Err(e) => {
             let reason = crate::runs::submit::request::unknown_version_project(&e, &rec.version.id);
-            return failed(state, run_id, Stage::Launch, &reason).await;
+            return refused(state, run_id, plan, Stage::Launch, &reason).await;
         }
     };
     if let Some(reason) = crate::register::pipeline::staged_outside_project(rec, project) {
-        return failed(state, run_id, Stage::Launch, &reason).await;
+        return refused(state, run_id, plan, Stage::Launch, &reason).await;
     }
     if let Some(uri) = outside_project(plan, &project.bucket) {
         let reason = format!(
@@ -737,7 +838,7 @@ async fn launch_ready(
              changed while it waited); resubmit it",
             project.bucket
         );
-        return failed(state, run_id, Stage::Launch, &reason).await;
+        return refused(state, run_id, plan, Stage::Launch, &reason).await;
     }
     // Its inputs and reference bundle, by submit's own rule, against the projects as they are now.
     let bundle_uris = plan.reference_bundle.iter().flat_map(|b| b.uris.values());
@@ -748,24 +849,48 @@ async fn launch_ready(
         .find_map(|uri| crate::runs::submit::request::unreadable_in(&projects, project, uri))
     {
         let reason = format!("{reason}; resubmit it with inputs project `{}` can read", project.id);
-        return failed(state, run_id, Stage::Launch, &reason).await;
+        return refused(state, run_id, plan, Stage::Launch, &reason).await;
     }
     let mut version = rec.version.clone();
     let image_source_digest = runnable_default(&images, &mut version);
-    let variant = match crate::images::variants::launch_variant(state, &rec.version, project).await
+    // The coordinator runs on the deploy's queue as it is now, not as it was at submit: a deploy
+    // may have replaced the queue while the run waited (as the run page labels the host). A
+    // single-job run's is its queue-class's. Checked before the variant, which may register a job
+    // definition.
+    let queue = match plan.coordinator_queue(state) {
+        Ok(queue) => queue,
+        Err(reason) => return refused(state, run_id, plan, Stage::Launch, &reason).await,
+    };
+    // A deploy may also have given the queue-class hosts the run's whole-host job no longer fills.
+    if let Some(single) = &plan.single_job {
+        match crate::runs::single_job::recheck(state, single).await {
+            Ok(Ok(())) => {}
+            Ok(Err(reason)) => return refused(state, run_id, plan, Stage::Launch, &reason).await,
+            Err(e) => return wait(format!("describing the single-job hosts failed: {e}")),
+        }
+    }
+    let template = match project.variant_template(plan.single_job.is_some()) {
+        Ok(template) => template,
+        Err(reason) => return refused(state, run_id, plan, Stage::Launch, &reason).await,
+    };
+    let variant = match crate::images::variants::launch_variant(state, &rec.version, template).await
     {
         Ok(variant) => variant,
         Err(e @ (NotRunnable::Retired(_) | NotRunnable::Outdated | NotRunnable::Failed { .. })) => {
-            return failed(state, run_id, Stage::Launch, &e.to_string()).await
+            return refused(state, run_id, plan, Stage::Launch, &e.to_string()).await
         }
         Err(e @ NotRunnable::Building(_)) => return wait(e.to_string()),
         Err(NotRunnable::Error(e)) => return Err(at_launch(e)),
     };
-    // The coordinator runs on the deploy's queue as it is now, not as it was at submit: a deploy
-    // may have replaced the queue while the run waited (as the run page labels the host).
-    let queue = &state.deploy.coordinator_queue;
-    if let Err(reason) = stop_unbound_coordinators(state, run_id, queue).await {
+    if let Err(reason) = stop_earlier_coordinators(state, run_id, plan, Some(&queue)).await {
         return wait(reason);
+    }
+    // Before SubmitJob, so a launch whose answer is lost (or that this process does not outlive)
+    // is looked for on this queue even if a deploy moves the run's queue meanwhile.
+    if !plan.attempted_queues.contains(&queue) {
+        if let Err(e) = record_attempted_queue(state, run_id, &queue).await {
+            return wait(format!("recording the queue it launches on failed: {e}"));
+        }
     }
     let launched = launch_run(
         state,
@@ -795,9 +920,22 @@ async fn launch_ready(
             if let Err(e) = state.store.mark_pending_launch_orphan(run_id, &job_id).await {
                 tracing::error!(run_id = %run_id, job_id = %job_id, error = %e, "launch sweep: marking the unbound coordinator failed; a later sweep may launch the run again");
             }
-            let run_state =
-                state.store.run_state(run_id).await.map_err(|e| StepError::Recording(e.into()))?;
-            return settle_orphan(state, run_id, &job_id, run_state.as_deref())
+            let recording = |e: StoreError| StepError::Recording(e.into());
+            let run_state = state.store.run_state(run_id).await.map_err(recording)?;
+            // The row as it is now, marked (here, should marking have failed) so that a request
+            // kept for cleanup still names the coordinator.
+            let mut row =
+                state.store.get_pending_launch(run_id).await.map_err(recording)?.unwrap_or_else(
+                    || PendingLaunch {
+                        run_id: run_id.clone(),
+                        created_at_micros: biffix_core::clock::epoch_micros(),
+                        plan: serde_json::json!({ "attempted_queues": [queue] }),
+                    },
+                );
+            if let Some(plan) = row.plan.as_object_mut() {
+                plan.insert(PENDING_ORPHAN_KEY.into(), job_id.clone().into());
+            }
+            return settle_orphan(state, &row, &job_id, parked_for(&row), run_state.as_deref())
                 .await
                 .map(Ok)
                 .map_err(StepError::Recording);
@@ -831,79 +969,362 @@ async fn launch_ready(
     Ok(Ok(Swept::Launched))
 }
 
-/// Stop every live coordinator of parked run `run_id` (on `queue`) before the sweep launches it: a
-/// run still preparing has no coordinator of its own, so one found was started by a launch whose
-/// SubmitJob answer was lost ([`SubmitError::LaunchUncertain`]: at submit, or a sweep's), unbound
-/// to the run. Batch lists a job only eventually, but by the next sweep, minutes after such a
-/// launch, it lists it. `Err` is why the run waits instead: it is not launched while one may run.
+/// Fail parked run `run_id` at `stage` for good, before its launch, with `reason`; but first stop
+/// every coordinator an earlier launch of it may have started ([`stop_earlier_coordinators`]):
+/// failing drops the parked request, and with it the last sweep that would look for one, which
+/// would otherwise run on unbound. While that cannot be done the run waits instead, still parked
+/// (and past the bound times out, saying why).
+async fn refused(
+    state: &AppState,
+    run_id: &RunId,
+    plan: &LaunchPlan,
+    stage: Stage,
+    reason: &str,
+) -> Result<Result<Swept, Wait>, StepError> {
+    let queue = plan.coordinator_queue(state).ok();
+    if let Err(why) = stop_earlier_coordinators(state, run_id, plan, queue.as_deref()).await {
+        let reasons = vec![format!("{why}; the run then fails: {reason}")];
+        return Ok(Err(Wait { stage, reasons }));
+    }
+    failed(state, run_id, stage, reason).await
+}
+
+/// The queues an earlier launch of a parked run was submitted to ([`LaunchPlan::attempted_queues`]),
+/// read from its stored `plan` as JSON, so an unreadable plan, or a newer biffix's, still names them.
+fn attempted_queues(plan: &serde_json::Value) -> Vec<String> {
+    plan.get("attempted_queues")
+        .and_then(serde_json::Value::as_array)
+        .map(|queues| queues.iter().filter_map(|q| q.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
+/// Drop the parked request `row` of a run that will never launch (it failed, was cancelled, ended
+/// otherwise, or was never recorded), `age` after it was parked, once no coordinator a launch of it
+/// may have left running unbound is still running: the one it knows by id (its unbound
+/// coordinator, [`PendingLaunch::orphan_job_id`]) stopped, and [`stop_unbound_coordinators`] on
+/// every queue its launches were submitted to and on the deploy's queue for the run now. The
+/// request is the last record of those, so while that cleanup fails it is kept, for cleanup only
+/// ([`keep_for_cleanup`]): no sweep launches it, or fails it again, and each one tries the cleanup
+/// again, until [`CLEANUP_GIVE_UP_AFTER`], when it gives up and drops the request. Returns whether
+/// the request was dropped.
+async fn release(state: &AppState, row: &PendingLaunch, age: Duration) -> Result<bool, BuildError> {
+    let orphan = match row.orphan_job_id() {
+        Some(job) => {
+            let quiet = row.cleanup_only();
+            Some(
+                stop_orphan(state, &row.run_id, job, quiet)
+                    .await
+                    .map_err(|e| orphan_stop_error(job, &e)),
+            )
+        }
+        None => None,
+    };
+    release_stopped(state, row, age, orphan).await
+}
+
+/// Why stopping coordinator `job`, which a launch of the run left unbound, failed (`e`).
+fn orphan_stop_error(job: &str, e: &AwsError) -> String {
+    format!("stopping coordinator {job}, which a launch of the run left unbound, failed: {e}")
+}
+
+/// [`release`], the stop of the unbound coordinator `row` names already tried (`orphan`: `None`
+/// when it names none).
+async fn release_stopped(
+    state: &AppState,
+    row: &PendingLaunch,
+    age: Duration,
+    orphan: Option<Result<(), String>>,
+) -> Result<bool, BuildError> {
+    let run_id = &row.run_id;
+    let mut queues = attempted_queues(&row.plan);
+    let current = current_queue(state, &row.plan);
+    // Always the deploy's queue for the run too (when it still has one): a plan parked by a
+    // biffix from before `attempted_queues` was recorded names no queue, though its launch's
+    // answer may have been lost, leaving a coordinator there (the queue of every launch then).
+    if let Some(current) = &current {
+        if !queues.contains(current) {
+            queues.push(current.clone());
+        }
+    }
+    // Every queue, whatever another's answer, so one Batch cannot list now delays none of them.
+    let mut errors: Vec<String> = orphan.and_then(Result::err).into_iter().collect();
+    for queue in &queues {
+        let is_current = current.as_deref() == Some(queue.as_str());
+        // The unbound coordinator was just stopped by id (Batch lists it until it ends), and a
+        // request already kept for cleanup was warned about once: quiet from then on.
+        let found = Found { skip: row.orphan_job_id(), quiet: row.cleanup_only() };
+        if let Err(why) = stop_unbound_coordinators(state, run_id, queue, is_current, found).await {
+            errors.push(why);
+        }
+    }
+    if let Err(why) = joined(errors) {
+        if age <= CLEANUP_GIVE_UP_AFTER {
+            keep_for_cleanup(state, row, &why).await;
+            return Ok(false);
+        }
+        tracing::error!(
+            run_id = %run_id,
+            queues = ?queues,
+            unbound_job_id = row.orphan_job_id(),
+            error = why,
+            "launch sweep: giving up stopping a coordinator a launch of the run may have left \
+             running, {} days after it was parked; look for it on these queues (and stop the \
+             unbound job, if one is named)",
+            CLEANUP_GIVE_UP_AFTER.as_secs() / 86_400
+        );
+    }
+    drop_row(state, run_id).await?;
+    Ok(true)
+}
+
+/// Keep parked request `row`, which [`release`] could not clean up (`why`), for cleanup only. The
+/// first time, its plan is scrubbed to what the cleanup reads ([`cleanup_plan`]: not the run's
+/// params, which carry secret values) and the keep is logged; later sweeps keep it quietly (every
+/// 5-minute sweep would otherwise log it, for up to [`CLEANUP_GIVE_UP_AFTER`]), until the cleanup
+/// succeeds or the sweep gives up, which logs an error. A failed scrub is logged, and the request
+/// kept as it was.
+async fn keep_for_cleanup(state: &AppState, row: &PendingLaunch, why: &str) {
+    let run_id = &row.run_id;
+    if row.cleanup_only() {
+        tracing::debug!(run_id = %run_id, error = why, "launch sweep: still keeping a run's request until a coordinator a launch of it may have started is stopped");
+        return;
+    }
+    tracing::warn!(run_id = %run_id, error = why, "launch sweep: keeping a run's request, for cleanup only, until a coordinator a launch of it may have started is stopped (each sweep tries again; logged once)");
+    let scrubbed = PendingLaunch {
+        run_id: run_id.clone(),
+        created_at_micros: row.created_at_micros,
+        plan: cleanup_plan(&row.plan),
+    };
+    if let Err(e) = state.store.put_pending_launch(&scrubbed).await {
+        tracing::warn!(run_id = %run_id, error = %e, "launch sweep: scrubbing a request kept for cleanup failed; it is kept as it was, params included");
+    }
+}
+
+/// A parked `plan` kept for cleanup only: what [`release`] reads of it (the queues its launches
+/// were submitted to, its single-job use, which names the deploy's queue for it now, and the
+/// coordinator a launch left unbound), marked [`PENDING_CLEANUP_KEY`].
+fn cleanup_plan(plan: &serde_json::Value) -> serde_json::Value {
+    let mut kept: serde_json::Map<String, serde_json::Value> =
+        ["attempted_queues", "single_job", PENDING_ORPHAN_KEY]
+            .into_iter()
+            .filter_map(|key| Some((key.to_string(), plan.get(key)?.clone())))
+            .collect();
+    kept.insert(PENDING_CLEANUP_KEY.into(), true.into());
+    serde_json::Value::Object(kept)
+}
+
+/// `Ok` when `errors` is empty, else them joined.
+fn joined(errors: Vec<String>) -> Result<(), String> {
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+/// [`stop_unbound_coordinators`] on every queue an earlier launch of parked run `run_id` was
+/// submitted to ([`LaunchPlan::attempted_queues`]) and on `queue`, the deploy's queue for it now
+/// (`None` when it has none: its queue-class was removed): on each, whatever another's answer.
+async fn stop_earlier_coordinators(
+    state: &AppState,
+    run_id: &RunId,
+    plan: &LaunchPlan,
+    queue: Option<&str>,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for tried in plan.attempted_queues.iter().filter(|q| Some(q.as_str()) != queue) {
+        if let Err(why) =
+            stop_unbound_coordinators(state, run_id, tried, false, Found::default()).await
+        {
+            errors.push(why);
+        }
+    }
+    if let Some(queue) = queue {
+        if let Err(why) =
+            stop_unbound_coordinators(state, run_id, queue, true, Found::default()).await
+        {
+            errors.push(why);
+        }
+    }
+    joined(errors)
+}
+
+/// Stop every live coordinator of parked run `run_id` (on `queue`) before the sweep launches it, or
+/// fails it for good ([`refused`]): a run still preparing has no coordinator of its own, so one
+/// found was started by a launch whose SubmitJob answer was lost ([`SubmitError::LaunchUncertain`]:
+/// at submit, or a sweep's), unbound to the run. Batch lists a job only eventually, but by the next
+/// sweep, minutes after such a launch, it lists it. `Err` is why the run waits instead: it is
+/// neither launched nor failed while one may run. Each one found is tried, whatever another's
+/// answer.
+///
+/// `current` is whether `queue` is the deploy's queue for the run now. Another one (an earlier
+/// launch's, [`LaunchPlan::attempted_queues`]) that Batch refuses to list is passed over only when
+/// Batch says it is gone ([`crate::aws::batch::BatchJobs::job_queue_gone`]: a deploy removed it,
+/// and Batch terminates the jobs of a queue it deletes); a listing error says nothing of that
+/// itself (a denied listing can read as an opaque `ClientException`). `found` says which job to
+/// leave alone and how loudly to log.
 async fn stop_unbound_coordinators(
     state: &AppState,
     run_id: &RunId,
     queue: &str,
+    current: bool,
+    found: Found<'_>,
 ) -> Result<(), String> {
-    let jobs = state.cloud.live_coordinators(queue, run_id).await.map_err(|e| {
+    let looking = |e: &dyn std::fmt::Display| {
         format!(
-            "looking for a coordinator an earlier launch of the run may have started failed: {e}"
+            "looking for a coordinator an earlier launch of the run may have started (on {queue}) \
+             failed: {e}"
         )
-    })?;
-    for job in jobs {
-        tracing::warn!(run_id = %run_id, job_id = %job, "launch sweep: stopping a coordinator an earlier launch started unbound");
-        state
+    };
+    let jobs = match state.cloud.live_coordinators(queue, run_id).await {
+        Ok(jobs) => jobs,
+        Err(e) if current => return Err(looking(&e)),
+        Err(e) => match state.cloud.job_queue_gone(queue).await {
+            Ok(true) => {
+                tracing::warn!(run_id = %run_id, queue, error = %e, "launch sweep: an earlier launch's queue cannot be listed and Batch says it is gone; passing over it");
+                return Ok(());
+            }
+            Ok(false) => return Err(looking(&e)),
+            Err(gone) => {
+                return Err(looking(&format!(
+                    "{e}; and asking Batch whether the queue is gone failed: {gone}"
+                )))
+            }
+        },
+    };
+    let mut errors = Vec::new();
+    for job in jobs.into_iter().filter(|job| Some(job.as_str()) != found.skip) {
+        if found.quiet {
+            tracing::debug!(run_id = %run_id, job_id = %job, "launch sweep: stopping a coordinator an earlier launch started unbound");
+        } else {
+            tracing::warn!(run_id = %run_id, job_id = %job, "launch sweep: stopping a coordinator an earlier launch started unbound");
+        }
+        let stopped = state
             .cloud
             .terminate_job(&job, "biffix: a launch of the run whose answer was lost started it")
-            .await
-            .map_err(|e| {
-                format!(
-                    "stopping coordinator {job}, which an earlier launch of the run started \
-                     unbound, failed: {e}"
-                )
-            })?;
+            .await;
+        if let Err(e) = stopped {
+            errors.push(format!(
+                "stopping coordinator {job}, which an earlier launch of the run started unbound, \
+                 failed: {e}"
+            ));
+        }
     }
-    Ok(())
+    joined(errors)
 }
 
-/// Settle a parked run whose launch left coordinator `job` unbound (neither recorded nor
-/// stopped), in state `run_state`. If the run launched after all (the record landed although it
-/// reported failing), the coordinator is its own: the row is dropped. Otherwise the coordinator is
-/// stopped, and a run not yet ended fails naming it; the row is dropped once that is recorded.
-async fn settle_orphan(
+/// Add `queue` to the run's parked plan's [`LaunchPlan::attempted_queues`], in place in the stored
+/// JSON (so a key this build does not know, such as a newer build's, survives). The caller holds
+/// the run's launch claim. A run no longer parked has nothing to record.
+async fn record_attempted_queue(
+    state: &AppState,
+    run_id: &RunId,
+    queue: &str,
+) -> Result<(), StoreError> {
+    let Some(mut row) = state.store.get_pending_launch(run_id).await? else {
+        return Ok(());
+    };
+    let Some(plan) = row.plan.as_object_mut() else {
+        return Ok(());
+    };
+    let tried = plan.entry("attempted_queues").or_insert_with(|| serde_json::json!([]));
+    match tried.as_array_mut() {
+        Some(list) if list.iter().any(|q| q.as_str() == Some(queue)) => return Ok(()),
+        Some(list) => list.push(queue.into()),
+        None => *tried = serde_json::json!([queue]),
+    }
+    state.store.put_pending_launch(&row).await
+}
+
+/// What [`stop_unbound_coordinators`] does with the jobs it finds: `skip` is one already stopped by
+/// id this sweep (Batch lists a job TerminateJob was sent until it ends), and `quiet` logs each
+/// stop at debug, for a request kept for cleanup only, whose first keep was warned about (its
+/// give-up is logged as an error).
+#[derive(Clone, Copy, Default)]
+struct Found<'a> {
+    skip: Option<&'a str>,
+    quiet: bool,
+}
+
+/// Stop coordinator `job`, which a launch of parked run `run_id` left unbound. A failure is logged
+/// as an error, or at debug when `quiet` (a request kept for cleanup only: each sweep tries again,
+/// and its give-up is the error).
+async fn stop_orphan(
     state: &AppState,
     run_id: &RunId,
     job: &str,
-    run_state: Option<&str>,
-) -> Result<Swept, BuildError> {
-    let parsed = run_state.map(str::parse::<RunState>);
-    if matches!(parsed, Some(Ok(RunState::Submitted | RunState::Running))) {
-        drop_row(state, run_id).await?;
-        return Ok(Swept::Dropped);
-    }
+    quiet: bool,
+) -> Result<(), AwsError> {
     let stopped = state.cloud.terminate_job(job, "biffix: the run could not be recorded").await;
     if let Err(e) = &stopped {
-        tracing::error!(run_id = %run_id, job_id = %job, error = %e, "launch sweep: stopping an unbound coordinator failed");
-    }
-    match parsed {
-        Some(Ok(RunState::Cancelled)) => {
-            drop_row(state, run_id).await?;
-            Ok(Swept::Cancelled)
-        }
-        Some(Ok(s)) if s.is_terminal() => {
-            drop_row(state, run_id).await?;
-            Ok(Swept::Finished)
-        }
-        _ => {
-            let fate = match stopped {
-                Ok(()) => "it was stopped".to_string(),
-                Err(e) => format!(
-                    "stopping it failed ({e}), so it may still be running: stop AWS Batch job \
-                     {job}"
-                ),
-            };
-            let reason = format!(
-                "the run's coordinator ({job}) launched but the run could not be recorded; {fate}"
-            );
-            fail(state, run_id, Stage::Launch, &reason).await
+        if quiet {
+            tracing::debug!(run_id = %run_id, job_id = %job, error = %e, "launch sweep: stopping an unbound coordinator failed");
+        } else {
+            tracing::error!(run_id = %run_id, job_id = %job, error = %e, "launch sweep: stopping an unbound coordinator failed");
         }
     }
+    stopped
+}
+
+/// Settle parked run `row` (`age` after it was parked), whose launch left coordinator `job` unbound
+/// (neither recorded nor stopped), in state `run_state`. If the run launched after all (the record
+/// landed although it reported failing), the coordinator is its own: the row is dropped. If the run
+/// ended (or its request is kept for cleanup only, its failure recorded), the row is [`release`]d:
+/// the coordinator is stopped, and the row kept while it cannot be. Otherwise the coordinator is
+/// stopped, the run fails naming it, and the row is released likewise.
+async fn settle_orphan(
+    state: &AppState,
+    row: &PendingLaunch,
+    job: &str,
+    age: Duration,
+    run_state: Option<&str>,
+) -> Result<Swept, BuildError> {
+    let run_id = &row.run_id;
+    let ended = match run_state.map(str::parse::<RunState>) {
+        Some(Ok(RunState::Submitted | RunState::Running)) => {
+            drop_row(state, run_id).await?;
+            return Ok(Swept::Dropped);
+        }
+        Some(Ok(RunState::Cancelled)) => Some(Swept::Cancelled),
+        Some(Ok(s)) if s.is_terminal() => Some(Swept::Finished),
+        // Failed already (its end not folded yet, or the run never recorded): never failed again.
+        None if row.cleanup_only() => Some(Swept::Dropped),
+        _ if row.cleanup_only() => Some(Swept::Finished),
+        _ => None,
+    };
+    if let Some(swept) = ended {
+        return Ok(if release(state, row, age).await? { swept } else { Swept::CleaningUp });
+    }
+    let stopped = stop_orphan(state, run_id, job, false).await;
+    let fate = match &stopped {
+        Ok(()) => "it was stopped".to_string(),
+        Err(e) => {
+            format!(
+                "stopping it failed ({e}), so it may still be running: stop AWS Batch job {job}"
+            )
+        }
+    };
+    let reason =
+        format!("the run's coordinator ({job}) launched but the run could not be recorded; {fate}");
+    record_failure(state, run_id, Stage::Launch, &reason).await?;
+    let orphan = stopped.map_err(|e| orphan_stop_error(job, &e));
+    release_stopped(state, row, age, Some(orphan)).await?;
+    Ok(Swept::Failed)
+}
+
+/// Fail parked run `row` (`age` after it was parked) at `stage` with `reason`, before its launch,
+/// then [`release`] its request: kept, for cleanup only, while a coordinator an earlier launch of it
+/// may have left running cannot be stopped. The run fails on time either way.
+async fn fail_parked(
+    state: &AppState,
+    row: &PendingLaunch,
+    age: Duration,
+    stage: Stage,
+    reason: &str,
+) -> Result<Swept, BuildError> {
+    record_failure(state, &row.run_id, stage, reason).await?;
+    release(state, row, age).await?;
+    Ok(Swept::Failed)
 }
 
 /// [`fail`] for a step of [`advance`]: a recording failure is retried next sweep, never timed out.
@@ -917,21 +1338,33 @@ async fn failed(
 }
 
 /// Fail a parked run at `stage` with `reason` (the attributable `run_failed`), and drop its
-/// request.
+/// request: for a run no coordinator an earlier launch of it started may still be running unbound
+/// (see [`fail_parked`] for one that may).
 async fn fail(
     state: &AppState,
     run_id: &RunId,
     stage: Stage,
     reason: &str,
 ) -> Result<Swept, BuildError> {
+    record_failure(state, run_id, stage, reason).await?;
+    drop_row(state, run_id).await?;
+    Ok(Swept::Failed)
+}
+
+/// Record parked run `run_id`'s failure at `stage` with `reason` (the attributable `run_failed`).
+async fn record_failure(
+    state: &AppState,
+    run_id: &RunId,
+    stage: Stage,
+    reason: &str,
+) -> Result<(), BuildError> {
     tracing::info!(run_id = %run_id, stage = stage.as_str(), reason, "launch sweep: run failed");
     let ts = Timestamp::from_micros(biffix_core::clock::epoch_micros());
     state
         .events
         .record(&biffix_core::event::run_failed(run_id, ts, stage.as_str(), reason))
         .await?;
-    drop_row(state, run_id).await?;
-    Ok(Swept::Failed)
+    Ok(())
 }
 
 async fn drop_row(state: &AppState, run_id: &RunId) -> Result<(), BuildError> {
@@ -1087,6 +1520,7 @@ mod tests {
     #[test]
     fn a_launch_plan_round_trips_through_json() {
         let plan = LaunchPlan {
+            attempted_queues: Vec::new(),
             version: LAUNCH_PLAN_VERSION,
             version_id: "abc:hash:0".into(),
             actor: "u".into(),
@@ -1113,6 +1547,12 @@ mod tests {
                 content_key: "k".into(),
             }],
             experiment_id: Some("exp-1".into()),
+            single_job: Some(biffix_core::event::SingleJobUse {
+                queue_class: "single".into(),
+                instance_type: "c6id.8xlarge".into(),
+                vcpus: 32,
+                memory_mib: 61_184,
+            }),
         };
         let json = serde_json::to_value(&plan).unwrap();
         assert_eq!(serde_json::from_value::<LaunchPlan>(json.clone()).unwrap(), plan);
@@ -1122,5 +1562,25 @@ mod tests {
             missing.as_object_mut().unwrap().remove(required);
             assert!(serde_json::from_value::<LaunchPlan>(missing).is_err(), "{required}");
         }
+        // A plan from before single-job runs reads as one Batch job per task.
+        let mut tasks = json.clone();
+        tasks.as_object_mut().unwrap().remove("single_job");
+        assert_eq!(serde_json::from_value::<LaunchPlan>(tasks).unwrap().single_job, None);
+        // A plan parked by a build whose `single_job` was the backend's own `SingleJobLaunch`
+        // (written as exactly these four fields) reads as the same `SingleJobUse`.
+        let mut old = json.clone();
+        old["single_job"] = serde_json::from_str(
+            r#"{"queue_class":"single","instance_type":"c6id.8xlarge","vcpus":32,"memory_mib":61184}"#,
+        )
+        .unwrap();
+        assert_eq!(serde_json::from_value::<LaunchPlan>(old.clone()).unwrap(), plan);
+        assert_eq!(serde_json::to_value(&plan).unwrap()["single_job"], old["single_job"]);
+    }
+
+    #[test]
+    fn only_a_single_job_plan_is_written_in_the_newer_format() {
+        assert_eq!(launch_plan_version(false), TASKS_LAUNCH_PLAN_VERSION);
+        assert_eq!(launch_plan_version(true), LAUNCH_PLAN_VERSION);
+        const { assert!(LAUNCH_PLAN_VERSION > TASKS_LAUNCH_PLAN_VERSION) };
     }
 }
