@@ -124,8 +124,10 @@ pub(crate) enum RunsCommand {
         /// Single-job: at least this much memory for the run's tasks, in GiB (with --cpus). It is
         /// compared with what the tasks get, not the instance type's nominal memory: the host's
         /// memory less a reserve for the operating system and ECS (about 6%), less what the
-        /// engine keeps for itself (Snakemake 1/16 of the rest, 2 to 8 GiB; Nextflow its heap and
-        /// JVM slack, about 3/32, at least 2 GiB). A 64 GiB host leaves its tasks about 54-56 GiB.
+        /// engine keeps for itself (Snakemake 1/16 of the rest, 2 to 8 GiB, plus 160 MiB a vCPU
+        /// for each job's own Snakemake; Nextflow its heap and JVM slack, about 3/32, at least 2
+        /// GiB). A c6id.8xlarge (64 GiB, 32 vCPUs) leaves its tasks 51 GiB under Snakemake, 54 GiB
+        /// under Nextflow.
         #[arg(long, value_name = "GIB", requires_all = ["single_job", "cpus"])]
         memory_gib: Option<u32>,
         /// Single-job: the deploy's single-job queue-class to run on (default: the version's, else

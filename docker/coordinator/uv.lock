@@ -113,7 +113,9 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
     { name = "snakemake" },
+    { name = "snakemake-executor-plugin-biffix" },
     { name = "snakemake-logger-plugin-biffix" },
+    { name = "snakemake-storage-plugin-fs" },
     { name = "snakemake-storage-plugin-s3" },
     { name = "validate-pyproject", extra = ["all"] },
 ]
@@ -127,7 +129,9 @@ dev = [
     { name = "pytest", specifier = "==9.2.0" },
     { name = "ruff", specifier = "==0.17.4" },
     { name = "snakemake", specifier = "==9.27.1" },
+    { name = "snakemake-executor-plugin-biffix", directory = "../../plugins/snakemake-executor-plugin-biffix" },
     { name = "snakemake-logger-plugin-biffix", directory = "../../plugins/snakemake-logger-plugin-biffix" },
+    { name = "snakemake-storage-plugin-fs", specifier = "==1.1.3" },
     { name = "snakemake-storage-plugin-s3", specifier = "==0.3.6" },
     { name = "validate-pyproject", extras = ["all"], specifier = "==0.27" },
 ]
@@ -1327,6 +1331,15 @@ wheels = [
 ]
 
 [[package]]
+name = "reretry"
+version = "0.11.8"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/40/1d/25d562a62b7471616bccd7c15a7533062eb383927e68667bf331db990415/reretry-0.11.8.tar.gz", hash = "sha256:f2791fcebe512ea2f1d153a2874778523a8064860b591cd90afc21a8bed432e3", size = 4836, upload-time = "2022-12-18T11:08:50.641Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/66/11/e295e07d4ae500144177f875a8de11daa4d86b8246ab41c76a98ce9280ca/reretry-0.11.8-py2.py3-none-any.whl", hash = "sha256:5ec1084cd9644271ee386d34cd5dd24bdb3e91d55961b076d1a31d585ad68a79", size = 5609, upload-time = "2022-12-18T11:08:49.1Z" },
+]
+
+[[package]]
 name = "rpds-py"
 version = "2026.9.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1571,6 +1584,31 @@ wheels = [
 ]
 
 [[package]]
+name = "snakemake-executor-plugin-biffix"
+version = "0.1.0"
+source = { directory = "../../plugins/snakemake-executor-plugin-biffix" }
+dependencies = [
+    { name = "snakemake-interface-common" },
+    { name = "snakemake-interface-executor-plugins" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "snakemake-interface-common", specifier = ">=1.17.4,<2" },
+    { name = "snakemake-interface-executor-plugins", specifier = ">=9.3.2,<10" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = "==2.4.1" },
+    { name = "pytest", specifier = "==9.2.0" },
+    { name = "ruff", specifier = "==0.17.4" },
+    { name = "snakemake", specifier = "==9.27.1" },
+    { name = "snakemake-storage-plugin-fs", specifier = "==1.1.3" },
+    { name = "validate-pyproject", extras = ["all"], specifier = "==0.27" },
+]
+
+[[package]]
 name = "snakemake-interface-common"
 version = "1.23.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1652,7 +1690,7 @@ wheels = [
 
 [[package]]
 name = "snakemake-logger-plugin-biffix"
-version = "0.2.3"
+version = "0.2.4"
 source = { directory = "../../plugins/snakemake-logger-plugin-biffix" }
 dependencies = [
     { name = "snakemake-interface-logger-plugins" },
@@ -1669,6 +1707,21 @@ dev = [
     { name = "ruff", specifier = "==0.17.4" },
     { name = "types-jsonschema", specifier = ">=4" },
     { name = "validate-pyproject", extras = ["all"], specifier = "==0.27" },
+]
+
+[[package]]
+name = "snakemake-storage-plugin-fs"
+version = "1.1.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "reretry" },
+    { name = "snakemake-interface-common" },
+    { name = "snakemake-interface-storage-plugins" },
+    { name = "sysrsync" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1c/0d/fbf95e4ed2f36541798ba2920734cee55bb8fd6724586c8455cc03ecd00b/snakemake_storage_plugin_fs-1.1.3.tar.gz", hash = "sha256:a3d4245915c5973645579afc1e2c7406dd5238ac600cdade388747095ced012e", size = 5010, upload-time = "2025-10-31T10:00:14.144Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/7a/91ffac71cb0a7e6959f780f38b623b81ed34c4f8b77bb7b043cf42565728/snakemake_storage_plugin_fs-1.1.3-py3-none-any.whl", hash = "sha256:6ab494a110b66cc6becba068a544a9d0a0774bd290c19a4a5de03099b3f7f698", size = 5763, upload-time = "2025-10-31T10:00:13.049Z" },
 ]
 
 [[package]]
@@ -1748,6 +1801,18 @@ wheels = [
 ]
 
 [[package]]
+name = "sysrsync"
+version = "1.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "toml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/24/a0/eaf4f0691639d603ba3da73c4ebbd3da22dfae09565ab7ba38bc28d17de2/sysrsync-1.1.1.tar.gz", hash = "sha256:435f9eb620e68ffb18ca5cbad32b113396a432361c7722038eab65c97dd83bd5", size = 6903, upload-time = "2023-04-24T14:29:38.344Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ce/82/5939e68632beebdb6f61a52246c0243e8490d9f75e0f1a214dda0113d5f2/sysrsync-1.1.1-py3-none-any.whl", hash = "sha256:9c8877f162dce9c480804445fca56cd19bf41b998d2172651468ccebfdc60850", size = 7512, upload-time = "2023-04-24T14:29:10.186Z" },
+]
+
+[[package]]
 name = "tabulate"
 version = "0.10.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1772,6 +1837,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ce/3f/47baf510c31e0e52ac0d80d9071e5e166ca069167fee4a6c13841f9d5f5f/throttler-1.2.3.tar.gz", hash = "sha256:d2f5b0b499d62f1fc984dcac8043450b606549b0097753a9c8a707f7427c27e1", size = 11792, upload-time = "2026-01-27T00:48:11.552Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/66/70/42d8796acc57c8bcd9ae395b1a6a0bbc833f738492a8ed192a44ccd58035/throttler-1.2.3-py3-none-any.whl", hash = "sha256:241ea3e97438dec4dc2f31ddc56dbd96262787a9b1d0598adfcc0bada1134b66", size = 9704, upload-time = "2026-01-27T00:48:09.544Z" },
+]
+
+[[package]]
+name = "toml"
+version = "0.10.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/be/ba/1f744cdc819428fc6b5084ec34d9b30660f6f9daaf70eead706e3203ec3c/toml-0.10.2.tar.gz", hash = "sha256:b3bda1d108d5dd99f4a20d24d9c348e91c4db7ab1b749200bded2f839ccbe68f", size = 22253, upload-time = "2020-11-01T01:40:22.204Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/44/6f/7120676b6d73228c96e17f1f794d8ab046fc910d781c8d151120c3f1569e/toml-0.10.2-py2.py3-none-any.whl", hash = "sha256:806143ae5bfb6a3c6e736a764057db0e6a0e05e338b5630894a5f779cabb4f9b", size = 16588, upload-time = "2020-11-01T01:40:20.672Z" },
 ]
 
 [[package]]
