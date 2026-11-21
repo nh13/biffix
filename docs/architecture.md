@@ -54,8 +54,8 @@ also refreshes prices, runs the status probe, and deletes intermediate files who
 passed.
 
 A run can also execute as **one** Batch job on one host ([single-job runs](#single-job-runs)): the
-engine runs every task itself with its local executor, each in the image its Batch job would run,
-and AWS reports only that one job.
+engine runs every task on that host, each in the image its Batch job would run, and AWS reports
+only that one job.
 
 ```mermaid
 flowchart LR
@@ -129,12 +129,15 @@ immutable ECR repository, so a tag always means the same bytes.
 
 - [`snakemake-logger-plugin-biffix`](../plugins/snakemake-logger-plugin-biffix/README.md) maps
   Snakemake's log records to biffix engine events.
+- [`snakemake-executor-plugin-biffix`](../plugins/snakemake-executor-plugin-biffix/README.md) is
+  the Snakemake executor of a [single-job run](#single-job-runs): it runs each job, or group job,
+  on the coordinator's host, in the image the AWS Batch executor would pick for it.
 - [`nf-biffix`](../plugins/nf-biffix/README.md) reports Nextflow's run and task lifecycle,
   resolves each task's container through the run's image map, and runs each task on the job
   definition biffix registered for its image.
 
-Both emit the same wire contract, `schemas/wire.engine.schema.json`, and are shipped inside the
-coordinator's runtime layer. A pipeline does not list them.
+The logger and nf-biffix emit the same wire contract, `schemas/wire.engine.schema.json`. All
+three are shipped inside the coordinator's runtime layer. A pipeline does not list them.
 
 ### Web UI (`ui/`)
 
@@ -264,8 +267,15 @@ data needs a Business Associate Agreement with AWS, those audit controls, and yo
 ### Single-job runs
 
 A run that fits on one host can execute as one Batch job (`single_job` at submit, for a version
-whose `biffix.yaml` allows it). The engine still drives the DAG; biffix schedules nothing. What
-changes is where the tasks run, and the isolation that holds around them:
+whose `biffix.yaml` allows it). The engine still drives the DAG; biffix schedules nothing.
+Nextflow runs its tasks with its local executor. Snakemake has no local executor that forms group
+jobs or runs a job inside an image as its AWS Batch executor does, so its jobs go through biffix's
+own executor plugin (`plugins/snakemake-executor-plugin-biffix`): a remote executor, for which
+Snakemake forms group jobs and merges their resources exactly as for AWS Batch, that starts each
+job's own Snakemake (`python -m snakemake …`, the command a Batch job would run) as a process on
+the host, in the job's image. Snakemake's scheduler still decides what runs when, within the
+host's CPUs and memory. What changes is where the tasks run, and the isolation that holds around
+them:
 
 - **One run per host.** Single-job runs go to a dedicated compute environment of exact instance
   types, on-demand only, never shared with task queues, and each asks for its host's whole
@@ -305,15 +315,19 @@ changes is where the tasks run, and the isolation that holds around them:
   cgroups are read-only inside the container, so there is no per-task CPU or memory limit: only the
   job's applies. The engine keeps memory back for itself and tasks run at a higher OOM score, so an
   out-of-memory kill takes a task, not the engine. A task that runs in its own image does not
-  inherit the job's environment (Snakemake runs those with `--cleanenv` and Nextflow with `env -`),
-  but it runs as the engine's user in the engine's PID namespace, so it can read the engine's
+  inherit the job's environment (biffix's Snakemake executor starts those with `--cleanenv` and
+  Nextflow with `env -`). A Snakemake job is given what a task on AWS Batch has: the workflow's
+  `envvars:`, and the variables that name the job's AWS credentials and region, since its own
+  Snakemake reads and writes the run's storage (the credentials are the project's run role's, the
+  role a task on AWS Batch runs as too). The capability token is never passed, but a task runs as
+  the engine's user in the engine's PID namespace, so it can read the engine's
   environment through `/proc`, the run's capability token included. That token authorizes only the
   run's own event POSTs, and expires; a run of one Batch job per task does not have this exposure. A
   task with no image (a Snakemake local rule, a rule with no image when the version has no default
-  image, a Nextflow `exec:` process) runs in the job's own environment. Snakemake's Python `run:`
-  blocks also execute in the engine's environment, so a non-local `run:` rule assigned a task image
-  is rejected before execution; use `script:` to execute in that image. Local `run:` rules and
-  rules assigned no image remain allowed. These in-process blocks get no raised OOM score.
+  image, a Nextflow `exec:` process) runs in the job's own environment, less the capability token
+  for a Snakemake job. A Snakemake local rule runs in the engine itself, and gets no raised OOM
+  score. A Python `run:` block of any other rule runs in its job's own Snakemake, in the job's
+  image, as on AWS Batch.
 - **Cancel tears everything down.** Stopping the job ends its PID namespace, so no nested
   process or FUSE mount outlives it.
 - **Failure.** A lost host starts the run again (Batch's retry, a second attempt with a clean
@@ -321,7 +335,8 @@ changes is where the tasks run, and the isolation that holds around them:
   and for single-job runs the fold keeps only what the retry still has. A Nextflow retry starts
   over, so the newest generation's start discards the earlier generations' task, output and
   progress facts. A Snakemake retry keeps the jobs the lost host finished (each job's outputs went
-  to S3 as it ended, and the run metadata is restored from there), skips them and never reports
+  to S3 as it ended, uploaded by the job and again by the engine, which shares its local copies;
+  and the run metadata is restored from there), skips them and never reports
   them again, so their task and output facts stay; only the run-level facts (progress, DAG,
   session, running and terminal state) are the newest generation's. The old events remain in the
   log; AWS and control-plane facts remain authoritative. There is no work-directory checkpointing:

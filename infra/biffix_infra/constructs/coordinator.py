@@ -142,7 +142,7 @@ class Coordinator(Construct):
         scratch_dir: str,
     ) -> batch.EcsJobDefinition:
         """The template a single-job run's coordinator variant is cloned from: the whole run (the
-        engine with its local executor, every task in apptainer nested in the job's container) in
+        engine and every task it runs, each in apptainer nested in the job's container) in
         one job on a single-job queue-class's whole host. The tasks-mode template's image, command,
         retries and timeout, but:
 
