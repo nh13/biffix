@@ -17,6 +17,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -45,7 +46,7 @@ for v in SNAKEMAKE_AWS_BATCH_JOB_TAGS SNAKEMAKE_AWS_BATCH_CONTAINER_IMAGE_MAP NX
   NXF_IGNORE_RESUME_HISTORY NXF_PLUGINS_DEFAULT BIFFIX_IMAGE_MAP_FILE \
   SNAKEMAKE_AWS_BATCH_JOB_DEFINITION_MAP BIFFIX_JOB_DEFINITION_MAP_FILE \
   SNAKEMAKE_AWS_BATCH_JOB_ROLE PWD NXF_OPTS NXF_APPTAINER_NEW_PID_NAMESPACE APPTAINER_CACHEDIR \
-  APPTAINER_TMPDIR APPTAINER_DOCKER_PASSWORD BIFFIX_TASK_IMAGES_FILE PATH; do
+  APPTAINER_TMPDIR APPTAINER_DOCKER_PASSWORD XDG_CACHE_HOME PATH; do
   printf '%s=%s\n' "$v" "${!v-<unset>}"
 done > "$FAKE_ENV"
 ls .snakemake/metadata > "$FAKE_SEEN" 2>/dev/null || true
@@ -472,6 +473,9 @@ def test_cache_rules_are_read_from_the_helper_s_marked_lines_only(sm_job: Job) -
     at = argv.index("--cache")
     assert argv[at + 1 : at + 3] == ["align", "index"]
     assert "-" * 40 not in argv and "banner line" not in argv
+    # Each job's own Snakemake gets the cache's location, named once.
+    assert argv.count("--envvars") == 1
+    assert _after(argv, "--envvars") == "SNAKEMAKE_OUTPUT_CACHE"
 
 
 def test_a_failing_cache_helper_is_logged_and_the_run_goes_on(sm_job: Job) -> None:
@@ -1413,8 +1417,7 @@ if [ "${1:-}" = pull ]; then
   echo "image file of $ref" > "$dest"
   exit 0
 fi
-printf '%s\n' "$@" "APPTAINER_BINDPATH=${APPTAINER_BINDPATH-}" \
-  "APPTAINERENV_OMP_NUM_THREADS=${APPTAINERENV_OMP_NUM_THREADS-<unset>}" > "$FAKE_APPTAINER_ARGV"
+printf '%s\n' "$@" "APPTAINER_BINDPATH=${APPTAINER_BINDPATH-}" > "$FAKE_APPTAINER_ARGV"
 """
 
 ECR = "123456789012.dkr.ecr.us-test-1.amazonaws.com"
@@ -1574,6 +1577,43 @@ def nf_single(nf_job: Job, apptainer_dir: Path) -> SingleJob:
     return SingleJob(nf_job, apptainer_dir)
 
 
+def _host_python() -> str:
+    """The host's python3, shell-quoted for a shim's `exec` line (its path may have spaces)."""
+    python = shutil.which("python3")
+    assert python is not None, "the tests need a python3 on PATH"
+    return shlex.quote(python)
+
+
+@pytest.fixture(scope="session")
+def python_without_executor_plugin(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A python3 for a runtime layer without the biffix executor plugin: the host's own, for which
+    the plugin cannot be found. Written once per session (see the module's docstring)."""
+    exe = tmp_path_factory.mktemp("python-without-plugin") / "python3"
+    exe.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in *snakemake_executor_plugin_biffix*) exit 3 ;; esac\n'
+        f'exec {_host_python()} "$@"\n'
+    )
+    exe.chmod(0o755)
+    return exe
+
+
+@pytest.fixture(scope="session")
+def python_that_cannot_check_for_the_executor_plugin(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    """A python3 that fails the executor plugin check itself (exit 5: neither of the check's own
+    statuses), as a broken interpreter would. Written once per session."""
+    exe = tmp_path_factory.mktemp("python-that-cannot-check") / "python3"
+    exe.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in *snakemake_executor_plugin_biffix*) exit 5 ;; esac\n'
+        f'exec {_host_python()} "$@"\n'
+    )
+    exe.chmod(0o755)
+    return exe
+
+
 # Stands for a PATH with every tool on the host's but apptainer ([`_path_without_apptainer`]).
 PATH_WITHOUT_APPTAINER = "<the host's PATH without apptainer>"
 
@@ -1646,8 +1686,9 @@ def test_a_path_without_apptainer_skips_a_directory_it_cannot_list(
         ({"BIFFIX_SIF_PARALLEL": "two"}, "BIFFIX_SIF_PARALLEL is not a number: two"),
         ({"BIFFIX_SCRATCH_ROOT": "/nonexistent/scratch"}, "is not a writable directory"),
         ({"PATH": PATH_WITHOUT_APPTAINER}, "has no apptainer: a single-job run needs an x86_64"),
-        # Too small to leave the tasks a GiB beside the engine's reserve.
-        ({"BIFFIX_SINGLE_JOB_MEMORY_MIB": "3000"}, "leaves 952 MiB for tasks"),
+        # Too small to leave the tasks a GiB beside the engine's reserve (2 GiB, and 160 MiB for
+        # each of the 8 vCPUs' jobs).
+        ({"BIFFIX_SINGLE_JOB_MEMORY_MIB": "3000"}, "leaves -328 MiB for tasks after the engine's"),
     ],
 )
 def test_a_misconfigured_single_job_run_fails_with_ex_config(
@@ -1676,12 +1717,78 @@ def test_the_engine_does_not_inherit_the_scratch_lock(sm_single: SingleJob) -> N
 
 
 def test_a_zero_padded_single_job_size_is_read_as_decimal(sm_single: SingleJob) -> None:
-    # Bash arithmetic would read 04000 as octal 2048, leaving the tasks nothing beside Snakemake's
-    # 2 GiB reserve; 08 is not octal at all.
-    got = sm_single.run(BIFFIX_SINGLE_JOB_CPUS="08", BIFFIX_SINGLE_JOB_MEMORY_MIB="04000")
+    # Bash arithmetic would read 010000 as octal 4096, leaving the tasks less than a GiB beside
+    # Snakemake's reserve (2 GiB and a job's own Snakemake per vCPU); 08 is not octal at all.
+    got = sm_single.run(BIFFIX_SINGLE_JOB_CPUS="08", BIFFIX_SINGLE_JOB_MEMORY_MIB="010000")
     assert got.returncode == 0, got.stderr
-    assert "single-job run: 8 vCPUs, 4000 MiB" in got.stderr
+    assert "single-job run: 8 vCPUs, 10000 MiB" in got.stderr
     assert _after(sm_single.job.argv, "--cores") == "8"
+
+
+def test_a_runtime_without_the_executor_plugin_is_refused_before_any_image_is_converted(
+    sm_single: SingleJob, python_without_executor_plugin: Path
+) -> None:
+    """A Snakemake runtime built before the biffix executor plugin existed: refused (78) at the
+    runtime check, not after every task image has been converted."""
+    (sm_single.job.runtime / "sm/bin/python3").symlink_to(python_without_executor_plugin)
+    got = sm_single.run(BIFFIX_WORKER_IMAGE=WORKER)
+    assert got.returncode == 78, got.stderr
+    assert "this Snakemake runtime has no biffix executor plugin" in got.stderr
+    assert sm_single.pulls == []
+    assert not (sm_single.job.out / "argv").exists()
+
+
+def test_a_runtime_whose_python_cannot_check_for_the_executor_plugin_is_refused_as_such(
+    sm_single: SingleJob, python_that_cannot_check_for_the_executor_plugin: Path
+) -> None:
+    """A python3 that exits with a status of its own while checking for the plugin: refused (78)
+    naming the failed check and its status, not taken for a runtime without the plugin."""
+    (sm_single.job.runtime / "sm/bin/python3").symlink_to(
+        python_that_cannot_check_for_the_executor_plugin
+    )
+    got = sm_single.run(BIFFIX_WORKER_IMAGE=WORKER)
+    assert got.returncode == 78, got.stderr
+    assert (
+        "this Snakemake runtime's python3 could not check for the biffix executor plugin "
+        "(snakemake-executor-plugin-biffix) (exit 5)"
+    ) in got.stderr
+    assert "has no biffix executor plugin" not in got.stderr
+    assert sm_single.pulls == []
+    assert not (sm_single.job.out / "argv").exists()
+
+
+@pytest.mark.parametrize("execution", [None, "tasks"])
+def test_a_tasks_run_on_a_runtime_without_the_executor_plugin_still_runs(
+    sm_job: Job, python_without_executor_plugin: Path, execution: str | None
+) -> None:
+    """Only a single-job run needs the biffix executor plugin: a runtime registered before it
+    existed still runs a run whose jobs are AWS Batch jobs."""
+    (sm_job.runtime / "sm/bin/python3").symlink_to(python_without_executor_plugin)
+    got = sm_job.run(**({} if execution is None else {"BIFFIX_EXECUTION": execution}))
+    assert got.returncode == 0, got.stderr
+    assert _after(sm_job.argv, "--executor") == "aws-batch"
+
+
+@pytest.mark.parametrize("knob", ["BIFFIX_RETRIES", "BIFFIX_SPOT_ATTEMPTS"])
+@pytest.mark.parametrize("engine", ["snakemake", "nextflow"])
+def test_a_bad_engine_setting_is_refused_before_any_image_is_converted(
+    tmp_path: Path, engine_script: Path, apptainer_dir: Path, engine: str, knob: str
+) -> None:
+    single = SingleJob(Job(tmp_path, engine, engine_script, VERSIONS[engine]), apptainer_dir)
+    got = single.run(BIFFIX_WORKER_IMAGE=WORKER, **{knob: "many"})
+    assert got.returncode == 78, got.stderr
+    assert f"{knob} is not a number: many" in got.stderr
+    assert single.pulls == []
+
+
+def test_a_nextflow_layer_without_nf_biffix_is_refused_before_any_image_is_converted(
+    nf_single: SingleJob,
+) -> None:
+    shutil.rmtree(nf_single.job.runtime / "nf/plugins/nf-biffix-0.5.0")
+    got = nf_single.run(BIFFIX_WORKER_IMAGE=WORKER)
+    assert got.returncode == 78, got.stderr
+    assert "exactly one nf-biffix plugin" in got.stderr
+    assert nf_single.pulls == []
 
 
 def test_the_scratch_root_is_cleared_before_the_run_stages_anything(sm_single: SingleJob) -> None:
@@ -1834,26 +1941,77 @@ def test_single_job_snakemake_runs_every_job_here_in_its_image(sm_single: Single
     assert got.returncode == 0, got.stderr
     argv = sm_single.job.argv
     scratch = sm_single.scratch
-    assert _after(argv, "--cores") == "8"
-    assert _after(argv, "--executor") == "local"
-    # The wrapper merges the memory budget after profile resolution, rather than overwriting
-    # the profile's other global resources on the command line.
-    assert "--resources" not in argv
-    assert _after(argv, "--sdm") == "apptainer"
-    assert _after(argv, "--apptainer-prefix") == str(scratch / "apptainer/snakemake")
-    assert "--apptainer-args=--cleanenv" in argv
+    # The biffix executor runs each job here, in the image its Batch job would run, from the
+    # converted image files, with the work root bound into its container.
+    assert _after(argv, "--executor") == "biffix"
+    assert _after(argv, "--biffix-images-dir") == str(scratch / "apptainer/images")
+    assert _after(argv, "--biffix-image-map") == str(scratch / "run/images.json")
+    assert _after(argv, "--biffix-default-image") == WORKER
+    assert _after(argv, "--biffix-bind") == str(scratch)
+    # The host's CPUs bound the jobs' threads (--jobs is only what a remote executor requires;
+    # the wrapper clears the nodes limit it sets), and its memory the jobs running at once.
+    assert _after(argv, "--cores") == "8" and _after(argv, "--jobs") == "8"
+    # The wrapper merges the memory budget, the host-wide scope of memory and disk, and the
+    # variables jobs get into the profile's own, rather than replace them on the command line.
+    for merged in ("--resources", "--set-resource-scopes", "--envvars"):
+        assert merged not in argv
+    # The engine and its jobs share the local copies of storage files.
     assert _after(argv, "--local-storage-prefix") == str(scratch / "storage")
+    assert _after(argv, "--remote-job-local-storage-prefix") == str(scratch / "storage")
     assert _after(argv, "--default-storage-prefix") == "s3://bucket/runs/run-test/"
     assert "--retries" in argv and "--keep-going" in argv and "--logger" in argv
-    assert _after(argv, "--executor") == "local"
-    for batch_only in ("--jobs", "--container-image", "--aws-batch-job-queue"):
-        assert batch_only not in argv
-    assert not any(a.startswith("--aws-batch") for a in argv)
-    # Tasks start through biffix's apptainer wrapper.
+    # Snakemake's own Apptainer support is not used: a job's Snakemake runs inside its image.
+    for unused in ("--sdm", "--apptainer-prefix", "--container-image", "--aws-batch-job-queue"):
+        assert unused not in argv
+    assert not any(a.startswith(("--aws-batch", "--apptainer-args")) for a in argv)
+    # Tasks start through biffix's apptainer wrapper, and the engine's cache of remote sources
+    # is where their containers see it.
     assert sm_single.job.engine_env["PATH"].startswith(f"{scratch}/run/bin:")
+    assert sm_single.job.engine_env["XDG_CACHE_HOME"] == str(scratch / "cache")
 
 
-def test_single_job_snakemake_sets_every_rule_s_image_in_a_wrapper_snakefile(
+def test_single_job_snakemake_passes_its_jobs_the_job_s_aws_credentials(
+    sm_single: SingleJob,
+) -> None:
+    """A job's own Snakemake reads and writes the run's storage, from a container that starts
+    with a clean environment: the variables that are set are named to Snakemake, with the
+    between-workflow cache's when there is one, from the wrapper Snakefile (which adds them to a
+    profile's `envvars:`; --envvars would replace it)."""
+    _cache_helper(sm_single.job, "print('BIFFIX_CACHE_RULE=align')\n")
+    got = sm_single.run(
+        BIFFIX_WORKER_IMAGE=WORKER,
+        BIFFIX_SNAKEMAKE_CACHE="s3://bucket/cache/",
+        AWS_CONTAINER_CREDENTIALS_RELATIVE_URI="/v2/credentials/abc",
+        AWS_REGION="us-test-1",
+        # Inline keys the coordinator may carry are never passed: a task reaches the project role
+        # through the container credential provider alone.
+        AWS_ACCESS_KEY_ID="AKIAINLINE",
+        AWS_SECRET_ACCESS_KEY="inline-secret",
+        AWS_SESSION_TOKEN="inline-token",
+    )
+    assert got.returncode == 0, got.stderr
+    argv = sm_single.job.argv
+    assert "--envvars" not in argv
+    wrapper = Path(_after(argv, "--snakefile"))
+    text = (sm_single.kept / "run/src" / wrapper.name).read_text()
+    calls = [node for node in ast.walk(ast.parse(text)) if isinstance(node, ast.Call)]
+    passed = next(
+        node
+        for node in calls
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "register_envvars"
+    )
+    assert isinstance(passed.args[0], ast.Starred)
+    assert ast.literal_eval(passed.args[0].value) == [
+        "SNAKEMAKE_OUTPUT_CACHE",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_REGION",
+    ]
+    assert text.index("workflow.register_envvars(") < text.index("workflow.include(")
+    # Named, never valued, in the wrapper or on the command line (which the run's logs keep).
+    assert "/v2/credentials/abc" not in argv and "/v2/credentials/abc" not in text
+
+
+def test_single_job_snakemake_checks_every_rule_s_image_in_a_wrapper_snakefile(
     sm_single: SingleJob,
 ) -> None:
     got = sm_single.run(BIFFIX_WORKER_IMAGE=WORKER)
@@ -1873,38 +2031,35 @@ def test_single_job_snakemake_sets_every_rule_s_image_in_a_wrapper_snakefile(
     assert [(arg.arg, ast.literal_eval(arg.value)) for arg in include.keywords] == [
         ("overwrite_default_target", True)
     ]
-    # 64 GiB less the engine's 4 GiB reserve reaches the effective-resource merger, before the
-    # workflow's rules are parsed.
+    # 64 GiB less the engine's reserve (4 GiB, and 160 MiB for each of the 8 vCPUs' jobs) reaches
+    # the effective-resource merger, before the workflow's rules are parsed.
     resources = next(
         node
         for node in calls
         if isinstance(node.func, ast.Attribute) and node.func.attr == "configure_local_resources"
     )
-    assert [ast.literal_eval(arg) for arg in resources.args[1:]] == [61440]
+    assert [ast.literal_eval(arg) for arg in resources.args[1:]] == [60160]
     assert text.index("configure_local_resources(") < text.index("workflow.include(")
-    task_images = sm_single.scratch / "run/task-images.json"
     images = sm_single.scratch / "apptainer/images"
     map_file = sm_single.scratch / "run/images.json"
-    containers = next(
+    checks = next(
         node
         for node in calls
-        if isinstance(node.func, ast.Attribute) and node.func.attr == "set_rule_containers"
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "check_rule_images"
     )
-    assert [ast.literal_eval(arg) for arg in containers.args[1:]] == [
+    assert [ast.literal_eval(arg) for arg in checks.args[1:]] == [
         str(map_file),
         str(images),
         WORKER,
-        str(task_images),
         True,
     ]
+    assert text.index("workflow.include(") < text.index("check_rule_images(")
     # Nothing is linked into the source: no `container:` value is read.
     assert not any(p.is_symlink() for p in src.rglob("*"))
-    # The logger plugin finds each rule's image there.
-    assert sm_single.job.engine_env["BIFFIX_TASK_IMAGES_FILE"] == str(task_images)
     # The engine config biffix generated is in the run's logs.
     logs = _logs(sm_single.job)
     assert logs["Snakefile.biffix"].decode() == text
-    assert b"--sdm\napptainer\n" in logs["snakemake.args"]
+    assert b"--executor\nbiffix\n" in logs["snakemake.args"]
 
 
 def test_single_job_snakemake_without_a_default_image_runs_such_rules_here(
@@ -1915,13 +2070,15 @@ def test_single_job_snakemake_without_a_default_image_runs_such_rules_here(
     wrapper = Path(_after(sm_single.job.argv, "--snakefile"))
     text = (sm_single.kept / "run/src" / wrapper.name).read_text()
     calls = [node for node in ast.walk(ast.parse(text)) if isinstance(node, ast.Call)]
-    containers = next(
+    checks = next(
         node
         for node in calls
-        if isinstance(node.func, ast.Attribute) and node.func.attr == "set_rule_containers"
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "check_rule_images"
     )
-    assert ast.literal_eval(containers.args[2]) == str(sm_single.scratch / "apptainer/images")
-    assert ast.literal_eval(containers.args[3]) == ""
+    assert ast.literal_eval(checks.args[2]) == str(sm_single.scratch / "apptainer/images")
+    assert ast.literal_eval(checks.args[3]) == ""
+    # No default image for the executor either: a job that names none runs without a container.
+    assert "--biffix-default-image" not in sm_single.job.argv
 
 
 def test_a_single_job_run_without_an_image_map_pulls_only_its_worker_image(
@@ -1955,20 +2112,22 @@ def test_snakemake_parses_the_command_line_of_a_single_job_run(sm_single: Single
     pytest.importorskip("snakemake")
     got = sm_single.run(BIFFIX_WORKER_IMAGE=WORKER, BIFFIX_TARGET="all")
     assert got.returncode == 0, got.stderr
-    # The real Snakemake (the dev dependency, with the storage and logger plugins the command line
-    # names) parses it: no option it refuses, no two memory resources.
+    # The real Snakemake (the dev dependency, with the storage, logger and executor plugins the
+    # command line names) parses it: no option it refuses, no two memory resources, and no
+    # resource scopes, which the wrapper merges into the profile's instead.
     parsed = subprocess.run(
         [sys.executable, "-c",
          "import sys; from snakemake.cli import parse_args; "
          "_, a = parse_args(sys.argv[1:]); "
          "print(sorted(t.name for t in a.rerun_triggers), sorted(a.resources), a.targets, "
-         "sorted(m.name for m in a.software_deployment_method))",
+         "sorted(m.name for m in a.software_deployment_method), a.executor, a.biffix_bind, "
+         "sorted(a.set_resource_scopes.items()))",
          *sm_single.job.argv],
         capture_output=True, text=True, timeout=120,
     )  # fmt: skip
     assert parsed.returncode == 0, parsed.stderr
     assert parsed.stdout.split("\n")[0] == (
-        "['CODE', 'INPUT', 'MTIME', 'PARAMS'] [] ['all'] ['APPTAINER']"
+        f"['CODE', 'INPUT', 'MTIME', 'PARAMS'] [] ['all'] [] biffix ['{sm_single.scratch}'] []"
     )
 
 
@@ -2136,19 +2295,7 @@ def test_the_apptainer_wrapper_raises_each_task_s_oom_score(
         "img",
         "bash",
         f"APPTAINER_BINDPATH=/refs,{nf_single.scratch}/tmp:/tmp,{nf_single.scratch}/tmp",
-        "APPTAINERENV_OMP_NUM_THREADS=<unset>",
     ]
-    # A Snakemake job's thread count reaches its container, which --cleanenv would not let it.
-    task = subprocess.run(
-        [str(wrapper), "exec", "img", "bash"],
-        env=nf_single.env(OMP_NUM_THREADS="3"),
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert task.returncode == 0, task.stderr
-    argv = (nf_single.job.out / "apptainer-argv").read_text().splitlines()
-    assert argv[-1] == "APPTAINERENV_OMP_NUM_THREADS=3"
 
 
 def test_tasks_mode_is_unchanged_by_the_single_job_variables(sm_job: Job) -> None:

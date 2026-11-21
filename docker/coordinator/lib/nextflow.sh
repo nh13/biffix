@@ -81,21 +81,15 @@ local_cache_plugins() {
   echo "}"
 }
 
-# Run Nextflow with the AWS Batch executor (nf-amazon's, as nf-biffix's `awsbatch`, which runs each
-# task on the job definition biffix registered for its image; see "Project isolation" in
-# entrypoint.sh) + the nf-biffix TraceObserver plugin, both from the runtime layer.
-# nf-amazon stages each task's I/O to/from the S3 workDir with the host's AWS CLI, bind-mounted into
-# the task container (aws.batch.cliPath below), so task images need no `aws` of their own. The
-# plugin reports the same RunEvents to the same ingest route as the Snakemake logger;
-# queue/role/region come from the same resolved BIFFIX_* env. A single-job run runs every task on
-# this host instead (nextflow_single_job_config).
-run_nextflow() {
-  local ENTRY="$SRC/$BIFFIX_ENTRYPOINT"
-  local NF_CONFIG="$WORK/nextflow.config"
-  local PARAMS_FILE="$WORK/params.json"
+# nextflow_settings: the run's Nextflow settings from its BIFFIX_* env and its runtime layer,
+# checked (exit 78 for a bad one): RETRIES, SPOT_ATTEMPTS, NF_PLUGIN_MODE, NF_AMAZON_VERSION and
+# NF_BIFFIX_VERSION. entrypoint.sh calls it, in a subshell, right after the runtime check, only so
+# that a bad setting or a layer without biffix's plugins is refused before anything is staged or
+# converted; run_nextflow calls it for its own (local) copies.
+nextflow_settings() {
   # Nextflow's analog of Snakemake's --retries: retry a failed task up to N times. Same default (3)
   # and env knob (BIFFIX_RETRIES) as the Snakemake path. Nextflow has no exact --keep-going.
-  local RETRIES="${BIFFIX_RETRIES:-3}" SPOT_ATTEMPTS="${BIFFIX_SPOT_ATTEMPTS:-5}"
+  RETRIES="${BIFFIX_RETRIES:-3}" SPOT_ATTEMPTS="${BIFFIX_SPOT_ATTEMPTS:-5}"
   require_count BIFFIX_RETRIES "$RETRIES"
   require_count BIFFIX_SPOT_ATTEMPTS "$SPOT_ATTEMPTS"
   # The plugins biffix itself needs, at the versions the runtime layer carries (the runtime build
@@ -111,10 +105,26 @@ run_nextflow() {
   #     in the -c config, which replaces the pipeline's own list: a pipeline that declares plugins
   #     its layer lacks still runs, where the pipeline's list would fail it offline before any task.
   #     Registering it with `plugins:` builds them into its layer.
-  local NF_PLUGIN_MODE=config NF_AMAZON_VERSION="" NF_BIFFIX_VERSION
+  NF_PLUGIN_MODE=config NF_AMAZON_VERSION=""
   [ ! -f "$RUNTIME_ROOT/nf/workflow-plugins" ] || NF_PLUGIN_MODE=defaults
   NF_BIFFIX_VERSION=$(layer_plugin_version nf-biffix)
   [ "$NF_PLUGIN_MODE" = config ] || NF_AMAZON_VERSION=$(layer_plugin_version nf-amazon)
+}
+
+# Run Nextflow with the AWS Batch executor (nf-amazon's, as nf-biffix's `awsbatch`, which runs each
+# task on the job definition biffix registered for its image; see "Project isolation" in
+# entrypoint.sh) + the nf-biffix TraceObserver plugin, both from the runtime layer.
+# nf-amazon stages each task's I/O to/from the S3 workDir with the host's AWS CLI, bind-mounted into
+# the task container (aws.batch.cliPath below), so task images need no `aws` of their own. The
+# plugin reports the same RunEvents to the same ingest route as the Snakemake logger;
+# queue/role/region come from the same resolved BIFFIX_* env. A single-job run runs every task on
+# this host instead (nextflow_single_job_config).
+run_nextflow() {
+  local ENTRY="$SRC/$BIFFIX_ENTRYPOINT"
+  local NF_CONFIG="$WORK/nextflow.config"
+  local PARAMS_FILE="$WORK/params.json"
+  local RETRIES SPOT_ATTEMPTS NF_PLUGIN_MODE NF_AMAZON_VERSION NF_BIFFIX_VERSION
+  nextflow_settings
   # BIFFIX_PARAMS is a JSON object; Nextflow reads it directly as a -params-file.
   printf '%s' "$PARAMS_JSON" > "$PARAMS_FILE"
   # The retry policy is only a DEFAULT, so it goes in $NXF_HOME/config — the LOWEST-priority config
