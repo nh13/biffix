@@ -39,6 +39,7 @@ pub(super) fn snakemake_9() -> SnakemakePins {
         }),
         executor_sha: "0ac5ec4ea45a0c278876a598b17327213e964483".into(),
         logger_version: "0.2.4".into(),
+        single_job_executor_version: Some("0.1.0".into()),
         exclude_newer: "2026-09-26T00:00:00Z".into(),
     }
 }

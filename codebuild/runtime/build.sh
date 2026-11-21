@@ -28,12 +28,13 @@
 # Everything the layer installs is pinned by the recipe or checked against the base image:
 #   - Snakemake: a python-build-standalone CPython (sha256), and a hash-locked package set resolved
 #     by uv (sha256) as of the recipe's cutoff date, for each architecture. The biffix-owned wheels
-#     come from the base image's /opt/biffix/wheels (their manifest must match the recipe). The one
-#     package built from git here is the storage plugin, when the recipe pins a commit of it
-#     (BIFFIX_RT_STORAGE_S3_REPO/_SHA, an unreleased fix): exactly that commit, checked out by sha,
-#     built per runtime rather than into the base image's wheels because a task loads it (it is
-#     part of the runtime, not of the coordinator), so a re-pin needs no new base image. Its build
-#     backend is the recipe's exact pin, hash-checked before it runs
+#     (the AWS Batch executor fork, the logger and, when the recipe names it, the single-job
+#     executor) come from the base image's /opt/biffix/wheels (their manifest must match the
+#     recipe). The one package built from git here is the storage plugin, when the recipe pins a
+#     commit of it (BIFFIX_RT_STORAGE_S3_REPO/_SHA, an unreleased fix): exactly that commit, checked
+#     out by sha, built per runtime rather than into the base image's wheels because a task loads it
+#     (it is part of the runtime, not of the coordinator), so a re-pin needs no new base image. Its
+#     build backend is the recipe's exact pin, hash-checked before it runs
 #     (BIFFIX_RT_STORAGE_S3_BUILD_REQUIRES); the wheel's own dependencies are hash-locked with the
 #     rest.
 #   - Nextflow: the release's self-contained `-dist` launcher and the nf-amazon / nf-cloudcache
@@ -126,12 +127,26 @@ for name, sha in manifest["files"].items():
     if got != sha:
         sys.exit(f"base image {name}: sha256 {got}, manifest says {sha}")
 pinned = {
-    "snakemake": {"executor_sha": "BIFFIX_RT_EXECUTOR_SHA", "logger_version": "BIFFIX_RT_LOGGER_VERSION"},
+    "snakemake": {
+        "executor_sha": "BIFFIX_RT_EXECUTOR_SHA",
+        "logger_version": "BIFFIX_RT_LOGGER_VERSION",
+        # Only a recipe that names it (one recorded before the plugin existed does not), and then
+        # a base image from before it lacks the field.
+        "single_job_executor_version": "BIFFIX_RT_SINGLE_JOB_EXECUTOR_VERSION",
+    },
     "nextflow": {"nf_biffix_version": "BIFFIX_RT_NF_BIFFIX_VERSION"},
 }[os.environ["BIFFIX_RT_ENGINE"]]
+optional = {"BIFFIX_RT_SINGLE_JOB_EXECUTOR_VERSION"}
 for field, var in pinned.items():
-    if manifest[field] != os.environ[var]:
-        sys.exit(f"base image ships {field}={manifest[field]}, but the recipe pins {os.environ[var]}")
+    if var in optional and not os.environ.get(var):
+        continue
+    if var in optional and field not in manifest:
+        sys.exit(
+            f"base image's manifest has no {field} (it predates it), but the recipe pins "
+            f"{os.environ[var]}: deploy a coordinator base built from a newer source"
+        )
+    if manifest.get(field) != os.environ[var]:
+        sys.exit(f"base image ships {field}={manifest.get(field)}, but the recipe pins {os.environ[var]}")
 PY
 }
 
@@ -296,6 +311,15 @@ build_snakemake_layers() {
   executor=$(find "$WHEELS" -name 'snakemake_executor_plugin_aws_batch-*.whl' -print -quit)
   logger=$(find "$WHEELS" -name "snakemake_logger_plugin_biffix-${BIFFIX_RT_LOGGER_VERSION}-*.whl" -print -quit)
   { [ -n "$executor" ] && [ -n "$logger" ]; } || die "base image lacks the executor or logger wheel"
+  # The executor a single-job run's jobs run through (plugins/snakemake-executor-plugin-biffix),
+  # for a recipe that names it (BIFFIX_RT_SINGLE_JOB_EXECUTOR_VERSION).
+  local single_job_executor="" single_job_requirement=""
+  if [ -n "${BIFFIX_RT_SINGLE_JOB_EXECUTOR_VERSION:-}" ]; then
+    single_job_executor=$(find "$WHEELS" -name "snakemake_executor_plugin_biffix-${BIFFIX_RT_SINGLE_JOB_EXECUTOR_VERSION}-*.whl" -print -quit)
+    [ -n "$single_job_executor" ] \
+      || die "base image lacks the single-job executor wheel ${BIFFIX_RT_SINGLE_JOB_EXECUTOR_VERSION}"
+    single_job_requirement="snakemake-executor-plugin-biffix @ file://${single_job_executor}"
+  fi
   local storage
   storage=$(storage_s3_requirement "$uv" "$WORK")
   # The biffix-owned plugins by file, so the resolver can never substitute a PyPI release of the
@@ -305,6 +329,7 @@ snakemake==${BIFFIX_RT_ENGINE_VERSION}
 ${storage}
 snakemake-executor-plugin-aws-batch @ file://${executor}
 snakemake-logger-plugin-biffix @ file://${logger}
+${single_job_requirement}
 EOF
   local arch pyarch sha stage sm lock
   for arch in "${ARCHS[@]}"; do
@@ -342,6 +367,8 @@ EOF
   [ "$got" = "$BIFFIX_RT_ENGINE_VERSION" ] || die "smoke: snakemake --version is $got"
   "$WORK/layer-amd64/opt/biffix/sm/bin/python3" -c \
     'import snakemake_executor_plugin_aws_batch, snakemake_storage_plugin_s3, snakemake_logger_plugin_biffix, boto3'
+  [ -z "$single_job_executor" ] ||
+    "$WORK/layer-amd64/opt/biffix/sm/bin/python3" -c 'import snakemake_executor_plugin_biffix'
   local s3
   s3=$("$WORK/layer-amd64/opt/biffix/sm/bin/python3" -c \
     'import importlib.metadata as m; print(m.version("snakemake-storage-plugin-s3"))')
