@@ -201,6 +201,52 @@ jobs:
           uv run mypy
           uv run pytest
 
+  plugin-snakemake-executor:
+    name: plugin · snakemake executor (pytest, snakemake ${{ matrix.snakemake }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The release the project locks (the newest biffix tests), and the oldest Snakemake 9
+        # with the oldest executor interface it accepts (and the storage plugin release for its
+        # storage interface): the plugin serves every release between.
+        include:
+          - {snakemake: locked, with: ""}
+          - snakemake: 9.0.0
+            with: >-
+              --with snakemake==9.0.0
+              --with snakemake-interface-executor-plugins==9.3.2
+              --with snakemake-interface-common==1.17.4
+              --with snakemake-storage-plugin-fs==1.0.6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+      - name: lint
+        if: matrix.snakemake == 'locked'
+        working-directory: plugins/snakemake-executor-plugin-biffix
+        run: |
+          uv sync --locked --dev
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run validate-pyproject pyproject.toml
+          uv run mypy
+      - name: pytest
+        working-directory: plugins/snakemake-executor-plugin-biffix
+        env:
+          WITH: ${{ matrix.with }}
+          # Checked by tests/test_versions.py, so a job that tests another Snakemake fails.
+          BIFFIX_TEST_SNAKEMAKE: ${{ matrix.snakemake }}
+        # $WITH is word-split on purpose: it is a list of uv options, or nothing. `python -m
+        # pytest`, not the project's `pytest` script, whose interpreter is the project's own and so
+        # never sees what --with adds.
+        run: |
+          uv sync --locked --dev
+          # shellcheck disable=SC2086
+          uv run $WITH python -m pytest
+
   plugin-nextflow:
     name: plugin · nextflow observer (gradle)
     runs-on: ubuntu-24.04
@@ -266,7 +312,7 @@ jobs:
   coordinator:
     name: coordinator (ruff · mypy · entrypoint pytest)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0

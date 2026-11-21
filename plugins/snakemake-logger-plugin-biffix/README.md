@@ -24,6 +24,12 @@ payload the AWS Batch executor plugin attaches to its log records, and AWS Event
 job's terminal state. For a local rule, which runs on the coordinator and never reaches Batch, the
 plugin emits the terminal event itself.
 
+In a biffix single-job run no job reaches Batch: the biffix executor plugin
+(`../snakemake-executor-plugin-biffix`) runs each one on the coordinator's host, in a container
+image, and reports that image in the same payload shape, with the job's Snakemake id and no Batch
+job id, before Snakemake announces the job. The plugin names it on the job's `task_created`, and
+emits the job's terminal event itself, as for a local rule.
+
 The plugin has no dependencies beyond `snakemake-interface-logger-plugins`; it uses only the
 standard library for HTTP.
 
@@ -47,7 +53,6 @@ command-line option; a non-empty option wins.
 | `BIFFIX_INGEST_URL` | `--logger-biffix-ingest-url` | Base URL of the ingest route. |
 | `BIFFIX_INGEST_TOKEN` | `--logger-biffix-ingest-token` | The run's capability token. It is a secret, so prefer the environment variable. The handler removes it from Snakemake's environment once read, so jobs and workflow code that read the variable see it unset. |
 | `BIFFIX_EVENT_FILE` | `--logger-biffix-event-file` | Name of the durable events file, relative to the directory Snakemake starts in (default `.biffix_events.jsonl`). |
-| `BIFFIX_TASK_IMAGES_FILE` | none | Set by the coordinator in a single-job run only: path of a JSON object from each rule name to the image its jobs run in (as the run's image map names it). Each job's `task_created` names its rule's image; a rule the file lacks ran without a container. Read once, at the first job; a missing or unreadable file means no images. |
 
 Snakemake's own derived variables (`SNAKEMAKE_LOGGER_BIFFIX_*`) are not read; the `BIFFIX_*` names
 are the only environment channel.

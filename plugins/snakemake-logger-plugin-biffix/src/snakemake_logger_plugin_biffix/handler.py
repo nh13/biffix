@@ -21,7 +21,6 @@ snakesee learned from real records.
 from __future__ import annotations
 
 import atexit
-import json
 import logging
 import os
 import re
@@ -39,6 +38,7 @@ from snakemake_logger_plugin_biffix.poster import MAX_OUTPUTS_PER_EVENT, IngestP
 from snakemake_logger_plugin_biffix.remote_adapter import (
     batch_binding,
     batch_image,
+    host_job_image,
     payload_from_record,
 )
 from snakemake_logger_plugin_biffix.settings import DEFAULT_EVENT_FILE, LogHandlerSettings
@@ -129,38 +129,6 @@ def _output_uris(files: object) -> list[str]:
     return uris
 
 
-# Names the JSON file ({rule name: tenant image reference}) the coordinator writes in a single-job
-# run, where each rule's container is a local image file the reference cannot be recovered from.
-# Set only in single-job runs; the file is written while the workflow is parsed, before any job
-# runs, so it may not exist yet when the handler is built.
-TASK_IMAGES_ENV = "BIFFIX_TASK_IMAGES_FILE"
-
-
-def _read_task_images(path: str) -> dict[str, str]:
-    """The rule → image map in the JSON file at ``path``; empty (with a warning) when the file is
-    missing, unreadable or not a JSON object. Entries that are not a non-empty string are
-    dropped."""
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        logger.warning(
-            "biffix logger plugin: %s=%s is unreadable; tasks report no image",
-            TASK_IMAGES_ENV,
-            path,
-            exc_info=True,
-        )
-        return {}
-    if not isinstance(data, dict):
-        logger.warning(
-            "biffix logger plugin: %s=%s is not a JSON object; tasks report no image",
-            TASK_IMAGES_ENV,
-            path,
-        )
-        return {}
-    return {str(rule): image for rule, image in data.items() if isinstance(image, str) and image}
-
-
 # A Snakemake job id: a single job's int, or a group job's UUID string.
 JobId = int | str
 
@@ -248,9 +216,6 @@ class LogHandler(LogHandlerBase):
         else:
             logger.info("biffix logger plugin: tracking run=%s -> %s", self._run_id, url)
 
-        # The rule → image file of a single-job run (see TASK_IMAGES_ENV), read on first need.
-        self._task_images_file = os.environ.get(TASK_IMAGES_ENV) or None
-        self._task_images: dict[str, str] | None = None
         # Batch restarts a single-job run from scratch after losing its host. Every fact,
         # including run_started, names that generation (the coordinator's attempt), so the fold can
         # tell the lost host's facts from the retry's.
@@ -290,6 +255,9 @@ class LogHandler(LogHandlerBase):
         # An entry for a failure that is never retried stays, bounded by the number of failed
         # jobs.
         self._pending_restarts: dict[JobId, tuple[str, int]] = {}
+        # jobid → the image the executor reported for a job it is about to run on this host
+        # (host_job_image), until the job's JOB_INFO names it on its task_created.
+        self._job_images: dict[JobId, str] = {}
 
     # ── interface properties ──
     @property
@@ -386,16 +354,6 @@ class LogHandler(LogHandlerBase):
             return self._job_rules.get(jobid)
         return None if rn is None else str(rn)
 
-    def _task_image(self, rule: str) -> str | None:
-        """The image a single-job run's ``rule`` runs in, from the coordinator's rule → image file
-        (read once, at the first job: it is written before any job runs). None outside a
-        single-job run, and for a rule that runs without a container."""
-        if self._task_images_file is None:
-            return None
-        if self._task_images is None:
-            self._task_images = _read_task_images(self._task_images_file)
-        return self._task_images.get(rule)
-
     def _workflow_started(self, ts: float) -> None:
         # A truncate failure (e.g. an unwritable cwd) must not also cost the live run_started,
         # matching _dispatch's tolerance of a failed write.
@@ -433,10 +391,17 @@ class LogHandler(LogHandlerBase):
                 if (uris := _output_uris(getattr(record, role, None)))
             }
         # `group` = the rule name — the DAG node this task rolls up onto. In a single-job run the
-        # job runs on the coordinator's host, never as a Batch job, so this names its image.
+        # job runs on the coordinator's host, never as a Batch job, so this names its image: the
+        # one the executor reported for this job (none for a job the engine runs itself).
+        image = self._job_images.pop(jobid, None) if jobid is not None else None
         self._dispatch(
             events.task_created(
-                ts, self._run_id, task_key, group=rule, deps=deps, image=self._task_image(rule)
+                ts,
+                self._run_id,
+                task_key,
+                group=rule,
+                deps=deps,
+                image=image,
             )
         )
 
@@ -460,6 +425,10 @@ class LogHandler(LogHandlerBase):
         """A remote submit carries the AWS Batch job id — bind it via task_submitted."""
         binding = batch_binding(payload)
         if binding is None:
+            # Not a Batch job: a job the executor runs on this host reports only its image.
+            host_job = host_job_image(payload)
+            if host_job is not None:
+                self._job_images[host_job[0]] = host_job[1]
             return
         batch_job_id, attempt = binding
         # Use the SAME jobid the created-side keyed its maps under (the record's jobid, per

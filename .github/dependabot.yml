@@ -44,10 +44,14 @@ updates:
       - dependency-name: typescript
         update-types: [version-update:semver-major]
 
-  # infra/, docker/coordinator/ and the Snakemake plugin pin the same ruff, pytest, mypy and
-  # validate-pyproject; updating the three directories in one PR keeps them equal.
+  # infra/, docker/coordinator/ and the Snakemake plugins pin the same ruff, pytest, mypy and
+  # validate-pyproject; updating the four directories in one PR keeps them equal.
   - package-ecosystem: uv
-    directories: [/infra, /docker/coordinator, /plugins/snakemake-logger-plugin-biffix]
+    directories:
+      - /infra
+      - /docker/coordinator
+      - /plugins/snakemake-logger-plugin-biffix
+      - /plugins/snakemake-executor-plugin-biffix
     multi-ecosystem-group: dependencies
     patterns: ["*"]
     cooldown:

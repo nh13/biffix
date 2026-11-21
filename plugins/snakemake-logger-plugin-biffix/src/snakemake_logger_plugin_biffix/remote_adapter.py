@@ -14,7 +14,8 @@ The source of truth for the payload is the pinned AWS Batch executor's
 ``remote_state.build_payload`` (``EXECUTOR_SHA`` in ``docker/coordinator/wheels.env``): key
 ``remote_job_state``, ``attempt`` = Snakemake's 1-based attempt (a ``--retries`` resubmission is a
 new Batch job), and AWS's own retryStrategy count separately as ``batch_attempts``.
-``tests/test_events.py`` pins the pinned shape.
+``tests/test_events.py`` pins the pinned shape. The biffix executor plugin sends the same shape
+for a job it runs on the coordinator's host (``host_job_image``).
 """
 
 from __future__ import annotations
@@ -66,3 +67,23 @@ def batch_image(payload: dict[str, object]) -> str | None:
     ``task_submitted`` goes without an image rather than one the logger guessed."""
     image = payload.get("image")
     return image if isinstance(image, str) and image else None
+
+
+def host_job_image(payload: dict[str, object]) -> tuple[int, str] | None:
+    """``(jobid, image)`` from the payload of a job that runs on the engine's own host, in a
+    container image, or None for any other payload.
+
+    The biffix executor plugin (``plugins/snakemake-executor-plugin-biffix``, its ``report.py``)
+    runs each job of a single-job run on the coordinator's host, and reports its image in this
+    payload shape before Snakemake announces the job: one payload per job (for a group job, one
+    per job in it), with the job's Snakemake id, its ``image``, and no ``external_jobid``, since
+    it never becomes a Batch job."""
+    if payload.get("schema_version") not in SUPPORTED_SCHEMA_VERSIONS:
+        return None
+    if payload.get("external_jobid"):
+        return None
+    jobid = payload.get("jobid")
+    image = batch_image(payload)
+    if isinstance(jobid, bool) or not isinstance(jobid, int) or image is None:
+        return None
+    return jobid, image

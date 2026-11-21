@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -178,7 +179,7 @@ def test_wrapper_never_overwrites_an_existing_entrypoint(tmp_path: Path) -> None
     snakefile.write_text(original)
     with pytest.raises(FileExistsError):
         single_job().snakefile_wrapper(
-            str(snakefile), str(snakefile), "", "", "", "", False, memory_mib=61440
+            str(snakefile), str(snakefile), "", "", "", False, memory_mib=61440
         )
     assert snakefile.read_text() == original
 
@@ -188,12 +189,8 @@ def test_unique_wrappers_are_siblings_and_preserve_relative_include(tmp_path: Pa
     original = 'include: "rules/steps.smk"\n'
     snakefile.write_text(original)
     helper = single_job()
-    first = Path(
-        helper.snakefile_wrapper(str(snakefile), "", "", "", "", "", False, memory_mib=61440)
-    )
-    second = Path(
-        helper.snakefile_wrapper(str(snakefile), "", "", "", "", "", False, memory_mib=61440)
-    )
+    first = Path(helper.snakefile_wrapper(str(snakefile), "", "", "", "", False, memory_mib=61440))
+    second = Path(helper.snakefile_wrapper(str(snakefile), "", "", "", "", False, memory_mib=61440))
     assert first != second and first != snakefile and second != snakefile
     assert first.parent == second.parent == snakefile.parent
     text = first.read_text()
@@ -202,8 +199,13 @@ def test_unique_wrappers_are_siblings_and_preserve_relative_include(tmp_path: Pa
     assert (
         text.index("_biffix.configure_local_resources(workflow, 61440)")
         < text.index("workflow.include(")
-        < text.index("_biffix.set_rule_containers(")
+        < text.index("_biffix.check_rule_images(")
     )
+    # The budget and the checks are the main process's: a job's own Snakemake, in a task image
+    # without the coordinator's helper, only includes the workflow.
+    assert text.index("if workflow.is_main_process:") < text.index("import importlib.util")
+    assert "\nworkflow.include(" in text
+    assert "if _biffix is not None:\n    _biffix.check_rule_images(" in text
     assert snakefile.read_text() == original
 
 
@@ -220,7 +222,7 @@ def test_unique_wrapper_parses_relative_includes_with_real_snakemake(tmp_path: P
         'rule step:\n    output: "done"\n    shell: "touch {output}"\n'
     )
     wrapper = single_job().snakefile_wrapper(
-        str(snakefile), "", "", "", "", str(workflow / "task-images.json"), False, memory_mib=61440
+        str(snakefile), "", "", "", "", False, memory_mib=61440
     )
     result = subprocess.run(
         [
@@ -309,7 +311,6 @@ def test_wrapper_cli_prints_unique_path(tmp_path: Path) -> None:
             "",
             "",
             "",
-            "",
             "no-check",
             "61440",
         ],
@@ -372,6 +373,56 @@ def test_a_failed_pull_stops_another_pull_s_children(tmp_path: Path) -> None:
             os.kill(grandchild, signal.SIGKILL)
 
 
+def test_a_failed_pull_kills_another_pull_s_child_that_ignores_sigterm(tmp_path: Path) -> None:
+    """A stopped pull's child that ignores SIGTERM is killed, though the pull itself stopped (and
+    was reaped) at once."""
+    pidfile = tmp_path / "grandchild.pid"
+    apptainer = tmp_path / "apptainer"
+    apptainer.write_text(
+        "#!/bin/sh\n"
+        'case "$3" in\n'
+        "  *slow*) sh -c 'trap \"\" TERM; while :; do sleep 0.1; done' &\n"
+        '    echo $! > "$PIDFILE.tmp"; mv "$PIDFILE.tmp" "$PIDFILE"; wait ;;\n'
+        '  *) while [ ! -f "$PIDFILE" ]; do sleep 0.01; done; exit 1 ;;\n'
+        "esac\n"
+    )
+    apptainer.chmod(0o755)
+    failure = tmp_path / "failure.txt"
+    grandchild: int | None = None
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(LIB / "single_job.py"),
+                "convert",
+                "",
+                str(tmp_path / "images"),
+                str(tmp_path / "logs"),
+                str(failure),
+                "quay.io/tool/slow:1",
+                "quay.io/tool/bad:1",
+            ],
+            env=os.environ
+            | {
+                "PATH": f"{tmp_path}:{os.environ['PATH']}",
+                "PIDFILE": str(pidfile),
+                "BIFFIX_SIF_PARALLEL": "2",
+            },
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode == 1, result.stderr
+        grandchild = int(pidfile.read_text())
+        deadline = time.monotonic() + 5
+        while _alive(grandchild):
+            assert time.monotonic() < deadline, "the stopped pull's child is still running"
+            time.sleep(0.05)
+    finally:
+        if grandchild is not None and _alive(grandchild):
+            os.kill(grandchild, signal.SIGKILL)
+
+
 def _alive(pid: int) -> bool:
     """Whether `pid` is still running. A zombie is not: one whose parent exited before reaping it
     still answers a signal until init reaps it, which a runner may not do promptly."""
@@ -421,6 +472,113 @@ def test_a_failed_pull_stops_its_own_children(tmp_path: Path) -> None:
     finally:
         if child is not None and _alive(child):
             os.kill(child, signal.SIGKILL)
+
+
+def test_a_failed_pull_kills_another_pull_whose_apptainer_ignores_sigterm(tmp_path: Path) -> None:
+    """A stopped pull whose apptainer process itself ignores SIGTERM is killed once the grace
+    period after the SIGTERM is up: its worker, and so the conversion, would otherwise wait on it
+    forever."""
+    pidfile = tmp_path / "leader.pid"
+    apptainer = tmp_path / "apptainer"
+    apptainer.write_text(
+        "#!/bin/sh\n"
+        'case "$3" in\n'
+        '  *slow*) trap \'\' TERM; echo $$ > "$PIDFILE.tmp"; mv "$PIDFILE.tmp" "$PIDFILE"\n'
+        "    while :; do sleep 0.1; done ;;\n"
+        '  *) while [ ! -f "$PIDFILE" ]; do sleep 0.01; done; exit 1 ;;\n'
+        "esac\n"
+    )
+    apptainer.chmod(0o755)
+    failure = tmp_path / "failure.txt"
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(LIB / "single_job.py"),
+                "convert",
+                "",
+                str(tmp_path / "images"),
+                str(tmp_path / "logs"),
+                str(failure),
+                "quay.io/tool/slow:1",
+                "quay.io/tool/bad:1",
+            ],
+            env=os.environ
+            | {
+                "PATH": f"{tmp_path}:{os.environ['PATH']}",
+                "PIDFILE": str(pidfile),
+                "BIFFIX_SIF_PARALLEL": "2",
+            },
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode == 1, result.stderr
+        assert "quay.io/tool/bad:1" in failure.read_text()
+        assert not _alive(int(pidfile.read_text()))
+    finally:
+        if pidfile.exists() and _alive(int(pidfile.read_text())):
+            os.killpg(int(pidfile.read_text()), signal.SIGKILL)
+
+
+def test_the_main_thread_never_takes_the_conversion_s_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SIGTERM handler takes the conversion's (non-reentrant) lock on the main thread, between
+    any two of its bytecodes: were the main thread ever to hold it itself, a SIGTERM landing then
+    would wait on it forever. A conversion whose pull fails, and so stops another pull whose child
+    ignores SIGTERM until it is killed, takes it only on other threads."""
+    sj = single_job()
+    taken_on_main: list[bool] = []
+
+    class RecordingLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        def __enter__(self) -> None:
+            taken_on_main.append(threading.current_thread() is threading.main_thread())
+            self._lock.acquire()
+
+        def __exit__(self, *_: object) -> None:
+            self._lock.release()
+
+    class Recording(sj.Conversion):  # type: ignore[name-defined]
+        def __init__(self, *args: object) -> None:
+            super().__init__(*args)
+            self._lock = RecordingLock()
+
+    pidfile = tmp_path / "grandchild.pid"
+    apptainer = tmp_path / "apptainer"
+    apptainer.write_text(
+        "#!/bin/sh\n"
+        'case "$3" in\n'
+        "  *slow*) sh -c 'trap \"\" TERM; while :; do sleep 0.1; done' &\n"
+        '    echo $! > "$PIDFILE.tmp"; mv "$PIDFILE.tmp" "$PIDFILE"; wait ;;\n'
+        '  *) while [ ! -f "$PIDFILE" ]; do sleep 0.01; done; exit 1 ;;\n'
+        "esac\n"
+    )
+    apptainer.chmod(0o755)
+    monkeypatch.setattr(sj, "Conversion", Recording)
+    monkeypatch.setattr(sj, "STOP_GRACE_SECONDS", 0.5)
+    monkeypatch.syspath_prepend(str(LIB))
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("PIDFILE", str(pidfile))
+    monkeypatch.setenv("BIFFIX_SIF_PARALLEL", "2")
+    failure = tmp_path / "failure.txt"
+    try:
+        got = sj.convert(
+            "",
+            str(tmp_path / "images"),
+            str(tmp_path / "logs"),
+            str(failure),
+            ["quay.io/tool/slow:1", "quay.io/tool/bad:1"],
+        )
+        assert got == 1
+        assert "quay.io/tool/bad:1" in failure.read_text()
+        assert taken_on_main and not any(taken_on_main)
+    finally:
+        if pidfile.exists() and _alive(int(pidfile.read_text())):
+            os.kill(int(pidfile.read_text()), signal.SIGKILL)
 
 
 def test_a_second_sigterm_returns_while_the_first_holds_the_lock(tmp_path: Path) -> None:

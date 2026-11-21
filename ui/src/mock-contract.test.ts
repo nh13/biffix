@@ -1392,6 +1392,21 @@ describe('the mock API', () => {
         instance_type,
       });
     }
+    // A Snakemake run's engine keeps more (a Snakemake for each job that may run at once): a
+    // c6id.8xlarge leaves its tasks 52240 MiB, 51 GiB (runs/single_job.rs's choose test).
+    const wgs = { workflow_version_id: '7a8b9c0d1e2f:dev1', params: { reads: 's3://b/r.fq' } };
+    for (const [memory_gib, instance_type] of [
+      [51, 'c6id.8xlarge'],
+      [52, 'm6id.8xlarge'],
+    ] as const) {
+      const run = obj(
+        await call('POST', '/runs', { ...wgs, single_job: { cpus: 32, memory_gib } }),
+      );
+      expect(
+        obj(await call('GET', `/runs/${run.run_id}`)).single_job,
+        `${memory_gib}`,
+      ).toMatchObject({ instance_type });
+    }
     // Naming the version's own queue-class keeps its default size.
     const named = obj(
       await call('POST', '/runs', { ...rnaseq, single_job: { queue_class: 'single' } }),

@@ -11,8 +11,8 @@ dependencies = []
 [dependency-groups]
 dev = [
     # Pinned exactly, to the same versions in infra/, docker/coordinator/ and
-    # plugins/snakemake-logger-plugin-biffix/, so every project lints alike locally and in CI.
-    # Dependabot bumps the three together (.github/dependabot.yml).
+    # the two Snakemake plugins (plugins/snakemake-*-plugin-biffix/), so every project lints alike
+    # locally and in CI. Dependabot bumps the four together (.github/dependabot.yml).
     "mypy==2.4.1",
     "pytest==9.2.0",
     "ruff==0.17.4",
@@ -20,15 +20,21 @@ dev = [
     # Types for the helpers' boto3 S3 calls (the image installs boto3 itself; see the Dockerfile).
     "boto3-stubs[ecr,s3]==1.43.127",
     # A real Snakemake, with the plugins a run names on its command line, for the tests that check
-    # the command line a run builds and the wrapper Snakefile of a single-job run against it. The
-    # runtime installs the version a workflow pins; this is the newest release biffix tests.
+    # the command line a run builds and run a single-job run's workflows through its wrapper
+    # Snakefile and the biffix executor. The runtime installs the version a workflow pins; this is
+    # the newest release biffix tests.
     "snakemake==9.27.1",
     "snakemake-storage-plugin-s3==0.3.6",
     "snakemake-logger-plugin-biffix",
+    "snakemake-executor-plugin-biffix",
+    # A default storage provider that needs no service, standing for S3 in the test of how a
+    # single-job run's jobs reach the run's storage.
+    "snakemake-storage-plugin-fs==1.1.3",
 ]
 
 [tool.uv.sources]
 snakemake-logger-plugin-biffix = { path = "../../plugins/snakemake-logger-plugin-biffix" }
+snakemake-executor-plugin-biffix = { path = "../../plugins/snakemake-executor-plugin-biffix" }
 
 [tool.uv]
 package = false

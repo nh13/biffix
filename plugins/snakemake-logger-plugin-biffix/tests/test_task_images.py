@@ -1,19 +1,18 @@
 """A single-job run's task images.
 
 In a single-job run every job runs on the coordinator's host, never as a Batch job, so no
-``task_submitted`` names its image, and the container Snakemake runs is a local image file the
-tenant reference cannot be recovered from. The coordinator writes ``{rule: image}`` to the file
-``BIFFIX_TASK_IMAGES_FILE`` names while the workflow is parsed; each job's ``task_created`` names
-its rule's image from it.
+``task_submitted`` names its image. The biffix executor plugin, which runs the jobs, reports each
+job's image on a log record before Snakemake announces the job, and the job's ``task_created``
+names it. A job no such record names (a local rule, which the engine runs itself) names none.
 """
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
+import logging
 
 import pytest
 from conftest import RecordingHandler, build_handler, log_record
+from snakemake_interface_logger_plugins.common import LogEvent
 
 ALIGN = "123456789012.dkr.ecr.us-east-1.amazonaws.com/biffix/wf/align@sha256:" + "a" * 64
 
@@ -28,45 +27,52 @@ def _created(h: RecordingHandler) -> list[dict[str, object]]:
     return [e for e in h._dispatched if e["kind"] == "task_created"]
 
 
-def test_a_mapped_rule_s_jobs_name_its_image_and_others_none(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    images = tmp_path / "task-images.json"
-    monkeypatch.setenv("BIFFIX_TASK_IMAGES_FILE", str(images))
-    # Built before the coordinator's wrapper Snakefile has written the file.
+OTHER = "123456789012.dkr.ecr.us-east-1.amazonaws.com/biffix/wf/other@sha256:" + "b" * 64
+
+
+def _reported(jobid: int, image: str, **extra: object) -> logging.LogRecord:
+    """The biffix executor plugin's record for a job about to run on this host in ``image``."""
+    payload = {
+        "schema_version": 1,
+        "kind": "state",
+        "jobid": jobid,
+        "executor": "biffix",
+        "phase": "queued",
+        "image": image,
+        "attempt": 1,
+        **extra,
+    }
+    return log_record(remote_job_state=payload)
+
+
+def test_each_job_names_the_image_the_executor_reported_for_it() -> None:
+    """Per job, not per rule: two jobs of one rule in two group jobs can run in two images."""
     h = _handler()
-    images.write_text(json.dumps({"align": ALIGN}))
-    h._job_info(log_record(jobid=1, rule_name="align", wildcards={"sample": "A"}), ts=1.0)
-    h._job_info(log_record(jobid=2, rule_name="align", wildcards={"sample": "B"}), ts=1.1)
-    h._job_info(log_record(jobid=3, rule_name="all"), ts=1.2)
+    h.emit(_reported(1, ALIGN))
+    h.emit(_reported(2, OTHER))
+    h.emit(log_record(event=LogEvent.JOB_INFO, jobid=1, rule_name="align", wildcards={"s": "A"}))
+    h.emit(log_record(event=LogEvent.JOB_INFO, jobid=2, rule_name="align", wildcards={"s": "B"}))
+    # A job nothing was reported for (a local rule, which the engine runs itself) names none.
+    h.emit(log_record(event=LogEvent.JOB_INFO, jobid=3, rule_name="all"))
     created = _created(h)
-    assert [e.get("image") for e in created] == [ALIGN, ALIGN, None]
+    assert [e.get("image") for e in created] == [ALIGN, OTHER, None]
     assert "image" not in created[2]
+    # Reporting an image binds no Batch job, so the engine stays the job's terminal source.
+    assert [e["kind"] for e in h._dispatched] == ["task_created"] * 3
+    h.emit(log_record(event=LogEvent.JOB_FINISHED, job_id=1))
+    assert h._dispatched[-1]["kind"] == "task_succeeded"
 
 
-def test_the_file_is_read_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    images = tmp_path / "task-images.json"
-    images.write_text(json.dumps({"align": ALIGN}))
-    monkeypatch.setenv("BIFFIX_TASK_IMAGES_FILE", str(images))
+def test_a_retried_job_names_the_image_reported_for_the_retry() -> None:
     h = _handler()
-    h._job_info(log_record(jobid=1, rule_name="align"), ts=1.0)
-    images.write_text(json.dumps({"align": "other@sha256:b"}))
-    h._job_info(log_record(jobid=2, rule_name="align", wildcards={"sample": "B"}), ts=1.1)
-    assert [e.get("image") for e in _created(h)] == [ALIGN, ALIGN]
-
-
-@pytest.mark.parametrize("content", [None, "not json", "[1, 2]", '{"align": 3}'])
-def test_a_missing_or_unreadable_file_means_no_images(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str | None
-) -> None:
-    images = tmp_path / "task-images.json"
-    if content is not None:
-        images.write_text(content)
-    monkeypatch.setenv("BIFFIX_TASK_IMAGES_FILE", str(images))
-    h = _handler()
-    h._job_info(log_record(jobid=1, rule_name="align"), ts=1.0)
-    (created,) = _created(h)
-    assert "image" not in created
+    h.emit(_reported(1, ALIGN))
+    h.emit(log_record(event=LogEvent.JOB_INFO, jobid=1, rule_name="align"))
+    h.emit(log_record(event=LogEvent.JOB_ERROR, jobid=1))
+    # An image is named once: a second announcement with no report names none.
+    h.emit(_reported(1, OTHER, attempt=2))
+    h.emit(log_record(event=LogEvent.JOB_INFO, jobid=1, rule_name="align"))
+    h.emit(log_record(event=LogEvent.JOB_INFO, jobid=1, rule_name="align"))
+    assert [e.get("image") for e in _created(h)] == [ALIGN, OTHER, None]
 
 
 @pytest.mark.parametrize(

@@ -15,8 +15,9 @@
 #          fails: run_setup_step).
 
 # A single-job run (BIFFIX_EXECUTION=single_job) is the whole run in this one Batch job, on a host of
-# its own: the engine runs every task itself (its local executor), each in the image its task on
-# AWS Batch would run (Nextflow: the process's container; Snakemake: the rule's
+# its own: the engine runs every task here (Nextflow's local executor; for Snakemake the biffix
+# executor plugin, plugins/snakemake-executor-plugin-biffix), each in the image its task on
+# AWS Batch would run (Nextflow: the process's container; Snakemake: the job's
 # aws_batch_container_image, else the version's default image), through Apptainer nested in this
 # container, with the host's instance store (/scratch) as the work root. A task with no image (a
 # Snakemake local rule, a rule with no image when the version has no default one, a Nextflow
@@ -27,7 +28,8 @@
 # mounts. What a task does NOT get, as it would on AWS Batch: a CPU or memory limit of its own (the
 # container's cgroups are read-only, so `apptainer --memory/--cpus` cannot work), a PID namespace of
 # its own (Apptainer's --pid cannot mount /proc under Docker's masked paths), or an environment of
-# its own beyond what each engine passes (Nextflow's `env -`; Snakemake's --cleanenv, below). Those
+# its own beyond what each engine passes (Nextflow's `env -`; the Snakemake executor's --cleanenv,
+# with the variables Snakemake passes jobs: lib/snakemake.sh). Those
 # keep the job's environment from being inherited, but not from being read: a task runs as the
 # engine's user in the engine's PID namespace, so it can read the engine's /proc/<pid>/environ,
 # the run's capability token with it (which authorizes only this run's event POSTs).
@@ -94,9 +96,22 @@ canonical_path() {
 # Nextflow SJ_JVM_HEAP_MIB, its capped heap. The engine's reserve: Nextflow's heap (1/16 of the
 # job, 1 to 8 GiB; the JVM would otherwise take a quarter of the job) and room for the JVM's own
 # overhead and the image mounts (1/32, at least 1 GiB); Snakemake's (its DAG, the logger, the
-# storage plugin) 1/16, 2 to 8 GiB.
+# storage plugin) 1/16, 2 to 8 GiB, plus SNAKEMAKE_JOB_RESERVE_MIB for each of the jobs that may
+# run at once (one per vCPU: --cores and --jobs are SJ_CPUS), which no job's mem_mb counts: each
+# runs its own Snakemake (the biffix executor), measured at about 95 MiB for a trivial workflow
+# and about 22 MiB more with the S3 storage plugin's client loaded (Snakemake 9.27.1). That
+# covers a job of its own, and a group job of any other jobs. A group job's Snakemake starts one
+# more Snakemake for each `run:` or `shadow:` job it runs (Snakemake 9.27.1's local executor,
+# which a group job's Snakemake runs without --force-use-threads), measured at about as much
+# again: a host of 1-thread group jobs of those can use about twice the reserve. The reserve is
+# not sized for that case; when the job runs out of memory the kernel kills a task (its
+# oom_score_adj, below), which the engine retries or reports, rather than the engine.
+# The value is the backend's SNAKEMAKE_JOB_RESERVE_MIB
+# (crates/biffix-backend/src/runs/single_job.rs) and the UI mock's (ui/mock/handlers/runs.mjs);
+# tests/test_lib.py keeps the three equal.
 single_job_memory() {
   local reserve
+  local -r SNAKEMAKE_JOB_RESERVE_MIB=160
   if [ "$ENGINE" = nextflow ]; then
     local heap=$((SJ_MEMORY_MIB / 16)) slack=$((SJ_MEMORY_MIB / 32))
     [ "$heap" -ge 1024 ] || heap=1024
@@ -109,6 +124,7 @@ single_job_memory() {
     reserve=$((SJ_MEMORY_MIB / 16))
     [ "$reserve" -ge 2048 ] || reserve=2048
     [ "$reserve" -le 8192 ] || reserve=8192
+    reserve=$((reserve + SJ_CPUS * SNAKEMAKE_JOB_RESERVE_MIB))
   fi
   SJ_TASK_MEMORY_MIB=$((SJ_MEMORY_MIB - reserve))
   [ "$SJ_TASK_MEMORY_MIB" -ge 1024 ] \
@@ -256,19 +272,20 @@ run_setup_step() {
 
 # install_apptainer_wrapper: an `apptainer` first on the engine's PATH, which each task's container
 # starts through (Nextflow's .command.run runs `apptainer exec` from PATH, under `env - PATH=…`;
-# Snakemake finds it with shutil.which and runs it by name). Before it runs the real one, it
+# the biffix Snakemake executor runs `apptainer run` by name). Before it runs the real one, it
 #   - raises its own oom_score_adj to 500 (the engine's is 0; at most 1000), which every process of
 #     the task inherits: raising one's own needs no privilege. So the kernel picks a task, not the
 #     engine, when the job is out of memory. A task that runs
-#     no container (a Snakemake `run:` block, which runs in the engine itself, or a rule with no
+#     no container (a Snakemake local rule, which runs in the engine itself, or a rule with no
 #     image when the version has no default one; a Nextflow `exec:` process) is not covered.
 #   - binds the instance store's task tmp dir at /tmp in the container, so a task's temporary
 #     files go to the instance store, not to this container's own (Docker's root) volume; and at
 #     its own path too, which is the TMPDIR the engines hand a task (prepare_scratch exports it;
-#     Nextflow passes it into the container, and Snakemake's default resources.tmpdir is it).
-#   - passes the per-job thread counts Snakemake sets for a job (OMP_NUM_THREADS and the like, its
-#     `threads`) into the container, which --cleanenv would drop: with no per-task CPU limit, a
-#     BLAS or OpenMP task would otherwise start a thread per vCPU of the host.
+#     Nextflow passes it into the container; a Snakemake job's own Snakemake, in the container,
+#     finds no TMPDIR and uses /tmp).
+# A task's thread counts (OMP_NUM_THREADS and the like) need nothing from it: a Snakemake job's own
+# Snakemake sets them inside the container, from the job's threads, and Nextflow's .command.run
+# starts the container under `env -`.
 install_apptainer_wrapper() {
   local real score="${BIFFIX_OOM_SCORE_ADJ_FILE:-/proc/self/oom_score_adj}"
   real=$(command -v apptainer)
@@ -279,12 +296,6 @@ install_apptainer_wrapper() {
     # shellcheck disable=SC2016 # expanded by the wrapper, not here
     printf 'export APPTAINER_BINDPATH="${APPTAINER_BINDPATH:+$APPTAINER_BINDPATH,}"%q\n' \
       "$SJ_TASK_TMP:/tmp,$SJ_TASK_TMP"
-    local var
-    for var in OMP_NUM_THREADS GOTO_NUM_THREADS OPENBLAS_NUM_THREADS MKL_NUM_THREADS \
-      VECLIB_MAXIMUM_THREADS NUMEXPR_NUM_THREADS; do
-      # shellcheck disable=SC2016 # expanded by the wrapper, not here
-      printf '[ -z "${%s+x}" ] || export APPTAINERENV_%s="$%s"\n' "$var" "$var" "$var"
-    done
     printf 'exec %q "$@"\n' "$real"
   } > "$SJ_BIN/apptainer"
   chmod +x "$SJ_BIN/apptainer"

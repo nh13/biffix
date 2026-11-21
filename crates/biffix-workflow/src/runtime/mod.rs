@@ -8,9 +8,10 @@
 //!
 //! The pin tables are per engine: every Snakemake 9.x release runs with the same executor, storage
 //! and logger plugins, and every pinned Nextflow release (25.10 and 26.x) with the same nf-biffix.
-//! biffix-owned code (the executor fork, the logger, nf-biffix) is not downloaded by the build: it
-//! ships as wheels in the base coordinator image (`/opt/biffix/wheels/`), and the build checks the
-//! base carries exactly the versions the recipe names.
+//! biffix-owned code (the AWS Batch executor fork, the logger, the single-job executor, nf-biffix)
+//! is not downloaded by the build: it ships as wheels in the base coordinator image
+//! (`/opt/biffix/wheels/`), and the build checks the base carries exactly the versions the recipe
+//! names.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -117,6 +118,13 @@ pub struct SnakemakePins {
     pub executor_sha: String,
     /// `snakemake-logger-plugin-biffix` version, built into a wheel in the base image.
     pub logger_version: String,
+    /// `snakemake-executor-plugin-biffix` version, built into a wheel in the base image: the
+    /// executor a single-job run's jobs run through, each on the coordinator's host in its image
+    /// (`docker/coordinator/lib/snakemake.sh`). `None` for a recipe recorded before the plugin
+    /// existed, which leaves it out of the serialization, so that recipe keys as it did; its
+    /// runtime has no such executor and cannot run a single-job run (the coordinator refuses).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_job_executor_version: Option<String>,
     /// Resolution cutoff for every PyPI package except Snakemake (which is pinned exactly and may be
     /// newer): the build resolves a hash-locked set as of this instant, so the same recipe resolves
     /// the same packages next month.
@@ -532,6 +540,9 @@ impl RuntimeRecipe {
                 if let Some(source) = &pins.storage_s3_source {
                     env.insert("BIFFIX_RT_STORAGE_S3_REPO", source.repo.clone());
                     env.insert("BIFFIX_RT_STORAGE_S3_SHA", source.sha.clone());
+                }
+                if let Some(version) = &pins.single_job_executor_version {
+                    env.insert("BIFFIX_RT_SINGLE_JOB_EXECUTOR_VERSION", version.clone());
                 }
             }
             Self::Nextflow { pins, .. } => {

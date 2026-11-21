@@ -39,23 +39,31 @@ pub(crate) fn whole_host(size: Resources) -> Resources {
     Resources { vcpus: size.vcpus, memory_mib }
 }
 
-/// The memory a single-job run's tasks get, MiB, when its job is given `job_memory_mib`: the job's
-/// memory less what `engine` keeps for itself. Nextflow keeps its JVM heap (1/16 of the job, 1 to
-/// 8 GiB) and slack for the JVM's own overhead and the image mounts (1/32, at least 1 GiB);
-/// Snakemake keeps 1/16, 2 to 8 GiB. Zero when the engine's reserve is all of it (the coordinator
-/// then refuses to start).
+/// The memory a single-job run's Snakemake keeps for each job that may run at once (one per vCPU),
+/// MiB: each job runs a Snakemake of its own (the biffix executor), which no job's `mem_mb` counts.
+pub(crate) const SNAKEMAKE_JOB_RESERVE_MIB: u64 = 160;
+
+/// The memory a single-job run's tasks get, MiB, when its job is given `job`: the job's memory
+/// less what `engine` keeps for itself. Nextflow keeps its JVM heap (1/16 of the job, 1 to 8 GiB)
+/// and slack for the JVM's own overhead and the image mounts (1/32, at least 1 GiB); Snakemake
+/// keeps 1/16, 2 to 8 GiB, and [`SNAKEMAKE_JOB_RESERVE_MIB`] a vCPU. Zero when the engine's
+/// reserve is all of it (the coordinator then refuses to start).
 ///
 /// A mirror of the coordinator's `single_job_memory` (`docker/coordinator/lib/single_job.sh`),
 /// which is what the engine is actually told: change the two together. Both are pinned to the same
 /// values by their tests.
-pub(crate) fn task_memory_mib(engine: Engine, job_memory_mib: u64) -> u64 {
+pub(crate) fn task_memory_mib(engine: Engine, job: Resources) -> u64 {
+    let job_memory_mib = job.memory_mib;
     let reserve = match engine {
         Engine::Nextflow => {
             let heap = (job_memory_mib / 16).clamp(1024, 8192);
             let slack = (job_memory_mib / 32).max(1024);
             heap + slack
         }
-        Engine::Snakemake => (job_memory_mib / 16).clamp(2048, 8192),
+        Engine::Snakemake => {
+            (job_memory_mib / 16).clamp(2048, 8192)
+                + u64::from(job.vcpus) * SNAKEMAKE_JOB_RESERVE_MIB
+        }
     };
     job_memory_mib.saturating_sub(reserve)
 }
@@ -182,8 +190,7 @@ pub(crate) fn choose(
             .map(|(t, info)| (*t, info.size))
             .find(|(_, size)| {
                 size.vcpus >= cpus
-                    && task_memory_mib(engine, whole_host(*size).memory_mib)
-                        >= u64::from(memory_gib) * 1024
+                    && task_memory_mib(engine, whole_host(*size)) >= u64::from(memory_gib) * 1024
             })
             .ok_or_else(|| {
                 format!(
@@ -334,25 +341,27 @@ mod tests {
         assert_eq!(whole_host(Resources { vcpus: 1, memory_mib: 100 }).memory_mib, 0);
     }
 
-    /// The (engine, job memory MiB) -> task memory MiB pairs the coordinator's
+    /// The (engine, job vCPUs, job memory MiB) -> task memory MiB rows the coordinator's
     /// `single_job_memory` is pinned to as well (`docker/coordinator/tests/test_lib.py`).
     #[test]
     fn the_engine_keeps_its_reserve_of_the_jobs_memory_as_the_coordinator_does() {
-        for (engine, job, tasks) in [
-            (Engine::Nextflow, 8_192, 6_144),
-            (Engine::Nextflow, 61_184, 55_448),
-            (Engine::Nextflow, 65_536, 59_392),
-            (Engine::Nextflow, 524_288, 499_712),
-            (Engine::Snakemake, 8_192, 6_144),
-            (Engine::Snakemake, 61_184, 57_360),
-            (Engine::Snakemake, 65_536, 61_440),
-            (Engine::Snakemake, 524_288, 516_096),
+        for (engine, vcpus, memory_mib, tasks) in [
+            (Engine::Nextflow, 2, 8_192, 6_144),
+            (Engine::Nextflow, 32, 61_184, 55_448),
+            (Engine::Nextflow, 8, 65_536, 59_392),
+            (Engine::Nextflow, 64, 524_288, 499_712),
+            (Engine::Snakemake, 2, 8_192, 5_824),
+            (Engine::Snakemake, 32, 61_184, 52_240),
+            (Engine::Snakemake, 8, 65_536, 60_160),
+            (Engine::Snakemake, 64, 524_288, 505_856),
         ] {
-            assert_eq!(task_memory_mib(engine, job), tasks, "{engine} {job}");
+            let job = Resources { vcpus, memory_mib };
+            assert_eq!(task_memory_mib(engine, job), tasks, "{engine} {vcpus} {memory_mib}");
         }
         // A job smaller than the engine's reserve leaves nothing, never underflows.
-        assert_eq!(task_memory_mib(Engine::Snakemake, 1_024), 0);
-        assert_eq!(task_memory_mib(Engine::Nextflow, 1_024), 0);
+        let tiny = Resources { vcpus: 1, memory_mib: 1_024 };
+        assert_eq!(task_memory_mib(Engine::Snakemake, tiny), 0);
+        assert_eq!(task_memory_mib(Engine::Nextflow, tiny), 0);
     }
 
     #[test]
@@ -370,16 +379,17 @@ mod tests {
     fn cpus_and_memory_pick_the_smallest_type_whose_tasks_get_both() {
         let q = queue_class("single", &["r6id.8xlarge", "c6id.8xlarge", "m6id.8xlarge"]);
         let pick = |cpus, gib| choose_sm(&spec(None, Some(cpus), Some(gib)), &q, &described());
-        // A c6id.8xlarge (64 GiB) leaves its Snakemake tasks 57360 MiB, 56 GiB: enough for 56,
-        // not for 57, nor for the 64 its nominal memory would suggest.
-        assert_eq!(pick(32, 56).unwrap().instance_type, "c6id.8xlarge");
-        assert_eq!(pick(32, 57).unwrap().instance_type, "m6id.8xlarge");
+        // A c6id.8xlarge (64 GiB, 32 vCPUs) leaves its Snakemake tasks 52240 MiB, 51 GiB: enough
+        // for 51, not for 52, nor for the 64 its nominal memory would suggest.
+        assert_eq!(pick(32, 51).unwrap().instance_type, "c6id.8xlarge");
+        assert_eq!(pick(32, 52).unwrap().instance_type, "m6id.8xlarge");
         assert_eq!(pick(32, 64).unwrap().instance_type, "m6id.8xlarge");
         assert_eq!(pick(16, 100).unwrap().instance_type, "m6id.8xlarge");
         assert_eq!(pick(32, 200).unwrap().instance_type, "r6id.8xlarge");
         let err = pick(64, 64).unwrap_err();
         assert!(err.contains("no instance type"), "{err}");
-        // A Nextflow run's engine keeps more: a c6id.8xlarge leaves its tasks 55448 MiB.
+        // A Nextflow run's engine keeps less (no Snakemake per job): a c6id.8xlarge leaves its
+        // tasks 55448 MiB.
         let nf = |gib| {
             choose(&spec(None, Some(32), Some(gib)), &q, &described(), Engine::Nextflow).unwrap()
         };

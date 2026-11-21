@@ -65,7 +65,7 @@ principles and the event contract.
 | Path | What it holds |
 |---|---|
 | `crates/` | Rust: the event contract and reducer (`biffix-core`), workflow authoring and registration (`biffix-workflow`), Postgres access (`biffix-db`), API types (`biffix-api`), the HTTP API (`biffix-backend`), the ingest and reconcile Lambdas (`biffix-ingest`), and the `biffix` CLI (`crates/biffix-cli`) |
-| `plugins/` | The engine plugins: a Snakemake logger plugin and a Nextflow plugin |
+| `plugins/` | The engine plugins: a Snakemake logger plugin, a Snakemake executor plugin (single-job runs) and a Nextflow plugin |
 | `docker/coordinator/` | The coordinator image and its entrypoint |
 | `codebuild/` | Scripts the deployment's CodeBuild projects run: engine runtimes, image import and build |
 | `ui/` | The SvelteKit web UI and its mock API server |
