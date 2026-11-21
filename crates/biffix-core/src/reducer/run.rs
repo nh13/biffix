@@ -98,6 +98,12 @@ pub struct RunProjection {
     pub reported_session_id: Option<String>,
     /// The run this one resumed (`--resume-from`), from the anchor.
     pub resumed_from: Option<String>,
+    /// How the run executes as one Batch job on one host: the anchor's (`run_submitted`), which is
+    /// authoritative, else the plan a parked run's `run_preparing` recorded (so a run waiting for
+    /// its images reads as single-job before it has an anchor or has executed anything). `None`
+    /// when neither says so, which alone does not prove the run executed one Batch job per task (a
+    /// run whose anchor has not folded yet has no record either).
+    pub single_job: Option<crate::event::SingleJobUse>,
     /// The run's human name: the latest `run_renamed`'s (by `(ts, seq)`; `None` when it cleared the
     /// name), else the one it was launched with (the anchor's, else the `run_preparing`'s).
     /// Derived after every fold step from the fields below, so it stays order-independent.
@@ -216,6 +222,7 @@ impl RunProjection {
             engine_session_id: None,
             reported_session_id: None,
             resumed_from: None,
+            single_job: None,
             run_name: None,
             launched_run_name: None,
             run_renamed: None,

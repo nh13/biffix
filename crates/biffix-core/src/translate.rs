@@ -225,11 +225,15 @@ pub fn from_engine(source: EventSource, ev: &EngineEvent) -> RunEvent {
             (None, None, None, EventData::RunFailed { reason: None, stage: None })
         }
         EngineBody::RunDag { dag } => (None, None, None, EventData::RunDag { dag: dag.clone() }),
-        EngineBody::TaskCreated { task_key, group, deps } => (
+        EngineBody::TaskCreated { task_key, group, deps, image } => (
             Some(task_key.clone()),
             None,
             None,
-            EventData::TaskCreated { group: group.clone(), deps: deps.clone() },
+            EventData::TaskCreated {
+                group: group.clone(),
+                deps: deps.clone(),
+                image: image.clone(),
+            },
         ),
         EngineBody::TaskSubmitted { task_key, attempt, batch_job_id, image } => (
             Some(task_key.clone()),
@@ -297,8 +301,9 @@ pub fn from_engine(source: EventSource, ev: &EngineEvent) -> RunEvent {
     // Per-fact discriminator for the *repeatable* engine kinds, so the log's uniqueness
     // constraint does not collapse distinct facts into one. `run_progress` recurs
     // per run, `task_outputs` per batch of outputs, `task_retrying` per retry, `task_submitted`
-    // per real Batch submission, `run_dag` per distinct graph — each needs a distinct key while a
-    // redelivery of the *same* fact still dedupes. Singleton kinds (`run_started`/`run_succeeded`/
+    // per real Batch submission, `task_created` per named image, `run_dag` per distinct graph —
+    // each needs a distinct key while a redelivery of the *same* fact still dedupes.
+    // Singleton kinds (`run_started`/`run_succeeded`/
     // …) keep their stable, discriminator-free key. The disc is the trailing key component, so a
     // value containing `:` (an s3 uri, or the `completed:total` pair below) is safe as long as no
     // task key ends in `:<attempt>:<kind>` (see the INVARIANT on `dedup::engine`).
@@ -316,6 +321,12 @@ pub fn from_engine(source: EventSource, ev: &EngineEvent) -> RunEvent {
         // the same graph dedupes while a re-emitted, grown graph (a checkpoint adding rules)
         // reaches the fold's set-union instead of being dropped as a redelivery.
         EngineBody::RunDag { dag } => Some(run_dag_disc(dag)),
+        // A local task can name another image on a retry/restart. Keep every distinct image so
+        // the fold's existing conflict rule sees the complete set, not just the first arrival.
+        // Image-less registrations retain their historical key (including Batch producers).
+        EngineBody::TaskCreated { image, .. } => {
+            image.as_deref().map(|image| parts_disc(std::iter::once(image)))
+        }
         EngineBody::TaskRetrying { next_attempt, .. } => Some(next_attempt.0.to_string()),
         // Two submissions of the same (run, task, attempt) that land on *different* Batch jobs are
         // distinct facts — the Batch job id disambiguates them, so a re-submit is stored and can

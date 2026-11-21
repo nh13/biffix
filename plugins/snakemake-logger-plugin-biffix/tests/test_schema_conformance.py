@@ -84,7 +84,12 @@ def _samples() -> dict[str, dict[str, Any]]:
         "run_progress": events.run_progress(1.0, "r1", 1, 3),
         "run_dag": events.run_dag(1.0, "r1", ["a", "b"], [("a", "b")]),
         "task_created": events.task_created(
-            1.0, "r1", "merge", group="merge", deps=["align:sample=A", "align:sample=B"]
+            1.0,
+            "r1",
+            "merge",
+            group="merge",
+            deps=["align:sample=A", "align:sample=B"],
+            image="r.example/wf/merge@sha256:" + "b" * 64,
         ),
         "task_submitted": events.task_submitted(
             1.0, "r1", "align:sample=A", 1, "job-1", image="r.example/wf/align@sha256:" + "a" * 64

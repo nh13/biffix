@@ -122,6 +122,7 @@ fn task_deps_union_across_events_in_any_order_and_drop_self_edges() {
             EventData::TaskCreated {
                 group: Some("merge".into()),
                 deps: deps.iter().map(std::string::ToString::to_string).collect(),
+                image: None,
             },
         )
         .with_task(task)
@@ -137,4 +138,21 @@ fn task_deps_union_across_events_in_any_order_and_drop_self_edges() {
     let p = Projection::replay(&log);
     let deps: Vec<&str> = p.runs["r1"].tasks["merge"].deps.iter().map(String::as_str).collect();
     assert_eq!(deps, vec!["align:A", "align:B", "align:C"]);
+}
+
+#[test]
+fn a_single_job_launch_latches_from_the_anchor() {
+    let single = biffix_core::event::SingleJobUse {
+        queue_class: "single".into(),
+        instance_type: "c6id.8xlarge".into(),
+        vcpus: 32,
+        memory_mib: 61_184,
+    };
+    let mut anchor = run_anchor(1.0, "r1");
+    if let EventData::RunSubmitted(a) = &mut anchor.data {
+        a.single_job = Some(single.clone());
+    }
+    let p = Projection::replay(&[anchor, run_anchor(1.0, "r2")]);
+    assert_eq!(p.runs["r1"].single_job, Some(single));
+    assert_eq!(p.runs["r2"].single_job, None);
 }

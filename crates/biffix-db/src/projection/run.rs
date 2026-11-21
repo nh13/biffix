@@ -44,6 +44,7 @@ async fn upsert_run(
     let input_tables = rp.input_tables.as_ref().map(serde_json::to_value).transpose()?;
     let reference_bundle = rp.reference_bundle.as_ref().map(serde_json::to_value).transpose()?;
     let samples = rp.samples.as_ref().map(serde_json::to_value).transpose()?;
+    let single_job = rp.single_job.as_ref().map(serde_json::to_value).transpose()?;
     // Read the stored output digest and state BEFORE the run row is overwritten with the new ones:
     // an equal digest ⇒ the output set is unchanged and its rows need no rewrite; the stored state
     // says whether the run can have a notification row to replace (see `upsert_notification`).
@@ -73,10 +74,10 @@ async fn upsert_run(
               reference_bundle, sample_count, retention, work_deleted_at, launched_at,
               samples, samples_total, samples_done, samples_failed, samples_declared, cancelled_by,
               experiment_id, coordinator_exit_code, coordinator_status_reason,
-              coordinator_termination_category, tasks_cancelled, updated_at)
+              coordinator_termination_category, tasks_cancelled, single_job, updated_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
                    $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,
-                   $42,$43,$44,$45,$46, now())
+                   $42,$43,$44,$45,$46,$47, now())
            ON CONFLICT (run_id) DO UPDATE SET
              state = EXCLUDED.state, completed = EXCLUDED.completed,
              total = EXCLUDED.total, submitted_at = EXCLUDED.submitted_at,
@@ -109,6 +110,7 @@ async fn upsert_run(
              coordinator_status_reason = EXCLUDED.coordinator_status_reason,
              coordinator_termination_category = EXCLUDED.coordinator_termination_category,
              tasks_cancelled = EXCLUDED.tasks_cancelled,
+             single_job = EXCLUDED.single_job,
              updated_at = now()",
     )
     .bind(run_id)
@@ -157,6 +159,7 @@ async fn upsert_run(
     .bind(rp.coordinator_status_reason.as_deref())
     .bind(rp.coordinator_termination_category.as_deref())
     .bind(counts.cancelled as i64)
+    .bind(single_job)
     .execute(&mut *conn)
     .await?;
     upsert_notification(conn, run_id, rp, was_terminal).await?;

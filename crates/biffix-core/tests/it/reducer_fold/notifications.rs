@@ -65,6 +65,7 @@ fn a_pre_launch_failure_notifies_from_the_run_preparing_submitter() {
         resumed_from: None,
         images: vec![],
         experiment_id: None,
+        single_job: None,
     };
     let run = RunId::new("r1");
     let log = vec![

@@ -297,9 +297,12 @@ fn a_conflicting_task_group_keeps_the_lexicographic_min_in_any_order() {
     // An attempt-less `task_created` has one translator key per task, so a real log keeps only the
     // first; the hand-set keys probe the fold's merge rule should conflicting ones reach it.
     let created = |ts: f64, group: &str| {
-        let mut e =
-            run_level(ts, "r1", EventData::TaskCreated { group: Some(group.into()), deps: vec![] })
-                .with_task("t");
+        let mut e = run_level(
+            ts,
+            "r1",
+            EventData::TaskCreated { group: Some(group.into()), deps: vec![], image: None },
+        )
+        .with_task("t");
         e.dedup_key = format!("created-{group}");
         e
     };

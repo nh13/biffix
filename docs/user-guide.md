@@ -461,6 +461,30 @@ fix the samples or options first. **Copy report for support** copies the details
 whoever runs biffix for your lab; when the pipeline's `catalog.contact` (or the site's support
 contact) is set, **Ask** writes to that person directly.
 
+Every run also keeps its logs in the project's bucket, under the run's own prefix:
+`s3://<bucket>/<run prefix>logs/`. They are uploaded while the engine runs and once more when it
+ends, and hold:
+
+- the engine's log (Nextflow's `.nextflow.log`, Snakemake's newest `.snakemake/log/` file);
+- the trace file, for a pipeline that turns on Nextflow's trace without naming a file for it;
+- the engine configuration biffix generated (Nextflow's `-c` and default configs, Snakemake's
+  command line and wrapper Snakefile);
+- for a single-job Nextflow run, the `.command.*` files of its failed tasks. Each upload sends
+  those of the 20 most recently failed tasks at the time, and nothing is removed from S3, so a run
+  that keeps failing tasks can leave more than 20 tasks' files there: those of earlier uploads stay
+  alongside the latest 20;
+- for a failed run, `failure.txt`: the end of the engine's output.
+
+This archive is best-effort. A run that fails before the uploader starts (a required setting
+missing, say) uploads nothing, and an upload that fails or runs out of time leaves files out
+without failing the run. When files are missing, read the Expert view's **Coordinator** tab.
+
+A file is uploaded up to a size limit: 8 MiB for the uploads while the engine runs, 64 MiB for the
+last one. A larger file is uploaded as its last 8 or 64 MiB, so the S3 copy of a long engine log
+may not be the whole log.
+
+A dry run writes nothing to S3, so it leaves no logs there.
+
 ### Notifications and Needs attention
 
 When a run you started ends, the bell at the top right gets a notification. Failed runs you have

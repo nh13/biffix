@@ -127,6 +127,13 @@
             "null"
           ]
         },
+        "image": {
+          "description": "The container image a task the engine runs itself (not on Batch) runs in, as the run's\nimage map names it (not the local image file the engine may run). Optional + additive.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "kind": {
           "type": "string",
           "const": "task_created"

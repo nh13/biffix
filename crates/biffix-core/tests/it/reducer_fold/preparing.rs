@@ -100,3 +100,39 @@ fn run_preparing_from_an_engine_does_not_fold() {
     assert_eq!(run.workflow_version_id.as_deref(), Some("wf1"));
     assert_eq!(run.state(), RunState::Submitted);
 }
+
+#[test]
+fn a_parked_single_job_run_is_single_job_before_and_after_its_launch() {
+    let single = biffix_core::event::SingleJobUse {
+        queue_class: "single".into(),
+        instance_type: "c6id.8xlarge".into(),
+        vcpus: 32,
+        memory_mib: 61_184,
+    };
+    let mut preparing = run_preparing(1.0, "r1");
+    if let EventData::RunPreparing(p) = &mut preparing.data {
+        p.single_job = Some(single.clone());
+    }
+    let mut anchor = run_anchor(5.0, "r1");
+    if let EventData::RunSubmitted(a) = &mut anchor.data {
+        a.single_job = Some(single.clone());
+    }
+
+    // While it waits for its images (and for good, if it never launches).
+    let p = Projection::replay(std::slice::from_ref(&preparing));
+    assert_eq!(run_state(&p, "r1"), RunState::PreparingImages);
+    assert_eq!(p.runs["r1"].single_job, Some(single.clone()));
+
+    // Once launched, whichever of the two folds first.
+    let log = vec![preparing.clone(), anchor];
+    assert_incremental_equals_replay(&log);
+    assert_eq!(Projection::replay(&log).runs["r1"].single_job, Some(single.clone()));
+    let mut reversed = log.clone();
+    reversed.reverse();
+    assert_eq!(fold_in_order(&reversed).runs["r1"].single_job, Some(single));
+
+    // The anchor's word wins over the provisional one, in either order.
+    let log = vec![preparing, run_anchor(5.0, "r1")];
+    assert_incremental_equals_replay(&log);
+    assert_eq!(Projection::replay(&log).runs["r1"].single_job, None);
+}

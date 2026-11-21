@@ -222,6 +222,24 @@ pub struct RunSubmitted {
     /// anchors from before experiments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub experiment_id: Option<String>,
+    /// The run executed as one Batch job on one host (see [`SingleJobUse`]). Optional + additive:
+    /// `None` for a run that executed one Batch job per task, and on anchors from before
+    /// single-job runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_job: Option<SingleJobUse>,
+}
+
+/// How a single-job run was launched (see `RunSubmitted::single_job`): the queue-class it ran on,
+/// the instance type it was sized for, and the vCPUs and memory its job was given (the whole host's
+/// allocatable share, so no other job shares it).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SingleJobUse {
+    pub queue_class: String,
+    /// The instance type the job's size was taken from. Batch may place the job on another type
+    /// of the queue-class, of the same size; the host it ran on is in the run's AWS events.
+    pub instance_type: String,
+    pub vcpus: u32,
+    pub memory_mib: u64,
 }
 
 /// An image given at submit, pinned: the reference as the submitter wrote it, the digest-pinned
@@ -257,6 +275,11 @@ pub struct RunPreparing {
     /// additive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub experiment_id: Option<String>,
+    /// The run will execute as one Batch job on one host, as the anchor will record it (see
+    /// [`SingleJobUse`]). Optional + additive: `None` for a run of one Batch job per task, and on
+    /// events from before single-job runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_job: Option<SingleJobUse>,
 }
 
 impl RunSubmitted {
@@ -293,6 +316,7 @@ impl RunSubmitted {
             image_map: None,
             submit_images: None,
             experiment_id: None,
+            single_job: None,
         }
     }
 }

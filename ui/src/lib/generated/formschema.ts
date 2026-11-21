@@ -54,6 +54,11 @@ export interface FormSchema {
    * Sections in display order. Empty for a form frozen before sections existed.
    */
   sections?: FormSection[];
+  /**
+   * Runs may execute as one Batch job on one host, by default on this queue-class and at this
+   * size (`single_job:` in `biffix.yaml`; see [`crate::single_job`]). Absent ⇒ they may not.
+   */
+  single_job?: SingleJobSpec | null;
   title?: string | null;
   /**
    * Non-fatal issues encountered while adapting (lenient skip-and-warn).
@@ -390,4 +395,27 @@ export interface FormSection {
   description?: string | null;
   id: string;
   title: string;
+}
+/**
+ * How a run executes as one job: which single-job queue-class and what size. Every field is
+ * optional; a size is either `instance` or both `cpus` and `memory_gib`.
+ */
+export interface SingleJobSpec {
+  /**
+   * The vCPUs the run needs (with `memory_gib`).
+   */
+  cpus?: number | null;
+  /**
+   * An exact instance type of that queue-class (`c6id.8xlarge`).
+   */
+  instance?: string | null;
+  /**
+   * The memory the run needs, in GiB (with `cpus`).
+   */
+  memory_gib?: number | null;
+  /**
+   * The single-job queue-class (a deploy's `single_job: true` queue-class) to run on; absent ⇒
+   * the deploy's first.
+   */
+  queue_class?: string | null;
 }

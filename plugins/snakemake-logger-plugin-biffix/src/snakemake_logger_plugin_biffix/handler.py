@@ -21,6 +21,7 @@ snakesee learned from real records.
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import os
 import re
@@ -128,6 +129,38 @@ def _output_uris(files: object) -> list[str]:
     return uris
 
 
+# Names the JSON file ({rule name: tenant image reference}) the coordinator writes in a single-job
+# run, where each rule's container is a local image file the reference cannot be recovered from.
+# Set only in single-job runs; the file is written while the workflow is parsed, before any job
+# runs, so it may not exist yet when the handler is built.
+TASK_IMAGES_ENV = "BIFFIX_TASK_IMAGES_FILE"
+
+
+def _read_task_images(path: str) -> dict[str, str]:
+    """The rule → image map in the JSON file at ``path``; empty (with a warning) when the file is
+    missing, unreadable or not a JSON object. Entries that are not a non-empty string are
+    dropped."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        logger.warning(
+            "biffix logger plugin: %s=%s is unreadable; tasks report no image",
+            TASK_IMAGES_ENV,
+            path,
+            exc_info=True,
+        )
+        return {}
+    if not isinstance(data, dict):
+        logger.warning(
+            "biffix logger plugin: %s=%s is not a JSON object; tasks report no image",
+            TASK_IMAGES_ENV,
+            path,
+        )
+        return {}
+    return {str(rule): image for rule, image in data.items() if isinstance(image, str) and image}
+
+
 # A Snakemake job id: a single job's int, or a group job's UUID string.
 JobId = int | str
 
@@ -157,6 +190,10 @@ class LogHandler(LogHandlerBase):
         self._run_id = settings.run_id or os.environ.get("BIFFIX_RUN_ID", "")
         url = settings.ingest_url or os.environ.get("BIFFIX_INGEST_URL")
         token = settings.ingest_token or os.environ.get("BIFFIX_INGEST_TOKEN")
+        # Keep authentication in the poster, not in the environment inherited by local shell
+        # rules (including ones outside Apptainer). This is not isolation from workflow Python
+        # or /proc: the workflow and logger still share a process and user.
+        os.environ.pop("BIFFIX_INGEST_TOKEN", None)
         self._poster = IngestPoster(url, token)
         # Scrubbed from any Snakemake text an event carries (a verdict's reason).
         self._token = token
@@ -200,6 +237,10 @@ class LogHandler(LogHandlerBase):
             )
         else:
             logger.info("biffix logger plugin: tracking run=%s -> %s", self._run_id, url)
+
+        # The rule → image file of a single-job run (see TASK_IMAGES_ENV), read on first need.
+        self._task_images_file = os.environ.get(TASK_IMAGES_ENV) or None
+        self._task_images: dict[str, str] | None = None
 
         self._init_state()
         atexit.register(self._cleanup)
@@ -329,6 +370,16 @@ class LogHandler(LogHandlerBase):
             return self._job_rules.get(jobid)
         return None if rn is None else str(rn)
 
+    def _task_image(self, rule: str) -> str | None:
+        """The image a single-job run's ``rule`` runs in, from the coordinator's rule → image file
+        (read once, at the first job: it is written before any job runs). None outside a
+        single-job run, and for a rule that runs without a container."""
+        if self._task_images_file is None:
+            return None
+        if self._task_images is None:
+            self._task_images = _read_task_images(self._task_images_file)
+        return self._task_images.get(rule)
+
     def _workflow_started(self, ts: float) -> None:
         # A truncate failure (e.g. an unwritable cwd) must not also cost the live run_started,
         # matching _dispatch's tolerance of a failed write.
@@ -365,8 +416,13 @@ class LogHandler(LogHandlerBase):
                 for role in _OUTPUT_ROLES
                 if (uris := _output_uris(getattr(record, role, None)))
             }
-        # `group` = the rule name — the DAG node this task rolls up onto.
-        self._dispatch(events.task_created(ts, self._run_id, task_key, group=rule, deps=deps))
+        # `group` = the rule name — the DAG node this task rolls up onto. In a single-job run the
+        # job runs on the coordinator's host, never as a Batch job, so this names its image.
+        self._dispatch(
+            events.task_created(
+                ts, self._run_id, task_key, group=rule, deps=deps, image=self._task_image(rule)
+            )
+        )
 
     def _rulegraph(self, record: LogRecord, ts: float) -> None:
         """Emit the run's group-level rule graph from the RULEGRAPH log record. Snakemake's record

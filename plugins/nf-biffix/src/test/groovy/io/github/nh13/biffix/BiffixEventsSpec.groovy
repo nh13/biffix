@@ -66,7 +66,7 @@ class BiffixEventsSpec extends Specification {
             run_succeeded : env(BiffixEvents.runSucceeded()),
             run_failed    : env(BiffixEvents.runFailed()),
             run_dag       : env(BiffixEvents.runDag(['align', 'collect'], [['align', 'collect']])),
-            task_created  : env(BiffixEvents.taskCreated('merge', 'merge', ['align (s2)', 'align (s1)'])),
+            task_created  : env(BiffixEvents.taskCreated('merge', 'merge', ['align (s2)', 'align (s1)'], '123456789012.dkr.ecr.us-east-1.amazonaws.com/wf/merge@sha256:' + 'b' * 64)),
             task_submitted: env(BiffixEvents.taskSubmitted('align (s1)', 1, 'batch-job-abc', '123456789012.dkr.ecr.us-east-1.amazonaws.com/wf/align@sha256:' + 'a' * 64)),
             task_succeeded: env(BiffixEvents.taskSucceeded('collect', 2, '12')),
             task_failed   : env(BiffixEvents.taskFailed('collect', 1, '11')),
@@ -195,6 +195,9 @@ class BiffixEventsSpec extends Specification {
         !BiffixEvents.taskCreated('align (s1)', 'align', []).containsKey('deps')
         BiffixEvents.taskCreated('m', 'm', ['b', 'a', 'b']).deps == ['a', 'b']
         validate(env(BiffixEvents.taskCreated('align (s1)', null, null))).isEmpty()
+        !BiffixEvents.taskCreated('align (s1)', 'align', []).containsKey('image')
+        BiffixEvents.taskCreated('align (s1)', 'align', [], 'r@sha256:a').image == 'r@sha256:a'
+        validate(env(BiffixEvents.taskCreated('align (s1)', 'align', [], 'r@sha256:a'))).isEmpty()
         !BiffixEvents.runStarted(null).containsKey('session_id')
         validate(env(BiffixEvents.runStarted(null))).isEmpty()
 

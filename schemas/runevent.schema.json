@@ -455,6 +455,13 @@
             "null"
           ]
         },
+        "image": {
+          "description": "The container image a task the engine runs itself (no Batch job: a single-job run's\ntask) runs in, as the run's image map names it (the tenant's copy, as on\n[`EventData::TaskSubmitted`]), never the local image file an engine may run it from.\nThe task's image when no `task_submitted` names one. Optional + additive: `None` for a\ntask with no container, from a plugin that predates it, and on events from before this\nfield existed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "kind": {
           "type": "string",
           "const": "task_created"
@@ -1102,6 +1109,17 @@
             "null"
           ]
         },
+        "single_job": {
+          "description": "The run will execute as one Batch job on one host, as the anchor will record it (see\n[`SingleJobUse`]). Optional + additive: `None` for a run of one Batch job per task, and on\nevents from before single-job runs.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SingleJobUse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "submitter": {
           "type": [
             "string",
@@ -1278,6 +1296,17 @@
             }
           ]
         },
+        "single_job": {
+          "description": "The run executed as one Batch job on one host (see [`SingleJobUse`]). Optional + additive:\n`None` for a run that executed one Batch job per task, and on anchors from before\nsingle-job runs.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SingleJobUse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "submit_images": {
           "description": "The images given at submit (`--image`), as pinned; their keys are in `image_map`, where\nthey win over a version image spelled the same. Optional + additive: `None` when the\nsubmit named none, and on anchors from before submit-time images.",
           "type": [
@@ -1403,6 +1432,35 @@
           }
         }
       }
+    },
+    "SingleJobUse": {
+      "description": "How a single-job run was launched (see `RunSubmitted::single_job`): the queue-class it ran on,\nthe instance type it was sized for, and the vCPUs and memory its job was given (the whole host's\nallocatable share, so no other job shares it).",
+      "type": "object",
+      "properties": {
+        "instance_type": {
+          "description": "The instance type the job's size was taken from. Batch may place the job on another type\nof the queue-class, of the same size; the host it ran on is in the run's AWS events.",
+          "type": "string"
+        },
+        "memory_mib": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "queue_class": {
+          "type": "string"
+        },
+        "vcpus": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "queue_class",
+        "instance_type",
+        "vcpus",
+        "memory_mib"
+      ]
     },
     "SubmitImage": {
       "description": "An image given at submit, pinned: the reference as the submitter wrote it, the digest-pinned\nsource it was resolved to, and the content key its import is built under.",

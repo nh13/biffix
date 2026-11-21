@@ -32,7 +32,11 @@ async fn a_folded_run_reads_back_as_the_fold_says() {
     let batch = |secs: f64, dedup: &str, job: &str, data: EventData| {
         testing::event(secs, EventSource::AwsBatch, dedup, data).with_job(job)
     };
-    let created = |group: &str| EventData::TaskCreated { group: Some(group.into()), deps: vec![] };
+    let created = |group: &str| EventData::TaskCreated {
+        group: Some(group.into()),
+        deps: vec![],
+        image: None,
+    };
     let started = || EventData::TaskStarted { started_at: None, log_stream: None };
     let events = vec![
         biffix_core::event::run_submitted(
