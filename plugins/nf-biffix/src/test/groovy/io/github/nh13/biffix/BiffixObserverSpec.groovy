@@ -845,6 +845,25 @@ class BiffixObserverSpec extends Specification {
         2                  || ['2/5', '2/6', '2/7']
     }
 
+    def "every engine fact including the generation boundary names its coordinator attempt"() {
+        given:
+        observer.coordinatorAttempt = generation
+
+        when:
+        observer.onFlowCreate(session(true))
+        observer.onTaskComplete(event(trace([name: 'OK (1)', process: 'OK', attempt: 1, task_id: 5, status: 'COMPLETED', exit: 0]), localHandler()))
+        observer.onFlowComplete()
+
+        then:
+        posted.find { it.kind == 'run_started' }
+        posted.find { it.kind == 'task_succeeded' }
+        posted.find { it.kind == 'run_succeeded' }
+        posted.every { it.coordinator_attempt == generation }
+
+        where:
+        generation << [null, 1, 2]
+    }
+
     def "the coordinator's Batch attempt is read only from a number"() {
         expect:
         BiffixObserver.batchAttempt(value) == attempt
@@ -854,6 +873,9 @@ class BiffixObserverSpec extends Specification {
         null   || null
         ''     || null
         'x'    || null
+        '0'    || null
+        '-1'   || null
+        '2147483648' || null
         '1'    || 1
         ' 2 '  || 2
     }

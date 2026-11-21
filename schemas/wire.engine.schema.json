@@ -4,6 +4,15 @@
   "description": "The engine-native event vocabulary (shared across engines). `kind` is the tag.",
   "type": "object",
   "properties": {
+    "coordinator_attempt": {
+      "description": "The coordinator's positive AWS_BATCH_JOB_ATTEMPT. Missing means legacy generation 1.\nA single-job retry loses all local work; its engine facts belong to a new generation.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 1
+    },
     "run_id": {
       "$ref": "#/$defs/RunId"
     },

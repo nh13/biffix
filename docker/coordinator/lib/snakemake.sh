@@ -3,7 +3,7 @@
 #   Reads: WORK, SRC, CONFIG, STORE, LIB_DIR, SM_META_URI, SM_META_FINGERPRINT, the run's BIFFIX_*
 #          env, the resolved SNAKEMAKE_AWS_BATCH_JOB_QUEUE / _ROLE, BIFFIX_JOB_DEFINITION_MAP_FILE
 #          and QUEUE_SELECTORS_FILE; for a single-job run (lib/single_job.sh) SCRATCH, SJ_CPUS,
-#          SJ_TASK_MEMORY_MIB, SJ_IMAGES, SJ_BIN, BIFFIX_ENGINE_VERSION and BIFFIX_DRY_RUN.
+#          SJ_TASK_MEMORY_MIB, SJ_IMAGES, SJ_BIN and BIFFIX_DRY_RUN.
 #   Sets:  rc (Snakemake's exit status), SNAKEMAKE_AWS_BATCH_JOB_TAGS, SNAKEMAKE_OUTPUT_CACHE,
 #          SM_META_RESTORE_FAILED; for a single-job run PATH and BIFFIX_TASK_IMAGES_FILE.
 
@@ -186,21 +186,15 @@ snakemake_single_job_args() {
   run_setup_step "Writing the Snakefile that sets each rule's image failed" \
     python3 "$LIB_DIR/single_job.py" snakefile-wrapper "$SNAKEFILE" "" \
     "${BIFFIX_IMAGE_MAP_FILE:-}" "$SJ_IMAGES" "${BIFFIX_WORKER_IMAGE:-}" \
-    "$BIFFIX_TASK_IMAGES_FILE" "$check" > "$WORK/snakefile-wrapper-path"
+    "$BIFFIX_TASK_IMAGES_FILE" "$check" "$SJ_TASK_MEMORY_MIB" > "$WORK/snakefile-wrapper-path"
   IFS= read -r snakefile < "$WORK/snakefile-wrapper-path"
   cp "$snakefile" "$WORK/Snakefile.biffix"
-  # Snakemake schedules its jobs within the job's size less its own reserve (single_job_memory), by
-  # their memory resource.
-  local memory_values
-  memory_values=$(snakemake_memory_resources "$BIFFIX_ENGINE_VERSION" "$SJ_TASK_MEMORY_MIB") \
-    || runtime_error "could not determine Snakemake's single-job memory resources"
-  local -a memory
-  mapfile -t memory <<< "$memory_values"
+  # The wrapper merges the host memory cap with profile limits and clears remote jobs/nodes
+  # before parsing rules, preserving the profile's other settings and Snakemake's CPU budget.
   ARGS+=(
     --snakefile "$snakefile"
     --executor local
     --cores "$SJ_CPUS"
-    --resources "${memory[@]}"
     # Every job in its image, through biffix's apptainer wrapper (lib/single_job.sh), from the
     # converted image files. --cleanenv covers Apptainer-wrapped jobs only. The logger also removes
     # the ingest token from the engine's environment after capturing it for authentication, so
@@ -216,21 +210,6 @@ snakemake_single_job_args() {
     --local-storage-prefix "$SCRATCH/storage"
   )
   export PATH="$SJ_BIN:$PATH"
-}
-
-# snakemake_memory_resources <snakemake version> <MiB>: the --resources values that cap the memory
-# of the jobs running at once at <MiB>, one per line. From 9.16.3, Snakemake reads mem_mb, mem_mib
-# and mem as one resource (a rule asking for any is capped by any) and refuses more than one of
-# them on the command line; before it, mem_mb and mem_mib are separate (a rule's mem_mb implies its
-# mem_mib, not the other way round), so both are given.
-snakemake_memory_resources() {
-  local mib=$2 major minor patch
-  IFS=. read -r major minor patch <<<"$1"
-  printf 'mem_mb=%s\n' "$((mib * 1048576 / 1000000))"
-  major=${major//[!0-9]/} minor=${minor//[!0-9]/} patch=${patch%%[!0-9]*}
-  if [ $((10#${major:-0} * 1000000 + 10#${minor:-0} * 1000 + 10#${patch:-0})) -lt 9016003 ]; then
-    printf 'mem_mib=%s\n' "$mib"
-  fi
 }
 
 # snakemake_batch_args: run_snakemake's ARGS for a run whose jobs are AWS Batch jobs. Reads

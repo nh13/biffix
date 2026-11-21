@@ -187,6 +187,10 @@ class BiffixObserver implements TraceObserverV2 {
      */
     private void emit(Map<String, Object> body) {
         final event = BiffixEvents.envelope(SCHEMA_VERSION, runId, now(), body)
+        // batchAttempt admits only a positive attempt.
+        if (coordinatorAttempt != null) {
+            event.coordinator_attempt = coordinatorAttempt
+        }
         // The durable copy first, so an event the live POST drops is still replayed at exit.
         eventsFile?.write(event)
         poster.post(event)
@@ -289,7 +293,8 @@ class BiffixObserver implements TraceObserverV2 {
     /** {@code AWS_BATCH_JOB_ATTEMPT} as a number, or null when unset or not one. */
     @PackageScope
     static Integer batchAttempt(String value) {
-        return value?.trim()?.isInteger() ? value.trim().toInteger() : null
+        final Integer attempt = value?.trim()?.isInteger() ? value.trim().toInteger() : null
+        return attempt != null && attempt > 0 ? attempt : null
     }
 
     /**

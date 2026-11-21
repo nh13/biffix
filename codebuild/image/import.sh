@@ -112,7 +112,30 @@ import_image() {
 derived_config_matches() {
   python3 -c '
 import json, sys
-derived, base = (json.loads(c).get("config") or {} for c in sys.argv[1:3])
+def omit_defaults(config, defaults):
+    return {key: value for key, value in config.items()
+            if not any(type(value) is type(default) and value == default
+                       for default in defaults.get(key, ()))}
+def canonical(config):
+    # Pinned crane 0.22.1 Config/HealthConfig use omitempty; normalize only typed defaults.
+    result = omit_defaults(config, {
+        "Hostname": ("",), "Domainname": ("",), "User": ("",), "WorkingDir": ("",),
+        "Image": ("",), "MacAddress": ("",), "StopSignal": ("",),
+        "AttachStdin": (False,), "AttachStdout": (False,), "AttachStderr": (False,),
+        "Tty": (False,), "OpenStdin": (False,), "StdinOnce": (False,),
+        "ArgsEscaped": (False,), "NetworkDisabled": (False,),
+        "Env": (None, []), "Labels": (None, {}), "Volumes": (None, {}),
+        "OnBuild": (None, []), "ExposedPorts": (None, {}), "Shell": (None, []),
+        "Healthcheck": (None,),
+    })
+    if type(result.get("Healthcheck")) is dict:
+        # A non-null Healthcheck pointer survives serialization even when its object is empty.
+        result["Healthcheck"] = omit_defaults(result["Healthcheck"], {
+            "Test": (None, []), "Interval": (0,), "Timeout": (0,),
+            "StartPeriod": (0,), "Retries": (0,),
+        })
+    return result
+derived, base = (canonical(json.loads(c).get("config") or {}) for c in sys.argv[1:3])
 want = dict(base, Entrypoint=(base.get("Entrypoint") or []) + [sys.argv[3]], Cmd=base.get("Cmd") or [])
 got = dict(derived, Entrypoint=derived.get("Entrypoint") or [], Cmd=derived.get("Cmd") or [])
 sys.exit(0 if got == want else 1)

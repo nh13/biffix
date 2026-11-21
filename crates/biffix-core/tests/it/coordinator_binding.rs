@@ -125,6 +125,7 @@ fn task_submitted(ts: f64, run: &str, task: &str, job: &str) -> RunEvent {
     translate::from_engine(
         EventSource::Snakemake,
         &EngineEvent {
+            coordinator_attempt: None,
             schema_version: 1,
             ts: Timestamp::from_epoch_seconds(ts),
             run_id: RunId::new(run),

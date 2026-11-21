@@ -457,7 +457,7 @@ describe('launch', () => {
     const singleJob = { queue_class: 'single', instance: 'c6id.8xlarge' };
     expect(singleJobNote(null, false)).toBeNull();
     expect(singleJobNote(singleJob, false)).toBe(
-      'It runs as one job on a whole c6id.8xlarge host again (queue-class single).',
+      'It runs as one job on a whole host again, sized using c6id.8xlarge (queue-class single). Batch may choose another permitted host type.',
     );
     expect(singleJobNote(singleJob, true)).toBe(
       'That run ran as one job on a whole host; a resume runs each step as its own job instead.',

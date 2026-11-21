@@ -1696,9 +1696,10 @@ def test_single_job_snakemake_runs_every_job_here_in_its_image(sm_single: Single
     argv = sm_single.job.argv
     scratch = sm_single.scratch
     assert _after(argv, "--cores") == "8"
-    # 64 GiB less Snakemake's 4 GiB reserve, as the one memory resource Snakemake 9.27 takes.
-    at = argv.index("--resources")
-    assert argv[at + 1 : at + 3] == ["mem_mb=64424", "--sdm"]
+    assert _after(argv, "--executor") == "local"
+    # The wrapper merges the memory budget after profile resolution, rather than overwriting
+    # the profile's other global resources on the command line.
+    assert "--resources" not in argv
     assert _after(argv, "--sdm") == "apptainer"
     assert _after(argv, "--apptainer-prefix") == str(scratch / "apptainer/snakemake")
     assert "--apptainer-args=--cleanenv" in argv
@@ -1733,6 +1734,15 @@ def test_single_job_snakemake_sets_every_rule_s_image_in_a_wrapper_snakefile(
     assert [(arg.arg, ast.literal_eval(arg.value)) for arg in include.keywords] == [
         ("overwrite_default_target", True)
     ]
+    # 64 GiB less the engine's 4 GiB reserve reaches the effective-resource merger, before the
+    # workflow's rules are parsed.
+    resources = next(
+        node
+        for node in calls
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "configure_local_resources"
+    )
+    assert [ast.literal_eval(arg) for arg in resources.args[1:]] == [61440]
+    assert text.index("configure_local_resources(") < text.index("workflow.include(")
     task_images = sm_single.scratch / "run/task-images.json"
     images = sm_single.scratch / "apptainer/images"
     map_file = sm_single.scratch / "run/images.json"
@@ -1802,7 +1812,7 @@ def test_snakemake_parses_the_command_line_of_a_single_job_run(sm_single: Single
     )  # fmt: skip
     assert parsed.returncode == 0, parsed.stderr
     assert parsed.stdout.split("\n")[0] == (
-        "['CODE', 'INPUT', 'MTIME', 'PARAMS'] ['mem_mb'] ['all'] ['APPTAINER']"
+        "['CODE', 'INPUT', 'MTIME', 'PARAMS'] [] ['all'] ['APPTAINER']"
     )
 
 

@@ -262,6 +262,20 @@ _STUB = """#!/bin/bash
 printf '%s %s\\n' "$(basename "$0")" "$*" >> "$STUB_LOG"
 """
 
+# XFS labels are at most 12 bytes, even when formatting a longer-named mapper device.
+_MKFS_XFS = """export LC_ALL=C
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -L ]; then
+    shift
+    if [ "$#" -eq 0 ] || [ "${#1}" -gt 12 ]; then
+      printf '%s\\n' 'mkfs.xfs: invalid label (maximum 12 bytes)' >&2
+      exit 1
+    fi
+  fi
+  shift
+done
+"""
+
 
 def _scratch(
     tmp_path: Path,
@@ -281,7 +295,8 @@ def _scratch(
         (sys_block / name / "size").write_text(f"{sectors}\n")
     stubs = tmp_path / "stubs"
     for cmd in ("dmsetup", "mkfs.xfs", "mount", "udevadm"):
-        executable(stubs / cmd, _STUB + ("exit 1\n" if cmd in failing else ""))
+        validation = _MKFS_XFS if cmd == "mkfs.xfs" else ""
+        executable(stubs / cmd, _STUB + validation + ("exit 1\n" if cmd in failing else ""))
     executable(stubs / "mountpoint", _STUB + ("exit 0\n" if mounted else "exit 1\n"))
     scratch = tmp_path / "scratch"
     header = "\n".join(
@@ -313,7 +328,7 @@ def test_one_instance_store_disk_is_formatted_and_mounted_directly(tmp_path: Pat
     assert "scratch mounted" in result.stdout
     scratch = tmp_path / "scratch"
     assert ran == [
-        "mkfs.xfs -f -K -L biffix-scratch /dev/nvme1n1",
+        "mkfs.xfs -f -K /dev/nvme1n1",
         f"mount -o noatime /dev/nvme1n1 {scratch}",
     ]
     assert scratch.stat().st_mode & 0o7777 == 0o1777
@@ -338,13 +353,14 @@ def test_several_disks_are_striped_with_device_mapper(tmp_path: Path) -> None:
         },
     )
     assert result.returncode == 0, result
+    assert "scratch mounted" in result.stdout
     length = 2 * (1_000_000_000 // 1024) * 1024
     table = f"0 {length} striped 2 1024 /dev/nvme1n1 0 /dev/nvme2n1 0"
     device = "/dev/mapper/biffix-scratch"
     assert ran == [
         f"dmsetup create biffix-scratch --noudevsync --table {table}",
         "dmsetup mknodes biffix-scratch",
-        f"mkfs.xfs -f -K -L biffix-scratch {device}",
+        f"mkfs.xfs -f -K {device}",
         f"mount -o noatime {device} {tmp_path / 'scratch'}",
     ]
     assert _marker(tmp_path).read_text() == f"{device}\n"

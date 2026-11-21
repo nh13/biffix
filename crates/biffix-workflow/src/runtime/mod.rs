@@ -45,12 +45,17 @@ pub const RECIPE_VERSION: u32 = 2;
 ///
 /// 1: `BIFFIX_QUEUE_ASSIGNMENT`, the tasks a version sends to other queue-classes
 /// ([`QUEUE_ASSIGNMENT_CONTRACT`]).
-pub const COORDINATOR_CONTRACT: u32 = 1;
+/// 2: single-job execution with nested Apptainer ([`SINGLE_JOB_CONTRACT`]).
+pub const COORDINATOR_CONTRACT: u32 = 2;
 
 /// The coordinator contract that applies a version's `queues:` selectors
 /// (`BIFFIX_QUEUE_ASSIGNMENT`): a coordinator from before it ignores them, and every selected task
 /// would run on the default queue.
 pub const QUEUE_ASSIGNMENT_CONTRACT: u32 = 1;
+
+/// The coordinator contract that executes `BIFFIX_EXECUTION=single_job` locally, with each task
+/// in its mapped image through Apptainer. Earlier coordinators would submit child Batch jobs.
+pub const SINGLE_JOB_CONTRACT: u32 = 2;
 
 /// Tag prefix of a stored runtime layer image in the coordinator repository: the runtime build
 /// (`codebuild/runtime/build.sh`) tags each layer `runtime-<key12>-<arch>`, and a test ties the
@@ -84,8 +89,15 @@ pub struct UvBuild {
 pub struct SnakemakePins {
     pub python: PythonBuild,
     pub uv: UvBuild,
-    /// `snakemake-storage-plugin-s3` release (task I/O goes through S3).
+    /// `snakemake-storage-plugin-s3` version (task I/O goes through S3): a PyPI release, or, with
+    /// [`Self::storage_s3_source`], the version the wheel built from that commit reports
+    /// (`<release>+g<sha12>`), so image probes tell it from the release.
     pub storage_s3: String,
+    /// The commit `storage_s3` is built from, when it is not a PyPI release (an unreleased fix;
+    /// the current one is named in `pins.rs`). `None` leaves it out of the serialization, so a
+    /// release-only recipe keys as before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_s3_source: Option<GitSource>,
     /// Commit of the AWS Batch executor fork, built into a wheel in the base image. The fork
     /// (branch `biffix-pin/2026-11-19-3`) is upstream (as of #54; a rule's own `batch_queue`
     /// resource is upstream's #40, `--aws-batch-spot-attempts` its #62) plus six open upstream
@@ -109,6 +121,15 @@ pub struct SnakemakePins {
     /// newer): the build resolves a hash-locked set as of this instant, so the same recipe resolves
     /// the same packages next month.
     pub exclude_newer: String,
+}
+
+/// A package built from one exact commit of a git repository.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitSource {
+    /// Clone URL: https (the runtime build also takes `file://`, for its tests).
+    pub repo: String,
+    /// Full commit sha; the build checks out exactly this commit.
+    pub sha: String,
 }
 
 /// Everything a Nextflow runtime installs besides the framework.
@@ -476,6 +497,15 @@ impl RuntimeRecipe {
         }
     }
 
+    /// The commit a Snakemake runtime builds `snakemake-storage-plugin-s3` from, when it is not a
+    /// PyPI release ([`SnakemakePins::storage_s3_source`]).
+    pub fn storage_s3_source(&self) -> Option<&GitSource> {
+        match self {
+            Self::Snakemake { pins, .. } => pins.storage_s3_source.as_ref(),
+            Self::Nextflow { .. } => None,
+        }
+    }
+
     /// The recipe as the environment variables the runtime buildspec reads
     /// (`codebuild/runtime/build.sh`); this map is that script's whole input contract.
     pub fn build_env(&self) -> BTreeMap<&'static str, String> {
@@ -486,18 +516,24 @@ impl RuntimeRecipe {
             ("BIFFIX_RT_COORDINATOR_CONTRACT", self.coordinator_contract().to_string()),
         ]);
         match self {
-            Self::Snakemake { pins, .. } => env.extend([
-                ("BIFFIX_RT_PYTHON_RELEASE", pins.python.release.clone()),
-                ("BIFFIX_RT_PYTHON_VERSION", pins.python.version.clone()),
-                ("BIFFIX_RT_PYTHON_SHA256_X86_64", pins.python.sha256_x86_64.clone()),
-                ("BIFFIX_RT_PYTHON_SHA256_AARCH64", pins.python.sha256_aarch64.clone()),
-                ("BIFFIX_RT_UV_VERSION", pins.uv.version.clone()),
-                ("BIFFIX_RT_UV_SHA256_X86_64", pins.uv.sha256_x86_64.clone()),
-                ("BIFFIX_RT_STORAGE_S3", pins.storage_s3.clone()),
-                ("BIFFIX_RT_EXECUTOR_SHA", pins.executor_sha.clone()),
-                ("BIFFIX_RT_LOGGER_VERSION", pins.logger_version.clone()),
-                ("BIFFIX_RT_EXCLUDE_NEWER", pins.exclude_newer.clone()),
-            ]),
+            Self::Snakemake { pins, .. } => {
+                env.extend([
+                    ("BIFFIX_RT_PYTHON_RELEASE", pins.python.release.clone()),
+                    ("BIFFIX_RT_PYTHON_VERSION", pins.python.version.clone()),
+                    ("BIFFIX_RT_PYTHON_SHA256_X86_64", pins.python.sha256_x86_64.clone()),
+                    ("BIFFIX_RT_PYTHON_SHA256_AARCH64", pins.python.sha256_aarch64.clone()),
+                    ("BIFFIX_RT_UV_VERSION", pins.uv.version.clone()),
+                    ("BIFFIX_RT_UV_SHA256_X86_64", pins.uv.sha256_x86_64.clone()),
+                    ("BIFFIX_RT_STORAGE_S3", pins.storage_s3.clone()),
+                    ("BIFFIX_RT_EXECUTOR_SHA", pins.executor_sha.clone()),
+                    ("BIFFIX_RT_LOGGER_VERSION", pins.logger_version.clone()),
+                    ("BIFFIX_RT_EXCLUDE_NEWER", pins.exclude_newer.clone()),
+                ]);
+                if let Some(source) = &pins.storage_s3_source {
+                    env.insert("BIFFIX_RT_STORAGE_S3_REPO", source.repo.clone());
+                    env.insert("BIFFIX_RT_STORAGE_S3_SHA", source.sha.clone());
+                }
+            }
             Self::Nextflow { pins, .. } => {
                 env.insert("BIFFIX_RT_NF_BIFFIX_VERSION", pins.nf_biffix_version.clone());
                 let r = &pins.release;
