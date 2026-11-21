@@ -1203,6 +1203,43 @@ def test_check_elf_arch_refuses_a_shared_object_built_for_the_other_architecture
     assert mixed.returncode != 0 and "_arm.so" in mixed.stderr
 
 
+# ── runtime/build.sh verify_base_wheels ──
+
+
+@pytest.mark.parametrize(
+    ("ships", "pins", "refusal"),
+    [
+        # A recipe recorded before the single-job executor existed builds on any base.
+        ("0.1.0", "", None),
+        (None, "", None),
+        ("0.1.0", "0.1.0", None),
+        ("0.2.0", "0.1.0", "base image ships single_job_executor_version=0.2.0, but the recipe"),
+        (None, "0.1.0", "base image's manifest has no single_job_executor_version (it predates"),
+    ],
+    ids=["unpinned", "unpinned-old-base", "matching", "other-version", "old-base"],
+)
+def test_the_base_must_ship_the_single_job_executor_a_recipe_pins(
+    tmp_path: Path, ships: str | None, pins: str, refusal: str | None
+) -> None:
+    fn = _function(RUNTIME_BUILD, "verify_base_wheels")
+    manifest: dict[str, object] = {"files": {}, "executor_sha": "e", "logger_version": "0.2.4"}
+    if ships is not None:
+        manifest["single_job_executor_version"] = ships
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    env = {
+        "BIFFIX_RT_ENGINE": "snakemake",
+        "BIFFIX_RT_EXECUTOR_SHA": "e",
+        "BIFFIX_RT_LOGGER_VERSION": "0.2.4",
+        "BIFFIX_RT_SINGLE_JOB_EXECUTOR_VERSION": pins,
+    }
+    got = _common(f'WHEELS="{tmp_path}"\n{fn}\nverify_base_wheels', env)
+    if refusal is None:
+        assert got.returncode == 0, got.stderr
+    else:
+        assert got.returncode != 0
+        assert refusal in got.stderr
+
+
 # ── runtime/build.sh variant reuse ──
 
 
