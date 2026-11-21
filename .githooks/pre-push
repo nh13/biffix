@@ -8,6 +8,7 @@
 #   infra  uv run ruff check .  /  uv run ruff format --check .
 #   coordinator (docker/coordinator)  the same ruff checks
 #   Snakemake logger (plugins/snakemake-logger-plugin-biffix)  the same ruff checks
+#   Snakemake executor (plugins/snakemake-executor-plugin-biffix)  the same ruff checks
 #   ui     prettier --check .  /  svelte-kit sync + svelte-check  (only when ui/node_modules exists)
 #   lint   actionlint  /  shellcheck -x over every tracked *.sh and this hook
 #
@@ -60,7 +61,7 @@ fi
 
 # The Python projects: ruff lint + format over each whole project, through uv, exactly as CI runs
 # them. Each entry is `<label>:<dir>`.
-PY_PROJECTS="infra:infra coordinator:docker/coordinator snakemake-logger:plugins/snakemake-logger-plugin-biffix"
+PY_PROJECTS="infra:infra coordinator:docker/coordinator snakemake-logger:plugins/snakemake-logger-plugin-biffix snakemake-executor:plugins/snakemake-executor-plugin-biffix"
 for entry in $PY_PROJECTS; do
   label=${entry%%:*} dir=${entry#*:}
   if [ -d "$dir" ] && command -v uv >/dev/null 2>&1; then
