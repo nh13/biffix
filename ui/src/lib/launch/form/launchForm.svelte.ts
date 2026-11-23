@@ -368,7 +368,13 @@ export class LaunchForm {
               this.runName = p.runName;
               // Trying a run again lands in its experiment, unless the link names another.
               this.experiment = this.experimentParam ?? p.experiment;
-              this.from = { runId: run.run_id, resume, secrets: p.secrets, images: p.images };
+              this.from = {
+                runId: run.run_id,
+                resume,
+                secrets: p.secrets,
+                images: p.images,
+                singleJob: p.singleJob,
+              };
               // Choosing an example now asks before replacing the pre-filled form.
               this.dirty = true;
             })
@@ -760,7 +766,12 @@ export class LaunchForm {
       runName: this.runName,
       tables: this.tables,
       reference: this.refChoice,
-      from: from && { runId: from.runId, resume: from.resume, images: from.images },
+      from: from && {
+        runId: from.runId,
+        resume: from.resume,
+        images: from.images,
+        singleJob: from.singleJob,
+      },
       retention: this.retention,
       experiment: this.experiment,
     });

@@ -280,6 +280,63 @@ test.describe('Lab analysis page', () => {
     await expect(page.getByRole('dialog', { name: 'Run this analysis again?' })).toBeVisible();
   });
 
+  for (const resume of [false, true])
+    test(`Try again on a single-job analysis ${resume ? 'resumes it one job per task' : 're-runs it as one job'}`, async ({
+      page,
+    }) => {
+      await onApi(page, 'GET', OOM, async (route) => {
+        const response = await route.fetch();
+        const run = await response.json();
+        run.single_job = {
+          queue_class: 'single',
+          instance_type: 'c6id.8xlarge',
+          vcpus: 32,
+          memory_mib: 61184,
+        };
+        // As the server answers: a Nextflow single-job run cannot be resumed (its work directory
+        // died with its host), a Snakemake one can (its finished outputs are in S3).
+        if (resume) run.engine = 'snakemake';
+        else run.resumable = false;
+        await route.fulfill({ response, json: run });
+      });
+      if (!resume)
+        await withFailures(page, OOM, (summary) => {
+          summary.items[0].try_again = 'rerun';
+        });
+      let body: Record<string, unknown> | null = null;
+      await onApi(page, 'POST', '/runs', async (route) => {
+        body = route.request().postDataJSON();
+        await route.fulfill({
+          status: 202,
+          headers: CORS,
+          json: { run_id: 'run_01HGW2wgs30x', state: 'submitted' },
+        });
+      });
+      await page.goto(OOM);
+      const wrong = page.getByRole('region', { name: 'What went wrong' });
+      await wrong.getByRole('button', { name: 'Try again' }).click();
+      const dialog = page.getByRole('dialog', {
+        name: resume ? 'Resume this analysis?' : 'Run this analysis again?',
+      });
+      // Said where the user chooses: a resume cannot run as one job (the server refuses it).
+      await expect(dialog).toContainText(
+        resume
+          ? 'That run ran as one job on a whole host; a resume runs each step as its own job instead.'
+          : 'It runs as one job on a whole c6id.8xlarge host again (queue-class single).',
+      );
+      await dialog.getByRole('button', { name: resume ? 'Resume' : 'Run again' }).click();
+      await expect(page).toHaveURL(/\/runs\/run_01HGW2wgs30x$/);
+      if (resume) {
+        expect(body).toMatchObject({ resume_from: 'run_01HGWEoom' });
+        expect(body).not.toHaveProperty('single_job');
+      } else {
+        expect(body).toMatchObject({
+          retry_of: 'run_01HGWEoom',
+          single_job: { queue_class: 'single', instance: 'c6id.8xlarge' },
+        });
+      }
+    });
+
   test('the report for support copies what went wrong, never a secret', async ({
     page,
     context,

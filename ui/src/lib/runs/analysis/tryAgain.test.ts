@@ -186,6 +186,23 @@ describe('tryAgainRequest', () => {
     expect(request.params).toMatchObject({ outdir: 's3://b/biffix/runs/run_1/results' });
   });
 
+  it('re-runs a single-job run as one job again, on its queue-class and instance type', () => {
+    const single = {
+      ...run,
+      single_job: { queue_class: 'single', instance_type: 'c6id.8xlarge' },
+    };
+    expect(tryAgainRequest(single, version, false)!.single_job).toEqual({
+      queue_class: 'single',
+      instance: 'c6id.8xlarge',
+    });
+    // A resume cannot be one (the server refuses `single_job` with `resume_from`).
+    const resumed = tryAgainRequest(single, version, true)!;
+    expect(resumed.resume_from).toBe('run_1');
+    expect(resumed).not.toHaveProperty('single_job');
+    // A run that ran one job per task re-runs that way.
+    expect(tryAgainRequest(run, version, false)).not.toHaveProperty('single_job');
+  });
+
   it('keeps a samplesheet given as a path', () => {
     const request = tryAgainRequest({ ...run, input_tables: null }, version, false)!;
     expect(request.tables).toBeUndefined();
@@ -274,7 +291,7 @@ function formRequest(
     runName: p.runName,
     tables: p.tables,
     reference: p.reference,
-    from: { runId: run.run_id, resume, images: p.images },
+    from: { runId: run.run_id, resume, images: p.images, singleJob: p.singleJob },
     retention: p.retention,
     // As the form: a pre-filled experiment its project does not offer open is dropped.
     experiment: p.experiment && openExperiments.includes(p.experiment) ? p.experiment : null,
@@ -324,6 +341,14 @@ describe('tryAgainRequest matches the launch form', () => {
       },
     } as unknown as ReferenceBundle,
   ];
+
+  it('launches what the form launches for a single-job run, resumed or not', () => {
+    const single = { ...gatedRun, single_job: { queue_class: 'single', instance_type: 'x.8xl' } };
+    for (const resume of [false, true])
+      expect(tryAgainRequest(single, gatedVersion, resume, bundles)).toEqual(
+        formRequest(single, gatedVersion, resume, bundles),
+      );
+  });
 
   for (const resume of [false, true])
     for (const offered of [null, bundles])

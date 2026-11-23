@@ -55,7 +55,9 @@
     {#if resumable}<a
         class="action primary"
         href={formHref(run.workflow, true)}
-        title="Start a new run from this run's cache: finished tasks are not run again">Resume</a
+        title={run.single_job
+          ? "Start a new run from this run's cache: finished tasks are not run again. This run ran as one job on a whole host; a resume runs each task as its own job"
+          : "Start a new run from this run's cache: finished tasks are not run again"}>Resume</a
       >{/if}
     <a
       class="action"
