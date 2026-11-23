@@ -15,7 +15,7 @@ import { SETTINGS } from '../fixtures/settings.mjs';
 import { outputPrefixOf, perRunKey, projectBucket } from '../lib/buckets.mjs';
 import { now, wallClock } from '../lib/clock.mjs';
 import { globMatches } from '../lib/glob.mjs';
-import { jsonToParams, missingField, readJson, readJsonOrNull } from '../lib/http.mjs';
+import { DESERIALIZE, jsonToParams, missingField, readJson, readJsonOrNull } from '../lib/http.mjs';
 import { shallowestMultiqc } from '../lib/multiqc.mjs';
 import { badLimit, bytewise, clampInt } from '../lib/paging.mjs';
 import { boolParam, intParam } from '../lib/query.mjs';
@@ -94,7 +94,7 @@ const isResumable = (r) =>
   TERMINAL.has(r.state) &&
   (r.engine === 'snakemake' || r.engine === 'nextflow') &&
   !r.work_deleted_at_micros &&
-  (r.engine !== 'nextflow' || !!r.engine_session_id);
+  (r.engine !== 'nextflow' || (!!r.engine_session_id && !r.single_job));
 
 function runDetail(r) {
   const { dag_nodes, dag_edges, liveClock: _clock, launched_at: _launched, ...rest } = r;
@@ -124,7 +124,8 @@ function runDetail(r) {
         : r.resumed_from && key === perRunKey(r.resumed_from)
           ? 'resumed'
           : 'custom',
-    ...(nextflow && r.engine_session_id
+    // As detail.rs: a single-job Nextflow run keeps no resume cache (its work dir was on its host).
+    ...(nextflow && !r.single_job && r.engine_session_id
       ? {
           resume_cache_uri: `${prefix.replace(/\/?$/, '/')}.nextflow/cache/${r.engine_session_id}/`,
         }
@@ -404,12 +405,176 @@ function resumeProblem(prior, version, requestedPrefix) {
     return `run ${id} is still ${prior.state}; only a finished run can be resumed`;
   if (prior.work_deleted_at_micros)
     return `run ${id}'s intermediate files were deleted, so it can no longer be resumed; launch it again instead`;
+  if (prior.engine === 'nextflow' && prior.single_job)
+    return `run ${id} ran as a single job: its work directory was on its host's local disk and did not outlive the run, so it cannot be resumed; launch it again instead`;
   if (prior.engine === 'nextflow' && !prior.engine_session_id)
     return `run ${id} has no recorded Nextflow session (it predates resume support)`;
   const prefix = outputPrefixOf(prior);
   const asked = requestedPrefix?.trim();
   if (asked && asked.replace(/\/+$/, '') !== prefix.replace(/\/+$/, ''))
     return `output_prefix must equal the resumed run's (${prefix})`;
+  return null;
+}
+
+const SINGLE_JOB_RESUME =
+  "a single-job run cannot be a resume: its work directory lives on one host's local disk, so there is no cache to resume from; drop resume_from to run it again from the start, or drop single_job to resume one Batch job per task";
+
+// The mock deploy's single-job queue-classes (`BIFFIX_SINGLE_JOB_QUEUES`, deploy order) and their
+// instance types' sizes as EC2 describes them: vCPUs and MiB.
+const SINGLE_JOB_QUEUES = [{ name: 'single', instance_types: ['c6id.8xlarge', 'm6id.8xlarge'] }];
+const INSTANCE_SIZES = { 'c6id.8xlarge': [32, 65536], 'm6id.8xlarge': [32, 131072] };
+
+// What a single-job run's job is given on a host (runs/single_job.rs `whole_host`): every vCPU and
+// its memory less 6 % and 256 MiB, rounded down to 256 MiB.
+const wholeHost = ([vcpus, mib]) => ({
+  vcpus,
+  memory_mib: Math.floor((mib - Math.floor((mib * 6) / 100) - 256) / 256) * 256,
+});
+
+// The memory a single-job run's tasks get of its job's (runs/single_job.rs `task_memory_mib`, the
+// coordinator's `single_job_memory`): the job's less the engine's own reserve, never below 0.
+const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+const taskMemoryMib = (engine, jobMib) => {
+  const reserve =
+    engine === 'nextflow'
+      ? clamp(Math.floor(jobMib / 16), 1024, 8192) + Math.max(Math.floor(jobMib / 32), 1024)
+      : clamp(Math.floor(jobMib / 16), 2048, 8192);
+  return Math.max(jobMib - reserve, 0);
+};
+
+/**
+ * runs/single_job.rs `resolve`: a run's single-job request laid over its version's default
+ * (`allowed`), for a version of `engine`, as the launch records it, or why not (a string).
+ */
+function resolveSingleJob(request, allowed, engine) {
+  if (!allowed)
+    return 'this workflow version does not allow single-job runs (its biffix.yaml has no `single_job:`); run it without single_job, or register a version that allows it';
+  // A version naming no queue-class sized itself for the deploy's default (the first).
+  const versionClass = allowed.queue_class ?? SINGLE_JOB_QUEUES[0].name;
+  // SingleJobSpec::over: the run's size, else the version's unless the run names another
+  // queue-class (the version's size is for its own).
+  const sized = (s) => s.instance != null || s.cpus != null || s.memory_gib != null;
+  const sameClass = request.queue_class == null || request.queue_class === versionClass;
+  const size = sized(request) || !sameClass ? request : allowed;
+  // The queue-class first, then the size, as `resolve` checks them.
+  const queueClass = request.queue_class ?? versionClass;
+  const queue = SINGLE_JOB_QUEUES.find((q) => q.name === queueClass);
+  if (!queue)
+    return `no single-job queue-class \`${queueClass}\` on this deploy (it has: ${SINGLE_JOB_QUEUES.map((q) => `\`${q.name}\``).join(', ')})`;
+  const sizeProblem = singleJobSizeProblem(size);
+  if (sizeProblem) return sizeProblem;
+  // Smallest first: vCPUs, then memory, then name.
+  const types = [...queue.instance_types].sort(
+    (a, b) =>
+      INSTANCE_SIZES[a][0] - INSTANCE_SIZES[b][0] ||
+      INSTANCE_SIZES[a][1] - INSTANCE_SIZES[b][1] ||
+      (a < b ? -1 : a > b ? 1 : 0),
+  );
+  let type;
+  if (size.instance != null) {
+    type = types.find((t) => t === size.instance);
+    if (!type)
+      return `instance type \`${size.instance}\` is not one of single-job queue-class \`${queue.name}\`'s (${queue.instance_types.join(', ')})`;
+  } else if (size.cpus != null) {
+    type = types.find(
+      (t) =>
+        INSTANCE_SIZES[t][0] >= size.cpus &&
+        taskMemoryMib(engine, wholeHost(INSTANCE_SIZES[t]).memory_mib) >= size.memory_gib * 1024,
+    );
+    if (!type)
+      return `no instance type of single-job queue-class \`${queue.name}\` (${queue.instance_types.join(', ')}) has ${size.cpus} vCPUs and leaves ${size.memory_gib} GiB for the run's tasks (after what the host, ECS and the ${engine} engine keep)`;
+  } else {
+    type = types[0];
+  }
+  // No check that a queue-class's types differ in vCPU count (runs/single_job.rs `check_hosts`
+  // refuses that): every type of the mock deploy's has 32.
+  return { queue_class: queue.name, instance_type: type, ...wholeHost(INSTANCE_SIZES[type]) };
+}
+
+/** How serde names a JSON value that is not the type it expected (its `Unexpected`). */
+function unexpected(value) {
+  if (typeof value === 'string') return `string ${JSON.stringify(value)}`;
+  if (typeof value === 'boolean') return `boolean \`${value}\``;
+  if (typeof value === 'number')
+    return Number.isInteger(value) ? `integer \`${value}\`` : `floating point \`${value}\``;
+  return Array.isArray(value) ? 'sequence' : 'map';
+}
+
+// SingleJobRequest's fields in declaration order (serde reads a struct from an array by position)
+// and their types: two strings, then two u32 sizes.
+const SINGLE_JOB_FIELDS = [
+  ['queue_class', 'string'],
+  ['instance', 'string'],
+  ['cpus', 'u32'],
+  ['memory_gib', 'u32'],
+];
+
+/** serde's refusal of `value` for a field of type `type` (at `path`), else null. */
+function singleJobFieldUnreadable(path, type, value) {
+  if (value == null) return null;
+  if (type === 'string')
+    return typeof value === 'string'
+      ? null
+      : `${path}: invalid type: ${unexpected(value)}, expected a string`;
+  if (typeof value !== 'number' || !Number.isInteger(value))
+    return `${path}: invalid type: ${unexpected(value)}, expected u32`;
+  if (value < 0 || value > 4294967295)
+    return `${path}: invalid value: integer \`${value}\`, expected u32`;
+  return null;
+}
+
+/**
+ * `single_job` as axum reads it into a `SingleJobRequest` (biffix_api): `{ value }`, the request
+ * (null when absent), or `{ status, message }`, its refusal. serde refuses a value that is neither
+ * an object nor null (422), and a field of the wrong type: `queue_class` and `instance` are strings,
+ * `cpus` and `memory_gib` `u32`s, so a size such as `"32"`, or a negative, fractional or too large
+ * one, is refused before any check. It reads an array too, field by field in declaration order; one
+ * longer than the struct, once its fields all read, leaves JSON it cannot finish, a 400.
+ */
+function readSingleJob(singleJob) {
+  if (singleJob == null) return { value: null };
+  if (typeof singleJob !== 'object')
+    return {
+      status: 422,
+      message: `${DESERIALIZE}single_job: invalid type: ${unexpected(singleJob)}, expected struct SingleJobRequest`,
+    };
+  const positional = Array.isArray(singleJob);
+  // An object's fields in the order it gives them (as serde reads a map; others are ignored), an
+  // array's by position (only as many as the struct has: serde reads those before any extra).
+  const types = Object.fromEntries(SINGLE_JOB_FIELDS);
+  const fields = positional
+    ? singleJob
+        .slice(0, SINGLE_JOB_FIELDS.length)
+        .map((given, i) => [SINGLE_JOB_FIELDS[i][0], given, `single_job[${i}]`])
+    : Object.entries(singleJob)
+        .filter(([field]) => Object.hasOwn(types, field))
+        .map(([field, given]) => [field, given, `single_job.${field}`]);
+  const value = {};
+  for (const [field, given, path] of fields) {
+    const problem = singleJobFieldUnreadable(path, types[field], given);
+    if (problem) return { status: 422, message: `${DESERIALIZE}${problem}` };
+    if (given != null) value[field] = given;
+  }
+  if (positional && singleJob.length > SINGLE_JOB_FIELDS.length)
+    return {
+      status: 400,
+      message: 'Failed to parse the request body as JSON: single_job: trailing characters',
+    };
+  return { value };
+}
+
+/** biffix_workflow::single_job::SingleJobSpec::size's refusals, else null. */
+function singleJobSizeProblem({ instance, cpus, memory_gib }) {
+  if (instance != null) {
+    if (cpus != null || memory_gib != null)
+      return 'give either an instance type or cpus and memory_gib, not both';
+    if (!/^[a-z0-9-]+\.[a-z0-9-]+$/.test(instance))
+      return `\`${instance}\` is not an exact instance type like \`c6id.8xlarge\``;
+    return null;
+  }
+  if (cpus == null && memory_gib == null) return null;
+  if (cpus == null || memory_gib == null) return 'cpus and memory_gib must be given together';
+  if (cpus === 0 || memory_gib === 0) return 'cpus and memory_gib must each be at least 1';
   return null;
 }
 
@@ -436,10 +601,20 @@ function checkLaunch(request, version) {
     const problem = membershipProblem(experiment, version.project, false);
     if (problem) return { status: problem[0], message: `\`experiment\`: ${problem[1]}` };
   }
+  if (request.single_job != null && request.resume_from != null) return bad(SINGLE_JOB_RESUME);
   // Params are an object by field name; `null` is none given.
   const params = request.params ?? {};
   if (typeof params !== 'object' || Array.isArray(params))
     return bad('params must be a JSON object');
+  let singleJob = null;
+  if (request.single_job != null) {
+    singleJob = resolveSingleJob(
+      request.single_job,
+      version.form_schema?.single_job,
+      version.engine,
+    );
+    if (typeof singleJob === 'string') return bad(singleJob);
+  }
   if (!version.ready)
     return { status: 409, message: `this version cannot run yet: ${version.not_ready.join('; ')}` };
   let prior = null;
@@ -461,7 +636,7 @@ function checkLaunch(request, version) {
     bundle = REFERENCES.find((b) => b.id === request.reference);
     if (!bundle) return bad(`unknown reference bundle ${request.reference}`);
   }
-  return { runName, experiment, params, prior, retryOf, bundle, fill: refs?.fill ?? {} };
+  return { runName, experiment, params, prior, retryOf, bundle, fill: refs?.fill ?? {}, singleJob };
 }
 // Where a launch's input tables are written: under the run's per-run prefix in its project bucket.
 const tableUri = (project, runId, p) =>
@@ -485,9 +660,12 @@ function inputTables(project, runId, tables) {
 function launch(request, send) {
   const version = versionById(request.workflow_version_id);
   if (!version) return send(404, `unknown workflow version ${request.workflow_version_id}`);
+  const singleJobRead = readSingleJob(request.single_job);
+  if (singleJobRead.status) return send(singleJobRead.status, singleJobRead.message);
+  request = { ...request, single_job: singleJobRead.value };
   const checked = checkLaunch(request, version);
   if (checked.status) return send(checked.status, checked.message);
-  const { runName, experiment, params, prior, retryOf, bundle, fill } = checked;
+  const { runName, experiment, params, prior, retryOf, bundle, fill, singleJob } = checked;
   const run_id = `run_mock${String(RUNS.length).padStart(4, '0')}`;
   // Submit-time images wait in `preparing_images` (the mock never finishes preparing them).
   // Each spelling once, as given; one without a digest is "pinned" to a fake one.
@@ -525,6 +703,7 @@ function launch(request, send) {
         : undefined,
     engine_session_id: prior?.engine_session_id,
     resumed_from: prior?.run_id,
+    single_job: singleJob ?? undefined,
     retention: request.retention,
     experiment_id: experiment ?? undefined,
     // Provenance comes from the launch record: none until the run launches (the mock launches
