@@ -70,6 +70,9 @@ fn req(params: serde_json::Value, inputs: Vec<String>) -> SubmitRequest {
         version: version(),
         source: WorkflowSource::Git { repo: "github.com/org/repo".into(), git_ref: "main".into() },
         plan: LaunchPlan {
+            attempted_queues: Vec::new(),
+            launch_uncertain_at_micros: None,
+            launch_answer_lost_at_micros: None,
             version: 1,
             version_id: "abc:hash".into(),
             actor: "alice".into(),
@@ -92,6 +95,7 @@ fn req(params: serde_json::Value, inputs: Vec<String>) -> SubmitRequest {
             retention: None,
             images: vec![],
             experiment_id: None,
+            single_job: None,
         },
         coordinator_queue: "coordinator".into(),
         project: biffix_backend::aws::batch::LaunchProject {

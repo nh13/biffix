@@ -1000,6 +1000,28 @@ pub struct RunDetailQuery {
     pub tasks: Option<bool>,
 }
 
+/// How a single-job run executed (`RunDetail.single_job`): its queue-class, the instance type its
+/// size was taken from, and the vCPUs and memory its one job was given.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RunSingleJob {
+    pub queue_class: String,
+    pub instance_type: String,
+    pub vcpus: u32,
+    pub memory_mib: u64,
+}
+
+impl From<biffix_core::event::SingleJobUse> for RunSingleJob {
+    fn from(u: biffix_core::event::SingleJobUse) -> Self {
+        Self {
+            queue_class: u.queue_class,
+            instance_type: u.instance_type,
+            vcpus: u.vcpus,
+            memory_mib: u.memory_mib,
+        }
+    }
+}
+
 /// `GET /runs/{id}` detail: the run's summary (flattened onto the wire) plus its task table, DAG,
 /// and resolved (secret-redacted) params.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1039,6 +1061,10 @@ pub struct RunDetail {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub resumed_from: Option<RunId>,
+    /// The run executed as one AWS Batch job on one host (single-job mode), at this size. Absent for
+    /// a run that executed one Batch job per task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_job: Option<RunSingleJob>,
     /// When the run's workflow version (`workflow`) was registered, epoch microseconds: with the
     /// git sha the version id starts with, a version label a person can tell apart. Absent when the
     /// registry no longer has the version (or could not be read).

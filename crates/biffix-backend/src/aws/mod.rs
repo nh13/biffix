@@ -12,6 +12,7 @@
 //! - [`uploads::MultipartUploads`]: a user's file uploads (S3);
 //! - [`logs::LogReader`]: task and coordinator logs (CloudWatch Logs);
 //! - [`alerts::AlertTopic`]: the Settings page's alert recipients (SNS);
+//! - [`ec2::InstanceTypes`]: the instance types single-job runs are sized from (EC2);
 //!
 //! and [`CloudProvider`], all of them at once, which [`crate::AppState::cloud`] holds. The real
 //! implementation is `provider::AwsCloudProvider` (behind `feature = "aws"`, one file per service
@@ -33,6 +34,7 @@ pub(crate) mod builds;
 #[cfg(feature = "aws")]
 pub(crate) mod cognito;
 pub(crate) mod coordinator_env;
+pub mod ec2;
 pub mod ecr;
 pub mod logs;
 pub(crate) mod objects;
@@ -48,6 +50,7 @@ pub(crate) mod uploads;
 use alerts::AlertTopic;
 use batch::BatchJobs;
 use builds::BuildService;
+use ec2::InstanceTypes;
 use logs::LogReader;
 use objects::ObjectStore;
 use registry::ImageRegistry;
@@ -56,7 +59,14 @@ use uploads::MultipartUploads;
 /// Every AWS operation the backend needs: the per-concern traits at once (see the module docs).
 /// Anything that implements them all is one.
 pub trait CloudProvider:
-    BatchJobs + BuildService + ImageRegistry + ObjectStore + MultipartUploads + LogReader + AlertTopic
+    BatchJobs
+    + BuildService
+    + ImageRegistry
+    + ObjectStore
+    + MultipartUploads
+    + LogReader
+    + AlertTopic
+    + InstanceTypes
 {
 }
 
@@ -68,6 +78,7 @@ impl<T> CloudProvider for T where
         + MultipartUploads
         + LogReader
         + AlertTopic
+        + InstanceTypes
 {
 }
 
@@ -79,6 +90,8 @@ pub enum AwsError {
     Ecr(String),
     #[error("s3 error: {0}")]
     S3(String),
+    #[error("ec2 error: {0}")]
+    Ec2(String),
     #[error("cloudwatch logs error: {0}")]
     Logs(String),
     /// The requested resource does not exist (e.g. a CloudWatch log stream that expired, rotated,

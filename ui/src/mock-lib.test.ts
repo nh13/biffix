@@ -243,6 +243,37 @@ describe('the mock’s output handlers', () => {
 });
 
 describe('the mock’s run handlers', () => {
+  it('names a Nextflow run’s resume cache only when it is not a single-job run', async () => {
+    // detail.rs: a single-job Nextflow run keeps no resume cache (its work dir was on its host).
+    const { RUN_ROUTES } = await mockModule<{ RUN_ROUTES: [string, string, Handler][] }>(
+      'handlers/runs.mjs',
+    );
+    const { RUNS } = await mockModule<{ RUNS: Record<string, unknown>[] }>('fixtures/runs.mjs');
+    const getRun = RUN_ROUTES.find(([m, p]) => m === 'GET' && p === '/runs/{run_id}')![2];
+    const plain = RUNS.find((r) => r.engine === 'nextflow' && r.engine_session_id && !r.single_job);
+    expect(plain).toBeDefined();
+    const single = { ...plain, run_id: 'run_01HGWsinglejobnf', single_job: { queue_class: 'sj' } };
+    RUNS.push(single);
+    try {
+      const detail = (run_id: string) => {
+        let got: Record<string, unknown> | undefined;
+        getRun({
+          params: { run_id },
+          query: new URLSearchParams(),
+          send: ((status, body) => {
+            expect(status).toBe(200);
+            got = body as Record<string, unknown>;
+          }) as Send,
+        });
+        return got!;
+      };
+      expect(detail(plain!.run_id as string).resume_cache_uri).toMatch(/\.nextflow\/cache\//);
+      expect(detail(single.run_id)).not.toHaveProperty('resume_cache_uri');
+    } finally {
+      RUNS.splice(RUNS.indexOf(single), 1);
+    }
+  });
+
   it('measures a live run’s running tasks against the clock that moves the run', async () => {
     const { listTasks, keepLiveRunsCurrent } = await mockModule<{
       listTasks: Handler;

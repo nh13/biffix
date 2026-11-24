@@ -48,6 +48,7 @@ QUEUE_CLASS = Block(
         "capacity",
         "instances",
         "coordinator",
+        "single_job",
         "max_vcpus",
         "ebs_gb",
         "ebs_throughput",

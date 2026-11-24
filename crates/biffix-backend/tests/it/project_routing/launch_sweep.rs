@@ -18,6 +18,9 @@ fn park_plan(
     input_uris: Vec<String>,
 ) {
     let plan = LaunchPlan {
+        attempted_queues: Vec::new(),
+        launch_uncertain_at_micros: None,
+        launch_answer_lost_at_micros: None,
         version: 1,
         version_id: version.into(),
         actor: "local".into(),
@@ -43,6 +46,7 @@ fn park_plan(
         retention: None,
         images: vec![],
         experiment_id: None,
+        single_job: None,
     };
     h.store.pending.lock().unwrap().insert(
         run_id.into(),

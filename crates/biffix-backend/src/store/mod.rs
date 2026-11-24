@@ -150,6 +150,9 @@ pub struct RunDetailView {
     pub session_mismatch: bool,
     /// The run this one resumed (`--resume-from`).
     pub resumed_from: Option<RunId>,
+    /// How the run executed as one Batch job on one host (its anchor's); `None` for a run that
+    /// executed one Batch job per task.
+    pub single_job: Option<biffix_core::event::SingleJobUse>,
     /// Samplesheets biffix wrote for the run from submitted rows (param → uri, etag, rows).
     pub input_tables: Option<serde_json::Value>,
     /// The reference bundle the run was launched with (`{id, uris}`).

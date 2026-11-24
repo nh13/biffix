@@ -440,3 +440,33 @@ async fn queue_selectors_require_the_coordinator_contract_that_applies_them() {
     assert_eq!(recipes[2].1, biffix_workflow::runtime::QUEUE_ASSIGNMENT_CONTRACT);
     assert_ne!(recipes[2].0, recipes[0].0);
 }
+
+/// A version that allows single-job runs needs a coordinator that runs one ([`SINGLE_JOB_CONTRACT`]):
+/// an older one ignores `BIFFIX_EXECUTION` and runs the tasks as Batch jobs. Its runtime names that
+/// contract, so no launch, including one falling back to an older base's variant of the runtime,
+/// starts a coordinator from before it.
+///
+/// [`SINGLE_JOB_CONTRACT`]: biffix_workflow::runtime::SINGLE_JOB_CONTRACT
+#[tokio::test]
+async fn a_single_job_version_requires_the_coordinator_contract_that_runs_one() {
+    let (state, _, _) = state();
+    let registry = state.registry.clone();
+    let app = api::router(state);
+    let mut recipes = Vec::new();
+    for (sha, single_job) in [("aaa", false), ("bbb", true)] {
+        let mut body = register_body();
+        body["git_sha"] = json!(sha);
+        if single_job {
+            body["form_schema"]["single_job"] = json!({});
+        }
+        let res = app.clone().oneshot(post("/workflows", Some("developers"), &body)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED, "{}", text_body(res).await);
+        let rec = registry.get_version(&format!("{sha}:hash:0")).await.unwrap();
+        let recipe: biffix_workflow::runtime::RuntimeRecipe =
+            serde_json::from_value(rec.version.runtime_recipe.clone()).unwrap();
+        recipes.push((rec.version.runtime_key.clone(), recipe.coordinator_contract()));
+    }
+    assert_eq!(recipes[0].1, 0);
+    assert_eq!(recipes[1].1, biffix_workflow::runtime::SINGLE_JOB_CONTRACT);
+    assert_ne!(recipes[1].0, recipes[0].0);
+}

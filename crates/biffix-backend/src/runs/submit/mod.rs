@@ -82,7 +82,8 @@ pub struct SubmitRequest {
     /// Everything the run was asked for: params, inputs, target, prefix, retries, the images given
     /// at submit (their keys are in `image_map`), … (its `version_id` is `version`'s).
     pub plan: LaunchPlan,
-    /// The deploy's coordinator queue, as it is at launch.
+    /// The queue the coordinator is submitted to, as the deploy has it at launch: its coordinator
+    /// queue, or a single-job run's queue-class's ([`LaunchPlan::coordinator_queue`]).
     pub coordinator_queue: String,
     /// The project the run launches in (its version's): its bucket, from which the per-run
     /// default output prefix is derived (empty in a local composition with no bucket: then no
@@ -436,6 +437,7 @@ pub async fn submit(
         image_map: req.image_map.as_ref().map(|(_, map)| map.clone()),
         submit_images: (!req.plan.images.is_empty()).then(|| req.plan.images.clone()),
         experiment_id: req.plan.experiment_id.clone(),
+        single_job: req.plan.single_job.clone(),
         ..biffix_core::event::RunSubmitted::new(
             req.version.id.as_str(),
             req.version.git_sha.as_str(),
@@ -450,7 +452,9 @@ pub async fn submit(
         anchor,
     );
 
-    // 6. Launch the coordinator.
+    // 6. Launch the coordinator. When, so that a job found after a lost answer is taken for this
+    // launch's only if Batch created it since.
+    let launch_begun_at = biffix_core::clock::epoch_micros();
     let launched = cloud
         .launch_coordinator(&CoordinatorLaunch {
             run_id: req.run_id.clone(),
@@ -477,20 +481,23 @@ pub async fn submit(
                 .flatten(),
             variant: req.variant.clone(),
             maps: req.image_map.as_ref().map(|(uris, _)| uris.clone()),
+            single_job: req.plan.single_job.as_ref().map(crate::runs::single_job::resources),
         })
         .await;
     let job = match launched {
         Ok(job) => job,
         // SubmitJob takes no idempotency token: an answer lost to a timeout, a dropped connection
-        // or a 5xx may hide a job Batch created. The run's one live coordinator is that job (what
-        // launched it earlier was stopped before this launch: `crate::runs::launch`); otherwise
-        // whether one was created is unknown, and launching again would risk running the run
-        // twice.
+        // or a 5xx may hide a job Batch created. When the run's one live coordinator was created
+        // since this launch began, it is that job (what launched it earlier was stopped, and had
+        // ended, before this launch: `crate::runs::launch`); an older one is an earlier launch's,
+        // still ending. Otherwise whether one was created is unknown, and launching again would
+        // risk running the run twice.
         Err(AwsError::Unavailable(reason)) => {
             match cloud.live_coordinators(&req.coordinator_queue, &req.run_id).await {
-                Ok(jobs) if jobs.len() == 1 => {
-                    tracing::warn!(run_id = %req.run_id, job_id = %jobs[0], error = %reason, "submit: SubmitJob's answer was lost; the job it created is the run's coordinator");
-                    CoordinatorJobId::new(jobs[0].as_str())
+                Ok(jobs) if jobs.len() == 1 && jobs[0].may_be_from_launch_at(launch_begun_at) => {
+                    let job_id = &jobs[0].job_id;
+                    tracing::warn!(run_id = %req.run_id, job_id = %job_id, error = %reason, "submit: SubmitJob's answer was lost; the job it created is the run's coordinator");
+                    CoordinatorJobId::new(job_id.as_str())
                 }
                 _ => return Err(SubmitError::LaunchUncertain(reason)),
             }
@@ -722,6 +729,9 @@ mod tests {
             version,
             source: WorkflowSource::Git { repo: "github.com/o/r".into(), git_ref: "main".into() },
             plan: crate::runs::launch::LaunchPlan {
+                attempted_queues: Vec::new(),
+                launch_uncertain_at_micros: None,
+                launch_answer_lost_at_micros: None,
                 version: crate::runs::launch::LAUNCH_PLAN_VERSION,
                 version_id: "abc:hash".into(),
                 actor: "alice".into(),
@@ -744,6 +754,7 @@ mod tests {
                 retention: None,
                 images: vec![],
                 experiment_id: None,
+                single_job: None,
             },
             coordinator_queue: "coordinator".into(),
             project: crate::aws::batch::LaunchProject {

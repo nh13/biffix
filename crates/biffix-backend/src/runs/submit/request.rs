@@ -29,7 +29,7 @@ use crate::auth::actor::AuthedActor;
 use crate::config::projects::{ProjectContext, Projects};
 use crate::error::ServiceError;
 use crate::runs::launch::{
-    ImagesReadiness, LaunchError, LaunchInputs, LaunchPlan, LAUNCH_PLAN_VERSION,
+    launch_plan_version, ImagesReadiness, LaunchError, LaunchInputs, LaunchPlan,
 };
 use crate::runs::submit::{check_inputs, input_candidates, malformed_input, SubmitError};
 use crate::store::registry::RegisteredVersion;
@@ -83,7 +83,8 @@ pub(crate) fn unreadable_in(
 /// parked while its submit-time images are prepared (`state` says which).
 ///
 /// The phases run in this order, each a cheap refusal before the next's AWS calls or writes:
-/// [`resolve_version`] and [`check_request`] (the request's own checks), [`version_readiness`]
+/// [`resolve_version`] and [`check_request`] (the request's own checks), a single-job run's
+/// queue-class and size (`crate::runs::single_job::resolve`), [`version_readiness`]
 /// (the version's images and engine runtime), [`resolve_prior_runs`] (a resume or *Try again*,
 /// and the output prefix's claim), [`fill_params`] (the params as the engine gets them, validated),
 /// [`check_run_inputs`] (every input exists and is readable), the submit-time images, then
@@ -105,12 +106,27 @@ pub(crate) async fn submit_run(
     let target = resolve_version(state, &req).await?;
     let mut req = req;
     let checked = check_request(state, &target, &mut req).await?;
-    let ready = version_readiness(state, &target).await?;
+    let form = <FormSchema as serde::Deserialize>::deserialize(&target.rec.version.form_schema)
+        .map_err(|e| ServiceError::Internal(format!("stored form_schema invalid: {e}")))?;
+    // A single-job run's queue-class and whole-host size, before anything else reads AWS for it.
+    let single_job = match &req.single_job {
+        None => None,
+        Some(request) => Some(
+            crate::runs::single_job::resolve(
+                state,
+                form.single_job.as_ref(),
+                &request.into(),
+                target.rec.version.engine,
+            )
+            .await?,
+        ),
+    };
+    let template =
+        target.project.variant_template(single_job.is_some()).map_err(ServiceError::Conflict)?;
+    let ready = version_readiness(state, &target, template).await?;
     let prior = resolve_prior_runs(state, actor, &target, &req, checked.explicit_prefix).await?;
     let SubmitTarget { rec, projects, project } = &target;
 
-    let form = <FormSchema as serde::Deserialize>::deserialize(&rec.version.form_schema)
-        .map_err(|e| ServiceError::Internal(format!("stored form_schema invalid: {e}")))?;
     // The run id is minted now so a samplesheet written from rows lands under the run's own prefix.
     let run_id = RunId::new(format!("run-{}", uuid::Uuid::new_v4()));
     let effective_output_prefix = crate::runs::output_prefix::effective_output_prefix(
@@ -175,7 +191,7 @@ pub(crate) async fn submit_run(
     let input_tables = write_samplesheets(state, filled.tables).await?;
 
     let plan = LaunchPlan {
-        version: LAUNCH_PLAN_VERSION,
+        version: launch_plan_version(single_job.is_some()),
         version_id: rec.version.id.clone(),
         actor: actor_id,
         submitter_label,
@@ -197,11 +213,17 @@ pub(crate) async fn submit_run(
         retention: req.retention,
         images: pinned,
         experiment_id: checked.experiment_id,
+        single_job,
+        attempted_queues: Vec::new(),
+        launch_uncertain_at_micros: None,
+        launch_answer_lost_at_micros: None,
     };
 
     let submitted = if let ImagesReadiness::Waiting(reasons) = submit_readiness {
         park(state, &run_id, &plan, &form, effective_output_prefix, reasons).await?
     } else {
+        // Before the launch, so a coordinator it may have created is never older than this.
+        let launch_begun_at = biffix_core::clock::epoch_micros();
         let launched = crate::runs::launch::launch_run(
             state,
             &run_id,
@@ -229,10 +251,20 @@ pub(crate) async fn submit_run(
             // before it launches the run (`crate::runs::launch`).
             Err(LaunchError::Submit(SubmitError::LaunchUncertain(reason))) => {
                 tracing::warn!(run_id = %run_id, error = %reason, "submit: the coordinator launch may or may not have happened; parking the run for the sweep");
+                // The queue it tried, where the sweep looks for that coordinator first; and when it
+                // began, so a sweep before Batch lists what it started does not take an empty
+                // listing (or an older job) as proof there is none.
+                let parked = LaunchPlan {
+                    attempted_queues: plan.coordinator_queue(state).into_iter().collect(),
+                    launch_uncertain_at_micros: Some(launch_begun_at),
+                    // Now, after the lost answer: Batch's listing window counts from here.
+                    launch_answer_lost_at_micros: Some(biffix_core::clock::epoch_micros()),
+                    ..plan.clone()
+                };
                 park(
                     state,
                     &run_id,
-                    &plan,
+                    &parked,
                     &form,
                     effective_output_prefix,
                     vec![format!(
@@ -360,6 +392,16 @@ async fn check_request(
         )
         .map_err(bad)?
     };
+    // A single-job run's work dir is on its host's local disk and gone when the run ends: there is
+    // nothing to resume in, and a resume's engine cache could not be read from there either.
+    if req.single_job.is_some() && req.resume_from.is_some() {
+        return Err(bad(
+            "a single-job run cannot be a resume: its work directory lives on one host's local \
+             disk, so there is no cache to resume from; drop resume_from to run it again from the \
+             start, or drop single_job to resume one Batch job per task"
+                .into(),
+        ));
+    }
     // Params are an object of values by field name; `null` is read as none given.
     if req.params.is_null() {
         req.params = serde_json::Value::Object(Default::default());
@@ -382,10 +424,12 @@ struct VersionReadiness {
     variant: crate::aws::batch::LaunchVariant,
 }
 
-/// Whether the version can run now: a 409 naming what is not ready yet.
+/// Whether the version can run now, on a variant cloned from coordinator job definition `template`
+/// (`ProjectContext::variant_template`): a 409 naming what is not ready yet.
 async fn version_readiness(
     state: &AppState,
     target: &SubmitTarget,
+    template: crate::aws::batch::VariantTemplate<'_>,
 ) -> Result<VersionReadiness, ServiceError> {
     let rec = &target.rec;
     // Every image the version declares must be imported into the tenant repository (and suit the
@@ -408,7 +452,7 @@ async fn version_readiness(
     // The coordinator variant (the version's pinned engine runtime on the base image) to launch
     // on. Resolved before anything is written for the run: a version whose runtime is not built
     // yet cannot be launched.
-    let variant = crate::images::variants::launch_variant(state, &rec.version, &target.project)
+    let variant = crate::images::variants::launch_variant(state, &rec.version, template)
         .await
         .map_err(|e| match e {
             crate::images::variants::NotRunnable::Error(e) => {

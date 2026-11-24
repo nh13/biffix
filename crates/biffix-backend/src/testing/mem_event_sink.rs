@@ -120,6 +120,9 @@ impl EventSink for MemEventSink {
                 if let Some(prior) = &folded.resumed_from {
                     row.resumed_from = Some(RunId::new(prior.as_str()));
                 }
+                if folded.single_job.is_some() {
+                    row.single_job.clone_from(&folded.single_job);
+                }
                 if folded.launched_at_micros.is_some() {
                     row.launched_at_micros = folded.launched_at_micros;
                 }

@@ -522,6 +522,57 @@ async fn the_coordinator_host_is_labelled_with_the_deploy_s_coordinator_queue() 
     assert_eq!(host["capacity_source"], "queue");
 }
 
+fn single_job_use() -> biffix_core::event::SingleJobUse {
+    biffix_core::event::SingleJobUse {
+        queue_class: "single".into(),
+        instance_type: "c6id.8xlarge".into(),
+        vcpus: 32,
+        memory_mib: 61_184,
+    }
+}
+
+#[tokio::test]
+async fn a_single_job_nextflow_run_has_no_resume_cache() {
+    // As run_detail_serves_the_lifecycle_and_resume_facts' resumable Nextflow run, but run as one
+    // job: its work dir and task cache were on its host's local disk.
+    let mut detail = testing::run_detail("r1", "failed");
+    detail.run.engine = Some("nextflow".into());
+    detail.engine_session_id = Some("s1".into());
+    detail.output_prefix = Some("s3://b/biffix/runs/r1/".into());
+    detail.single_job = Some(single_job_use());
+    let (status, v) = get_json(api::router(state_with_run_detail(detail)), "/runs/r1").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["prefix_kind"], "isolated");
+    assert!(v.get("resume_cache_uri").is_none(), "{v}");
+    assert_eq!(v["resumable"], false, "{v}");
+    assert_eq!(v["single_job"]["instance_type"], "c6id.8xlarge", "{v}");
+}
+
+#[tokio::test]
+async fn a_single_job_coordinator_host_is_labelled_with_its_queue_class_s_queue_while_it_exists() {
+    let mut detail = testing::run_detail("r1", "running");
+    detail.coordinator_host = Some(biffix_api::Host::default());
+    detail.single_job = Some(single_job_use());
+    let mut state = state_with_run_detail(detail);
+    state.deploy.coordinator_queue =
+        "arn:aws:batch:us-east-1:123456789012:job-queue/biffix-coordinator".into();
+    state.deploy.single_job_queues = vec![biffix_backend::config::single_job::SingleJobQueue {
+        name: "single".into(),
+        queue: "arn:aws:batch:us-east-1:123456789012:job-queue/biffix-t-single".into(),
+        instance_types: vec!["c6id.8xlarge".into()],
+    }];
+    let (status, v) = get_json(api::router(state.clone()), "/runs/r1").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["coordinator_host"]["queue"], "biffix-t-single", "{v}");
+
+    // The deploy no longer has the queue-class: unlabelled, never the coordinator queue it did
+    // not run on.
+    state.deploy.single_job_queues.clear();
+    let (status, v) = get_json(api::router(state), "/runs/r1").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert!(v["coordinator_host"].get("queue").is_none(), "{v}");
+}
+
 #[tokio::test]
 async fn a_request_carrying_a_nul_is_a_400_never_a_retryable_503() {
     let app = api::router(state_with_one_run());

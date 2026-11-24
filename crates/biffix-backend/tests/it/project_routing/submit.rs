@@ -1,6 +1,7 @@
 //! Submitting and resuming a run in its version's project.
 
 use super::*;
+use biffix_backend::aws::batch::VariantTemplate;
 
 #[tokio::test]
 async fn a_version_of_project_b_launches_with_b_s_context() {
@@ -20,7 +21,7 @@ async fn a_version_of_project_b_launches_with_b_s_context() {
     // The image map is written into B's bucket too.
     let maps = launched.maps.unwrap();
     assert!(maps.image_map.starts_with(&format!("s3://{BUCKET_B}/")));
-    assert!(maps.job_definitions.starts_with(&format!("s3://{BUCKET_B}/")));
+    assert!(maps.job_definitions.unwrap().starts_with(&format!("s3://{BUCKET_B}/")));
     // The coordinator runs on B's own clone of the variant (B's template, so B's coordinator
     // role), found by name; the recorded variant stays the default project's.
     let runtime_key = h.registry.versions.lock().unwrap()[&version].version.runtime_key.clone();
@@ -30,7 +31,7 @@ async fn a_version_of_project_b_launches_with_b_s_context() {
             &runtime_key,
             testing::FAKE_BASE_DIGEST,
             1,
-            TEMPLATE_B
+            VariantTemplate { arn: TEMPLATE_B, single_job: false }
         )
     );
     assert!(h.cloud.variant_templates.lock().unwrap().contains(&TEMPLATE_B.to_string()));
@@ -270,7 +271,7 @@ async fn a_run_launches_on_its_own_project_s_clone_whatever_the_default_is_meanw
                 &runtime_key,
                 testing::FAKE_BASE_DIGEST,
                 1,
-                TEMPLATE_B
+                VariantTemplate { arn: TEMPLATE_B, single_job: false }
             ),
             "phase {phase}"
         );

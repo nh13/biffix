@@ -674,8 +674,9 @@ export interface paths {
      * @description A run with no coordinator yet (one waiting for its submit-time images) may be one the launch
      *     sweep is launching at this moment, so its cancel takes the run's launch claim first (waiting up
      *     to 20 s for a launch in progress, else 503: retry), and re-reads the run under it: a
-     *     coordinator bound meanwhile is stopped as any other; otherwise the run ends and its parked
-     *     launch is dropped while the claim is held, so no sweep launches it after.
+     *     coordinator bound meanwhile is stopped as any other; otherwise the run ends while the claim is
+     *     held, so no sweep launches it after. Its parked launch is left for the launch sweep to release,
+     *     and the sweep first stops any coordinator an earlier launch may have left running.
      *
      *     A run not yet confirmed running (`submitted`) is also marked cancelled (`run_cancelled`): its
      *     coordinator may never have started (or never will report), so no terminal would otherwise
@@ -2804,6 +2805,7 @@ export interface components {
        *     `engine_session_id` is the engine's own). Omitted when false.
        */
       session_mismatch?: boolean;
+      single_job?: components['schemas']['RunSingleJob'] | null;
       /**
        * @description The images given at submit (`--image`), as pinned: from the run's anchor once it launched,
        *     else from when it was accepted (so a run that failed while preparing them has them too).
@@ -3114,6 +3116,18 @@ export interface components {
        */
       total: number;
     };
+    /**
+     * @description How a single-job run executed (`RunDetail.single_job`): its queue-class, the instance type its
+     *     size was taken from, and the vCPUs and memory its one job was given.
+     */
+    RunSingleJob: {
+      instance_type: string;
+      /** Format: int64 */
+      memory_mib: number;
+      queue_class: string;
+      /** Format: int32 */
+      vcpus: number;
+    };
     /** @description `POST /runs` request: launch a frozen workflow version with resolved parameters. */
     RunSubmitRequest: {
       /**
@@ -3195,6 +3209,7 @@ export interface components {
       retry_of?: string | null;
       /** @description A human name for the run, shown in run lists and on the run page. At most 200 characters. */
       run_name?: string | null;
+      single_job?: components['schemas']['SingleJobRequest'] | null;
       /**
        * @description Samplesheet rows by param (`{column: value}` per row), for params whose form declares a
        *     samplesheet. biffix validates them, writes the sheet under the run's own prefix and sets the
@@ -3337,6 +3352,33 @@ export interface components {
     SavedReferenceBundle: {
       bundle: components['schemas']['ReferenceBundle'];
       warnings: string[];
+    };
+    /**
+     * @description A run's single-job settings (`RunSubmitRequest.single_job`). Each field is optional and falls
+     *     back to the version's default; a size is either `instance` or both `cpus` and `memory_gib`
+     *     (the smallest instance type of the queue-class with at least that much is used). With no size
+     *     here or in the version, the queue-class's smallest instance type is used.
+     */
+    SingleJobRequest: {
+      /**
+       * Format: int32
+       * @description An instance type with at least this many vCPUs (with `memory_gib`).
+       */
+      cpus?: number | null;
+      /** @description An exact instance type of the queue-class (`c6id.8xlarge`): the run gets the whole host. */
+      instance?: string | null;
+      /**
+       * Format: int32
+       * @description An instance type whose run's tasks get at least this much memory, in GiB (with `cpus`).
+       *     Compared with what the tasks get, not the type's nominal memory: the job is given the
+       *     host's memory less a reserve for the operating system and ECS (6% plus 256 MiB, rounded
+       *     down to 256 MiB), and the engine keeps a share of that for itself (Snakemake 1/16, 2 to 8
+       *     GiB; Nextflow its heap, 1/16 within 1 to 8 GiB, and 1/32 slack, at least 1 GiB). A 64 GiB
+       *     host leaves its tasks about 56 GiB under Snakemake, 54 GiB under Nextflow.
+       */
+      memory_gib?: number | null;
+      /** @description A single-job queue-class of the deploy; absent ⇒ the version's, else the deploy's first. */
+      queue_class?: string | null;
     };
     /**
      * @description `GET /settings` — the customizable site chrome. Both fields optional so an unset deployment
