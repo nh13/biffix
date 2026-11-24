@@ -3,7 +3,7 @@
 //! pins to the plugins and the coordinator image).
 
 use crate::runtime::{
-    NextflowPins, NextflowRelease, PluginPin, PythonBuild, SnakemakePins, UvBuild,
+    GitSource, NextflowPins, NextflowRelease, PluginPin, PythonBuild, SnakemakePins, UvBuild,
 };
 
 /// The Snakemake 9 pin table.
@@ -22,7 +22,21 @@ pub(super) fn snakemake_9() -> SnakemakePins {
             sha256_x86_64: "23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8"
                 .into(),
         },
-        storage_s3: "0.3.6".into(),
+        // 0.3.6 plus upstream PR #68 (snakemake/snakemake-storage-plugin-s3: filesystem
+        // modification times kept in S3 object metadata, so an S3 clock ahead of the host cannot
+        // make a fresh output look older than its input), from the fork's never-force-pushed
+        // branch `biffix-pin/2026-11-20`; re-pin to the release that ships it.
+        storage_s3: "0.3.6+g8129cca56f7c".into(),
+        storage_s3_source: Some(GitSource {
+            repo: "https://github.com/nh13/snakemake-storage-plugin-s3.git".into(),
+            sha: "8129cca56f7cea57b1a40c942705036c9e5fc826".into(),
+            // Its `poetry-core` build backend (unconstrained in the checkout's pyproject), the
+            // release current at `exclude_newer`, by the sha256 of its PyPI wheel.
+            build_requires: vec![
+                "poetry-core==2.5.0@98ee465b66f7e14bb9fbe68fb5e00d0cff184f036993ec94610ae4b5612f3add"
+                    .into(),
+            ],
+        }),
         executor_sha: "0ac5ec4ea45a0c278876a598b17327213e964483".into(),
         logger_version: "0.2.3".into(),
         exclude_newer: "2026-09-26T00:00:00Z".into(),

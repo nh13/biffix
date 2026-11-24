@@ -92,8 +92,9 @@ pub struct RunProjection {
     /// The session biffix launched the engine with, from the anchor (Nextflow: the cloud-cache key
     /// under `<output_prefix>.nextflow/cache/`). `None` for Snakemake and pre-resume runs.
     pub engine_session_id: Option<String>,
-    /// The session the engine itself reported on `run_started`. Kept apart from the anchor's value
-    /// so both stay pure set-once facts; readers prefer this one via
+    /// The session the engine itself reported on `run_started`: the newest coordinator
+    /// generation's (the least, should one generation report two), and cleared when a single-job
+    /// run starts a new generation. Kept apart from the anchor's value; readers prefer this one via
     /// [`RunProjection::effective_session_id`] (it is what the engine actually ran as).
     pub reported_session_id: Option<String>,
     /// The run this one resumed (`--resume-from`), from the anchor.
@@ -174,6 +175,15 @@ pub struct RunProjection {
     /// The `(ts, seq)` of the `cancel_requested` the cancel actor came from: one per run (its dedup
     /// key carries no actor), but the earliest wins should two fold, as for the anchor.
     pub(super) cancel_order: Option<Stamp>,
+    /// Single-job engine facts are scoped to the highest observed coordinator generation.
+    pub(super) coordinator_attempt: u32,
+    /// The coordinator generation `reported_session_id` came from (0: none yet).
+    pub(super) reported_session_generation: u32,
+    pub(super) engine_running_seen: bool,
+    pub(super) engine_succeeded: bool,
+    pub(super) engine_failed_at_micros: Option<i64>,
+    pub(super) engine_completed_at_micros: Option<i64>,
+    pub(super) authoritative_completed_at_micros: Option<i64>,
 }
 
 impl RunProjection {
@@ -183,7 +193,7 @@ impl RunProjection {
     }
 
     /// The engine session this run executed as: the id the engine reported on `run_started`,
-    /// else the one biffix launched it with. A pure function of two set-once fields.
+    /// else the one biffix launched it with. A pure function of two order-independent fields.
     pub fn effective_session_id(&self) -> Option<&str> {
         self.reported_session_id.as_deref().or(self.engine_session_id.as_deref())
     }
@@ -251,6 +261,13 @@ impl RunProjection {
             failed_at_micros: None,
             anchor_order: None,
             cancel_order: None,
+            coordinator_attempt: 1,
+            reported_session_generation: 0,
+            engine_running_seen: false,
+            engine_succeeded: false,
+            engine_failed_at_micros: None,
+            engine_completed_at_micros: None,
+            authoritative_completed_at_micros: None,
         }
     }
 
@@ -320,7 +337,7 @@ impl RunProjection {
     /// later; a run that failed on its own while the cancel was in flight (its failure had not yet
     /// reached the projection, so the cancel was accepted) stays FAILED.
     fn failure_was_cancelled(&self) -> bool {
-        match (self.cancel_order, self.failed_at_micros) {
+        match (self.cancel_order, self.failure_time()) {
             (Some((cancel_at, _)), Some(failed_at)) => {
                 cancel_at <= failed_at.saturating_add(CANCEL_CLOCK_SKEW_MICROS)
             }
@@ -335,13 +352,18 @@ impl RunProjection {
     /// input is a monotonic flag or a min-latched time, so the state is a pure function of the
     /// folded event set, whatever order it folds in.
     pub(super) fn recompute_state(&mut self) {
-        self.state = if self.succeeded {
+        self.completed_at_micros = self
+            .authoritative_completed_at_micros
+            .into_iter()
+            .chain(self.engine_completed_at_micros)
+            .min();
+        self.state = if self.succeeded || self.engine_succeeded {
             RunState::Succeeded
         } else if self.run_cancelled || self.failure_was_cancelled() {
             RunState::Cancelled
-        } else if self.failed_at_micros.is_some() {
+        } else if self.failure_time().is_some() {
             RunState::Failed
-        } else if self.running_seen {
+        } else if self.running_seen || self.engine_running_seen {
             RunState::Running
         } else if self.preparing_seen && !self.launched_seen {
             RunState::PreparingImages
@@ -357,7 +379,47 @@ impl RunProjection {
     /// diverged); the min over all terminal events is the deterministic "first reached a terminal
     /// state" the field means.
     pub(super) fn latch_completed_at(&mut self, ts_micros: i64) {
-        keep_min_micros(&mut self.completed_at_micros, ts_micros);
+        keep_min_micros(&mut self.authoritative_completed_at_micros, ts_micros);
+    }
+
+    fn failure_time(&self) -> Option<i64> {
+        self.failed_at_micros.into_iter().chain(self.engine_failed_at_micros).min()
+    }
+
+    /// Start single-job coordinator generation `generation`: discard the engine facts of the
+    /// lost host's generation, without erasing AWS/control-plane facts. With `keep_tasks` (a
+    /// Snakemake run, whose retry keeps the finished work: see `fold::generation_scoped`) the
+    /// tasks and their outputs stay; otherwise they are discarded too.
+    ///
+    /// Every engine-derived run field is reset here: a new one must be added, or a lost host's
+    /// value would outlive it.
+    pub(super) fn reset_engine_generation(&mut self, generation: u32, keep_tasks: bool) {
+        self.coordinator_attempt = generation;
+        if !keep_tasks {
+            // Batch attempts (if any) remain authoritative, even on a malformed single-job run.
+            self.tasks.retain(|_, task| {
+                if task.attempts.is_empty() {
+                    false
+                } else {
+                    let attempts = std::mem::take(&mut task.attempts);
+                    *task = TaskProjection::new(task.task_key.clone());
+                    task.attempts = attempts;
+                    true
+                }
+            });
+            self.outputs.clear();
+        }
+        self.completed = None;
+        self.total = None;
+        self.dag_nodes.clear();
+        self.dag_edges.clear();
+        self.reported_session_id = None;
+        self.reported_session_generation = 0;
+        self.engine_running_seen = false;
+        self.engine_succeeded = false;
+        self.engine_failed_at_micros = None;
+        self.engine_completed_at_micros = None;
+        self.recompute_state();
     }
 
     /// Merge one reported output into the run's output set (see [`OutputProjection`]).

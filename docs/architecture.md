@@ -316,15 +316,26 @@ changes is where the tasks run, and the isolation that holds around them:
   environment through `/proc`, the run's capability token included. That token authorizes only the
   run's own event POSTs, and expires; a run of one Batch job per task does not have this exposure. A
   task with no image (a Snakemake local rule, a rule with no image when the version has no default
-  image, a Nextflow `exec:` process) and the Python of a Snakemake `run:` block run in the engine's
-  own environment, as they would on the coordinator in a run of one Batch job per task, and get no
-  raised OOM score.
+  image, a Nextflow `exec:` process) runs in the job's own environment. Snakemake's Python `run:`
+  blocks also execute in the engine's environment, so a non-local `run:` rule assigned a task image
+  is rejected before execution; use `script:` to execute in that image. Local `run:` rules and
+  rules assigned no image remain allowed. These in-process blocks get no raised OOM score.
 - **Cancel tears everything down.** Stopping the job ends its PID namespace, so no nested
   process or FUSE mount outlives it.
-- **Failure.** A lost host re-runs the whole run (Batch's retry, a second attempt with a clean
-  work directory). There is no work-directory checkpointing: it would bring back the S3 traffic
-  the mode removes. A single-job run cannot itself be a resume, and a Nextflow one cannot be
-  resumed (its work directory was on the host).
+- **Failure.** A lost host starts the run again (Batch's retry, a second attempt with a clean
+  work directory). Engine events carry the coordinator's Batch attempt number (its generation),
+  and for single-job runs the fold keeps only what the retry still has. A Nextflow retry starts
+  over, so the newest generation's start discards the earlier generations' task, output and
+  progress facts. A Snakemake retry keeps the jobs the lost host finished before its last
+  metadata sync (every 5 minutes, `BIFFIX_METADATA_SYNC_SECS`, and once more when the engine exits,
+  which a lost host never does): each job's outputs went to S3 as it ended, and the run metadata
+  is restored from there, so the retry skips those jobs and never reports them again, and their
+  task and output facts stay. A job that finished after the last sync has its outputs in S3 but
+  no metadata record, so the retry may run it again. Only the run-level facts (progress, DAG,
+  session, running and terminal state) are the newest generation's. The old events remain in the
+  log; AWS and control-plane facts remain authoritative. There is no work-directory checkpointing:
+  it would bring back the S3 traffic the mode removes. A single-job run cannot itself be a resume,
+  and a Nextflow one cannot be resumed (its work directory was on the host).
 
 ### Fix it upstream, not in a fork
 
@@ -332,16 +343,25 @@ When a gap is really in Snakemake or Nextflow tooling, the fix belongs upstream:
 feature, a logger plugin, a richer parameter schema. biffix carries a local workaround only while
 the upstream change is in review.
 
-The one current exception is the Snakemake AWS Batch executor. The coordinator installs it from a
-fork pinned to an exact commit (`docker/coordinator/wheels.env`). The fork is upstream plus six
-open pull requests biffix depends on: job-state events that carry the Batch job id, a strict
-container image map in which a task naming an unmapped image fails instead of pulling it, a
-per-project task log group, a job definition map with which every job runs on a definition
-registered ahead of time and the executor registers none, privileged containers made opt-in, and
-a rule queue map that sends rules to job queues from the command line without replacing the
-workflow profile's `set-resources`. Other features biffix uses, such as a rule's own
-`batch_queue` resource and spot retry attempts, are already upstream. The pin moves back to an
-upstream release once all six have merged.
+There are two current exceptions. The first is the Snakemake AWS Batch executor. The coordinator
+installs it from a fork pinned to an exact commit (`docker/coordinator/wheels.env`). The fork is
+upstream plus six open pull requests biffix depends on: job-state events that carry the Batch job
+id, a strict container image map in which a task naming an unmapped image fails instead of pulling
+it, a per-project task log group, a job definition map with which every job runs on a definition
+registered ahead of time and the executor registers none, privileged containers made opt-in, and a
+rule queue map that sends rules to job queues from the command line without replacing the workflow
+profile's `set-resources`. Other features biffix uses, such as a rule's own `batch_queue` resource
+and spot retry attempts, are already upstream. The pin moves back to an upstream release once all
+six have merged.
+
+The second is the Snakemake S3 storage plugin. The Snakemake runtime builds it from a fork commit
+(`storage_s3_source` in `crates/biffix-workflow/src/runtime/pins.rs`, branch
+`biffix-pin/2026-11-20`): release 0.3.6 plus an open pull request
+(snakemake/snakemake-storage-plugin-s3#68) that keeps each file's modification time in its S3
+object metadata. Without it, an S3 clock a fraction of a second ahead of the host can make a task's
+fresh output look older than the input it was made from, and Snakemake removes it. The built
+wheel's version names the commit (`0.3.6+g<sha12>`), so the runtime is never mistaken for the
+release. The pin moves back to a release once the pull request has merged.
 
 ## The RunEvent contract
 

@@ -238,7 +238,10 @@ once its images are imported (`GET /workflows/{id}` shows `state` and each image
 - **`runtime: own`.** An image that carries its own Snakemake (`images: {x: {ref: …, runtime:
   own}}`) is not derived, and must carry exactly the pinned Snakemake release and
   `snakemake-storage-plugin-s3` (what a task loads). The logger and executor plugins run in the
-  coordinator only and are just reported.
+  coordinator only and are just reported. While the storage plugin is pinned to a commit build
+  (`<release>+g<sha12>`, see `storage_s3_source` in `crates/biffix-workflow/src/runtime/pins.rs`),
+  no published image carries it, so such an image must install the plugin from that commit with
+  its version set to the pin; the refusal names the commit.
 - **Built images.** An image can instead be built from a recipe the workflow ships:
   `images: {align: {dockerfile: docker/align/Dockerfile}}` (context: the Dockerfile's directory, or
   `context:`; `archs: [amd64]` when its base has only one architecture) or

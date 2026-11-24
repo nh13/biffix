@@ -163,7 +163,7 @@ What each key does:
 | `plugins` | Nextflow only: the pipeline's own plugins as `id@version`. Runs are offline, so a plugin Nextflow would load implicitly (`nf-tower`/`nf-wave` for a `tower`, `wave` or `fusion` scope; from 26.10 `nf-agent`/`nf-agent-pi` for an `agent` scope) must be declared, in the pipeline's `plugins {}` and here. |
 | `cache` | Snakemake only: reuse results of `cache: True` rules across runs (kept per project). |
 | `queues` | Which worker queue-class each task runs on: a `default`, and tasks picked `by_label` (Nextflow) or `by_name`. See [Choosing queues](#choosing-queues). |
-| `single_job` | Runs of the version may execute as one Batch job on one host ([single-job runs](#single-job-runs)). Optional `queue_class` (one of the deployment's single-job queue-classes) and a default size: `instance` (an exact instance type) or `cpus` with `memory_gib`. `single_job: {}` allows it at the queue-class's smallest instance type. |
+| `single_job` | Runs of the version may execute as one Batch job on one host ([single-job runs](#single-job-runs)). Optional `queue_class` (one of the deployment's single-job queue-classes) and a default size: `instance` (an instance type used for sizing) or `cpus` with `memory_gib`. `single_job: {}` allows it at the queue-class's smallest instance type. |
 
 Unknown keys are warned about, not silently ignored, except inside an `images:` entry or
 `queues:`, where an unknown key is refused. The full field-by-field reference is the
@@ -232,7 +232,12 @@ values that are not plain strings for you to declare by hand. Review the result 
 
 For Snakemake, biffix adds its pinned Snakemake runtime to each image (tasks run
 `python -m snakemake` inside the image), so images must be glibc-based. An image that already
-carries exactly the pinned Snakemake can opt out with `runtime: own`.
+carries exactly the pinned Snakemake and `snakemake-storage-plugin-s3` can opt out with
+`runtime: own`. While biffix pins a commit build of the storage plugin (a version such as
+`0.3.6+g8129cca56f7c`, which no PyPI release or published image carries), such an image must
+install the plugin from that commit with its version set to the pinned one; a refusal names the
+repository, the commit and the version.
+Without `runtime: own`, biffix adds the pinned plugin for you.
 
 ### Choosing queues
 
@@ -466,18 +471,25 @@ biffix runs submit <version-id> --params params.yaml --single-job --cpus 32 --me
 A version's `queues:` assignment does not apply to a single-job run: every task runs on its one
 host.
 
-`--instance` must be one of the types the deployment lists for the queue-class. With
-`--cpus`/`--memory-gib`, the smallest instance type of the queue-class with that many vCPUs and that
-much memory left for tasks (the job's memory less what the engine keeps for itself) is used. The job
-is given every vCPU of the host and its memory less a small reserve for the operating system and
-ECS. The run's details (`GET /runs/{id}`, `single_job`) and its provenance record the queue-class,
-instance type and size; the launch form and the run page do not show single-job settings yet.
+`--instance` must be one of the types the deployment lists for the queue-class; it sizes the
+whole-host resource request, not a constraint on the actual host type. With `--cpus`/`--memory-gib`,
+the smallest instance type of the queue-class with that many vCPUs and that much memory left for
+tasks (the job's memory less what the engine keeps for itself) sizes the request. Batch may place
+the run on another same-size type in that queue-class. The job requests every vCPU and the memory
+of the sizing type less a small reserve for the operating system and ECS. The run's details
+(`GET /runs/{id}`, `single_job`) and its provenance record the queue-class, sizing type and resource
+request; the launch form and the run page do not show single-job settings yet.
 
 Things to know:
 
-- **A Snakemake rule's image must be a plain string.** A rule whose `aws_batch_container_image` is
-  set by a function fails a single-job run before any task starts (biffix sets every rule's
-  container before the run, from its resource).
+- **A non-local Snakemake rule's image must be a plain string.** A rule whose
+  `aws_batch_container_image` is set by a function fails a single-job run before any task starts
+  (biffix sets its container before the run, from its resource). Ungrouped local rules run without
+  a task image, so their image resource is ignored.
+- **Python `run:` blocks cannot execute in a task image.** Snakemake executes their Python in the
+  engine's environment. A non-local `run:` rule assigned an image is rejected before execution;
+  use `script:` to execute in that image. Local `run:` rules and rules with no assigned image
+  remain allowed.
 - **Task images must contain `bash`.** Both engines run each task's script with it, so an
   Alpine-only image (BusyBox `sh`) fails.
 - **No per-task CPU or memory limit.** Only the job's own limit applies. The engine is given the
@@ -503,8 +515,10 @@ Things to know:
   (`--rerun-triggers mtime params input code`): the two modes record it differently, and this keeps
   either mode's metadata usable by the other. So a single-job run does not re-run a finished job
   only because its image changed. A "Try again" or "Re-run" of a single-job run in the web app is
-  a single-job run again, on the same queue-class and instance type. If the host is lost, Batch
-  runs the job again from the start.
+  a single-job run again, on the same queue-class with the same sizing type, not necessarily the
+  same actual host type. If the host is lost, Batch runs the job again: a Nextflow run starts
+  over, and a Snakemake run picks up after the jobs the lost host finished (their outputs are
+  already in S3).
 - **Spot is not used.** Single-job hosts are on-demand.
 - **One host per run.** A workflow too big for one host runs one sample per run (an experiment
   groups them), or one Batch job per task.
@@ -539,11 +553,13 @@ The **Provenance** button downloads the run as a Workflow Run RO-Crate; see
 
 ### When a run fails
 
-Whatever the mode, the coordinator copies the engine's log, the generated engine configuration and
-the `.command.*` files of failed tasks that ran on the coordinator itself (in a single-job run, of
-any failed task) to the run's `logs/` folder (`biffix/runs/<run-id>/logs/` in the project bucket)
-every few minutes while the run goes and once more at the end, with a `failure.txt` holding the
-end of the engine's error output when it failed.
+Whatever the mode, the coordinator copies the engine's log and the generated engine configuration
+to the run's `logs/` folder (`biffix/runs/<run-id>/logs/` in the project bucket) every few minutes
+while the run goes and once more at the end, with a `failure.txt` holding the end of the engine's
+error output when it failed. For a single-job Nextflow run, each scan also selects `.command.*`
+files from up to the 20 most recent failed local tasks found before the scan deadline; Snakemake
+task files are not collected this way. Uploads are best-effort and deadline-limited, retaining at
+most each file's last 8 MiB periodically or 64 MiB at exit, so some files may be missing or truncated.
 
 The failure summary explains a failed run in plain words: the first failed steps, the sample each
 belongs to, a cause (out of memory, a spot reclaim, a missing or damaged input, a full disk, a
