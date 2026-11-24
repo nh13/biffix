@@ -6,6 +6,7 @@ from snakemake_logger_plugin_biffix import events
 from snakemake_logger_plugin_biffix.remote_adapter import (
     batch_binding,
     batch_image,
+    host_job_image,
     payload_from_record,
 )
 
@@ -60,6 +61,28 @@ def test_remote_payload_image() -> None:
     assert batch_image({}) is None
     assert batch_image({"image": ""}) is None
     assert batch_image({"image": 7}) is None
+
+
+def test_a_job_on_the_engine_s_host_names_its_image_and_no_external_job() -> None:
+    """The biffix executor plugin's payload (its ``report.image_payload``): the AWS Batch
+    executor's shape, less the external job id of a job that never leaves the host."""
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "kind": "state",
+        "jobid": 4,
+        "executor": "biffix",
+        "phase": "queued",
+        "image": "r/i@sha256:ab",
+        "attempt": 1,
+    }
+    assert host_job_image(payload) == (4, "r/i@sha256:ab")
+    assert batch_binding(payload) is None
+    # A Batch job's payload is not one, nor is one without a job, an image or a known version.
+    assert host_job_image({**payload, "external_jobid": "job-1"}) is None
+    assert host_job_image({**payload, "jobid": "group-uuid"}) is None
+    assert host_job_image({**payload, "jobid": True}) is None
+    assert host_job_image({**payload, "image": ""}) is None
+    assert host_job_image({**payload, "schema_version": 99}) is None
 
 
 def test_engine_task_terminal_shape() -> None:

@@ -1,6 +1,6 @@
 [project]
 name = "snakemake-logger-plugin-biffix"
-version = "0.2.3"
+version = "0.2.4"
 description = "Snakemake (>=9.0) logger plugin: emits biffix RunEvents to the ingest route + a durable events.jsonl."
 readme = "README.md"
 license = "MIT"
@@ -35,8 +35,8 @@ Issues = "https://github.com/nh13/biffix/issues"
 [dependency-groups]
 dev = [
     # Pinned exactly, to the same versions in infra/, docker/coordinator/ and
-    # plugins/snakemake-logger-plugin-biffix/, so every project lints alike locally and in CI.
-    # Dependabot bumps the three together (.github/dependabot.yml).
+    # the two Snakemake plugins (plugins/snakemake-*-plugin-biffix/), so every project lints alike
+    # locally and in CI. Dependabot bumps the four together (.github/dependabot.yml).
     "mypy==2.4.1",
     "pytest==9.2.0",
     "ruff==0.17.4",

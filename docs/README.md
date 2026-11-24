@@ -23,6 +23,7 @@ Elsewhere in the repository:
 - [infra/biffix-deploy.example.yaml](../infra/biffix-deploy.example.yaml): every deploy config
   key, with its default.
 - [dev/README.md](../dev/README.md): the local Postgres and running the API server locally.
-- [plugins/snakemake-logger-plugin-biffix](../plugins/snakemake-logger-plugin-biffix/README.md)
+- [plugins/snakemake-logger-plugin-biffix](../plugins/snakemake-logger-plugin-biffix/README.md),
+  [plugins/snakemake-executor-plugin-biffix](../plugins/snakemake-executor-plugin-biffix/README.md)
   and [plugins/nf-biffix](../plugins/nf-biffix/README.md): the engine plugins.
 - [schemas/](../schemas/): the generated JSON Schemas for the event, wire and form contracts.

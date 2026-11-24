@@ -3,6 +3,7 @@
 # /opt/biffix/wheels/:
 #   - the Snakemake AWS Batch executor fork at EXECUTOR_SHA (wheels.env), as a wheel
 #   - the biffix Snakemake logger plugin, as a wheel
+#   - the biffix Snakemake executor plugin (a single-job run's), as a wheel
 #   - the nf-biffix Nextflow plugin zip (build it first: plugins/nf-biffix `./gradlew assemble`)
 #   - manifest.json: the versions the runtime build checks against its recipe, the coordinator
 #     contract (wheels.env COORDINATOR_CONTRACT), and each file's sha256
@@ -19,19 +20,23 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$ROOT/docker/coordinator/wheels.env"
 
 LOGGER_DIR="$ROOT/plugins/snakemake-logger-plugin-biffix"
+SINGLE_JOB_EXECUTOR_DIR="$ROOT/plugins/snakemake-executor-plugin-biffix"
 NF_DIR="$ROOT/plugins/nf-biffix"
 LOGGER_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$LOGGER_DIR/pyproject.toml" | head -1)
+SINGLE_JOB_EXECUTOR_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$SINGLE_JOB_EXECUTOR_DIR/pyproject.toml" | head -1)
 NF_BIFFIX_VERSION=$(sed -n "s/^version = '\(.*\)'$/\1/p" "$NF_DIR/build.gradle" | head -1)
 NF_ZIP="$NF_DIR/build/distributions/nf-biffix-${NF_BIFFIX_VERSION}.zip"
 [ -n "$LOGGER_VERSION" ] || { echo "build-wheels: no logger version in pyproject.toml" >&2; exit 1; }
+[ -n "$SINGLE_JOB_EXECUTOR_VERSION" ] || { echo "build-wheels: no single-job executor version in pyproject.toml" >&2; exit 1; }
 [ -f "$NF_ZIP" ] || { echo "build-wheels: $NF_ZIP missing; run ./gradlew assemble in plugins/nf-biffix" >&2; exit 1; }
 
 rm -rf "$OUT" && mkdir -p "$OUT"
 python3 -m pip wheel --quiet --no-deps --wheel-dir "$OUT" \
-  "git+${EXECUTOR_REPO}@${EXECUTOR_SHA}" "$LOGGER_DIR"
+  "git+${EXECUTOR_REPO}@${EXECUTOR_SHA}" "$LOGGER_DIR" "$SINGLE_JOB_EXECUTOR_DIR"
 cp "$NF_ZIP" "$OUT/"
 
 EXECUTOR_SHA="$EXECUTOR_SHA" LOGGER_VERSION="$LOGGER_VERSION" NF_BIFFIX_VERSION="$NF_BIFFIX_VERSION" \
+  SINGLE_JOB_EXECUTOR_VERSION="$SINGLE_JOB_EXECUTOR_VERSION" \
   COORDINATOR_CONTRACT="$COORDINATOR_CONTRACT" python3 - "$OUT" <<'PY'
 import hashlib, json, os, pathlib, sys
 
@@ -45,6 +50,7 @@ manifest = {
     "coordinator_contract": int(os.environ["COORDINATOR_CONTRACT"]),
     "executor_sha": os.environ["EXECUTOR_SHA"],
     "logger_version": os.environ["LOGGER_VERSION"],
+    "single_job_executor_version": os.environ["SINGLE_JOB_EXECUTOR_VERSION"],
     "nf_biffix_version": os.environ["NF_BIFFIX_VERSION"],
     "files": files,
 }

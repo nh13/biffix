@@ -130,9 +130,12 @@ pub struct SingleJobRequest {
     /// An instance type whose run's tasks get at least this much memory, in GiB (with `cpus`).
     /// Compared with what the tasks get, not the type's nominal memory: the job is given the
     /// host's memory less a reserve for the operating system and ECS (6% plus 256 MiB, rounded
-    /// down to 256 MiB), and the engine keeps a share of that for itself (Snakemake 1/16, 2 to 8
-    /// GiB; Nextflow its heap, 1/16 within 1 to 8 GiB, and 1/32 slack, at least 1 GiB). A 64 GiB
-    /// host leaves its tasks about 56 GiB under Snakemake, 54 GiB under Nextflow.
+    /// down to 256 MiB), and the engine keeps a share of that for itself. Snakemake keeps 1/16 of
+    /// it, 2 to 8 GiB, plus 160 MiB a vCPU for the Snakemake of each job that may run at once;
+    /// Nextflow its heap, 1/16 within 1 to 8 GiB, and 1/32 slack, at least 1 GiB. So a
+    /// c6id.8xlarge (64 GiB, 32 vCPUs) leaves its tasks 51 GiB under Snakemake (52,240 MiB) and
+    /// 54 GiB under Nextflow (55,448 MiB); a 2-vCPU, 8 GiB job leaves them 5,824 MiB under
+    /// Snakemake.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_gib: Option<u32>,
 }

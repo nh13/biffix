@@ -20,6 +20,7 @@ xtask/             repository tooling (`cargo xtask emit-schemas`)
 schemas/           JSON Schemas and test cases generated from the Rust types
 plugins/
   snakemake-logger-plugin-biffix/   Snakemake logger plugin (Python)
+  snakemake-executor-plugin-biffix/ Snakemake executor plugin of single-job runs (Python)
   nf-biffix/                        Nextflow plugin (Groovy, Gradle)
 docker/coordinator/  the coordinator image and its entrypoint
 codebuild/         scripts the deployment's CodeBuild projects run (runtimes, image import/build)
@@ -133,15 +134,24 @@ repository root.
 ## Plugins and the coordinator
 
 ```sh
-cd plugins/snakemake-logger-plugin-biffix && uv sync --dev \
+# Each from the repository root, in a subshell so its `cd` does not carry over to the next.
+(cd plugins/snakemake-logger-plugin-biffix && uv sync --dev \
   && uv run ruff check . && uv run ruff format --check . \
-  && uv run validate-pyproject pyproject.toml && uv run mypy && uv run pytest
-cd plugins/nf-biffix && ./gradlew --no-daemon test
-cd docker/coordinator && uv sync \
+  && uv run validate-pyproject pyproject.toml && uv run mypy && uv run pytest)
+# The executor's last run is the oldest Snakemake 9 and executor interface (CI's matrix entry), as
+# `python -m pytest`: not `pytest`, whose script runs the project's own interpreter and Snakemake.
+(cd plugins/snakemake-executor-plugin-biffix && uv sync --dev \
+  && uv run ruff check . && uv run ruff format --check . \
+  && uv run validate-pyproject pyproject.toml && uv run mypy && uv run pytest \
+  && uv run --with snakemake==9.0.0 --with snakemake-interface-executor-plugins==9.3.2 \
+    --with snakemake-interface-common==1.17.4 --with snakemake-storage-plugin-fs==1.0.6 \
+    python -m pytest)
+(cd plugins/nf-biffix && ./gradlew --no-daemon test)
+(cd docker/coordinator && uv sync \
   && uv run ruff check . && uv run ruff format --check . \
   && uv run validate-pyproject pyproject.toml && uv run mypy \
   && MYPYPATH=tests/fakes/py uv run mypy --no-warn-unused-configs -p boto3 -p botocore \
-  && uv run pytest
+  && uv run pytest)
 ```
 
 Every Python project type-checks its code and its tests with mypy's strict checks. The

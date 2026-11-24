@@ -84,6 +84,7 @@ fn fixed_snakemake() -> RuntimeRecipe {
             storage_s3_source: None,
             executor_sha: "e".into(),
             logger_version: "0.1.0".into(),
+            single_job_executor_version: None,
             exclude_newer: "2026-01-01T00:00:00Z".into(),
         },
         coordinator_contract: 0,
@@ -314,6 +315,14 @@ fn any_pin_change_changes_the_key() {
         with(&|p| p.storage_s3_source = Some(git_source("x", "y", &["b==1@00"]))),
         with(&|p| p.executor_sha = "x".into()),
         with(&|p| p.logger_version = "x".into()),
+        // Set and unset it, and change it, whatever the live pin has.
+        with(&|p| {
+            p.single_job_executor_version = match p.single_job_executor_version {
+                Some(_) => None,
+                None => Some("x".into()),
+            }
+        }),
+        with(&|p| p.single_job_executor_version = Some("y".into())),
         with(&|p| p.exclude_newer = "x".into()),
         RuntimeRecipe::Snakemake {
             recipe_version: recipe_version + 1,
@@ -397,6 +406,31 @@ fn a_storage_plugin_source_reaches_the_key_and_the_build_env() {
     let round: RuntimeRecipe =
         serde_json::from_value(serde_json::to_value(&sourced).unwrap()).unwrap();
     assert_eq!(round, sourced);
+}
+
+/// The single-job executor is named in the key and the build's environment; a recipe recorded
+/// before it existed has none, and serializes (and keys) as it did.
+#[test]
+fn a_single_job_executor_reaches_the_key_and_the_build_env() {
+    let plain = fixed_snakemake();
+    let json = serde_json::to_value(&plain).unwrap();
+    assert!(json["pins"].get("single_job_executor_version").is_none(), "{json}");
+    assert!(!plain.build_env().contains_key("BIFFIX_RT_SINGLE_JOB_EXECUTOR_VERSION"));
+    let RuntimeRecipe::Snakemake { recipe_version, engine_version, mut pins, coordinator_contract } =
+        plain.clone()
+    else {
+        unreachable!()
+    };
+    pins.single_job_executor_version = Some("0.1.0".into());
+    let with_executor =
+        RuntimeRecipe::Snakemake { recipe_version, engine_version, pins, coordinator_contract };
+    assert_ne!(runtime_key(&plain), runtime_key(&with_executor));
+    assert_eq!(with_executor.build_env()["BIFFIX_RT_SINGLE_JOB_EXECUTOR_VERSION"], "0.1.0");
+    let round: RuntimeRecipe =
+        serde_json::from_value(serde_json::to_value(&with_executor).unwrap()).unwrap();
+    assert_eq!(round, with_executor);
+    // The live pin table names one: every runtime built from now on can run a single-job run.
+    assert!(snakemake_9().single_job_executor_version.is_some());
 }
 
 /// A plugin pinned to a git commit carries that commit in its version's local label
@@ -520,6 +554,7 @@ fn the_runtime_build_reads_every_build_env_variable() {
     };
     pins.storage_s3_source =
         Some(GitSource { repo: "r".into(), sha: "s".into(), build_requires: Vec::new() });
+    pins.single_job_executor_version = Some("0.1.0".into());
     let sourced =
         RuntimeRecipe::Snakemake { recipe_version, engine_version, pins, coordinator_contract };
     for r in [fixed_snakemake(), sourced, recipe("nextflow", "25.10.4").unwrap(), with_plugins] {
@@ -562,6 +597,10 @@ fn the_pin_tables_match_what_the_base_image_ships() {
     has_line(
         "plugins/snakemake-logger-plugin-biffix/pyproject.toml",
         format!("version = \"{}\"", sm.logger_version),
+    );
+    has_line(
+        "plugins/snakemake-executor-plugin-biffix/pyproject.toml",
+        format!("version = \"{}\"", sm.single_job_executor_version.unwrap()),
     );
     // (The coordinator enables whichever nf-biffix its runtime layer carries, so the entrypoint
     // names no version of its own.)

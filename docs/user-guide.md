@@ -441,22 +441,23 @@ By default each task of a run is a separate Batch job, which the engine's AWS Ba
 submits, and every intermediate file goes through S3. For a workflow whose run fits on
 one large host and finishes in hours (one sample of a germline pipeline, say), a **single-job**
 run is often much faster and cheaper: the whole run is one Batch job on one host with local NVMe
-disks, the engine runs every task with its local executor, and inputs are read from S3 once. A
+disks, the engine runs every task on that host, and inputs are read from S3 once. A
 Nextflow run's intermediate files stay on the host's disk; a Snakemake run still publishes every
 rule's output to the run's output prefix, as in a run of one job per task, and only its inputs and
 local copies of its outputs stay on the host.
 
 The engine still drives the DAG and every task still runs in the image its Batch job would run,
 nested in the job's container with [Apptainer](https://apptainer.org/): a Nextflow process's
-`container`, a Snakemake rule's `aws_batch_container_image` (through the run's image map), else the
-version's default image. As on AWS Batch, a Snakemake rule's own `container:` is ignored and a
-local rule runs in the job itself. At the start of the run biffix converts every image in the
+`container`, a Snakemake job's `aws_batch_container_image` (through the run's image map), else the
+version's default image. As on AWS Batch, a Snakemake rule's own `container:` is ignored, a local
+rule runs in the job itself, and the jobs of a group that depend on each other run as one group
+job, in the one image they name. At the start of the run biffix converts every image in the
 run's image map to Apptainer's format on the host, in parallel, so a missing or broken image fails
 the run in minutes rather than hours in. An image the map does not name fails a Snakemake run
 before any task starts, and a Nextflow run when the process that names it is dispatched, so
 earlier processes may already have run and published outputs. Either way no image is pulled while
-the run runs. Each task's image is recorded, as in a run of
-one job per task (a task that runs without one records none).
+the run runs. Each task's image is recorded, as in a run of one job per task (a task that runs
+without one records none).
 
 To allow it, add `single_job:` to the version's `biffix.yaml` (and register a new version). A run
 then opts in with `--single-job` (`single_job` in `POST /runs`) and gets a whole host of one of the
@@ -483,38 +484,66 @@ request; the launch form and the run page do not show single-job settings yet.
 Things to know:
 
 - **A non-local Snakemake rule's image must be a plain string.** A rule whose
-  `aws_batch_container_image` is set by a function fails a single-job run before any task starts
-  (biffix sets its container before the run, from its resource). Ungrouped local rules run without
-  a task image, so their image resource is ignored.
-- **Python `run:` blocks cannot execute in a task image.** Snakemake executes their Python in the
-  engine's environment. A non-local `run:` rule assigned an image is rejected before execution;
-  use `script:` to execute in that image. Local `run:` rules and rules with no assigned image
-  remain allowed.
+  `aws_batch_container_image` is set by a function, or set to `""` (which AWS Batch refuses too),
+  fails a single-job run before any task starts (biffix checks every rule's image before the run,
+  from its resource). Ungrouped local rules run without a task image, so their image resource is
+  ignored.
+- **A Snakemake job runs as on AWS Batch: its own Snakemake, inside its image.** So a Python `run:`
+  block runs in the job's image (on the Snakemake runtime biffix adds to it), `script:` and
+  `shell:` behave as in a run of one job per task, and a job gets the same variables: the
+  workflow's `envvars:` and the job's AWS credentials (the project's run role), in an otherwise
+  clean environment.
+- **Each Snakemake job pays to start its own Snakemake.** Measured on an Apple M2 Max (12 cores,
+  64 GiB, Snakemake 9.27.1, `--cores 8`) with workflows of 50, 200 and 500 jobs that each only
+  `touch` their output, this adds about 0.26 s of wall time per job over Snakemake's local executor
+  with `--sdm apptainer`, which ran each job's shell from the engine's own process: 500 jobs took
+  142 s against 11 s (medians of three runs). That is about 2 s to start each job's Snakemake,
+  eight at a time. Jobs grouped ten to a group job cost about 0.19 s each. The runs replaced
+  Apptainer with a stand-in that runs the job's command directly, the same on both paths, so the
+  figure leaves out Apptainer's own start-up, and the host was shared with other work. Next to jobs
+  that run for minutes it is small; a workflow of many jobs of a second or less runs faster with
+  them grouped (`group:`).
+- **A Snakemake group job runs in one image.** As on AWS Batch, Snakemake merges a group job's
+  resources when it forms it and refuses one whose jobs name different images, or where one of two
+  jobs that could run side by side names an image and the other names none. That stops the run
+  when the group job is formed, which can be after other jobs have run. Jobs of one group that do
+  not depend on each other are separate group jobs, and may name different images. A group job's
+  own Snakemake gets the run's `--cores`, as on AWS Batch, so `workflow.cores` reads the same in
+  it; it may then run more of its jobs at once than the width Snakemake reserved for the group
+  job, which on AWS Batch its container's vCPUs would bound, and on a single-job host nothing does.
+  Its memory is bounded, though: it schedules its jobs within the `mem_mb` Snakemake reserved for
+  the group job.
 - **Task images must contain `bash`.** Both engines run each task's script with it, so an
   Alpine-only image (BusyBox `sh`) fails.
 - **No per-task CPU or memory limit.** Only the job's own limit applies. The engine is given the
   host's size less what it needs itself (Nextflow's `executor.cpus`/`memory` and
   `process.resourceLimits`, as defaults the pipeline's own settings override; Snakemake's
-  `--cores` and `mem_mb`), and tasks that run in an image run at a higher OOM score than the
-  engine, so when memory runs out the kernel prefers to stop such a task, which the engine can
-  retry. That is a preference, not a guarantee: it can still pick the engine, which ends the run.
-  A task with no image (a Snakemake `run:` block or rule with no image, a Nextflow `exec:`
-  process) runs in the engine's own environment, at the engine's score.
+  `--cores` and `mem_mb`, which bound the threads and the memory of the jobs running at once, a
+  group job counting as the width Snakemake reserves for it; what Snakemake keeps includes about
+  160 MiB a vCPU for the Snakemake each job runs, though a group job's Snakemake starts another for
+  each `run:` or `shadow:` job in it, which that does not cover), and tasks that run in an image
+  run at a higher OOM score than the engine, so when memory runs out the kernel prefers to stop
+  such a task, which the engine can retry. That is a preference, not a guarantee (it weighs each
+  process's memory use too): it can still pick the engine, which ends the run. A task with no
+  image (a Snakemake local rule or a rule with no image, a Nextflow `exec:` process) runs in the
+  engine's own environment, at the engine's score.
 - **x86_64 hosts only, for now.** Apptainer publishes no arm64 package, so single-job
   queue-classes are x86_64 instance types.
 - Tasks' `/tmp` is on the host's local disk, like the work directory.
-- **Snakemake 9 only.** Snakemake 10 drops its built-in Apptainer support; single-job runs of a
-  Snakemake version pin a 9.x release until an Apptainer software-deployment plugin exists.
-  Tasks run with a clean environment (`--cleanenv`): a job's thread count (`OMP_NUM_THREADS` and
-  the like) reaches it, but a workflow's `envvars:` do not.
+- **Each Snakemake output is uploaded twice.** A job's own Snakemake publishes its outputs to
+  the run's output prefix, as on AWS Batch, and the engine, which shares the job's local copies,
+  publishes them again when the job ends. The second upload replaces the first with the same
+  bytes; it costs time for large outputs.
+- **A Snakemake run's log holds every job's own Snakemake output**, start-up lines included, with
+  the task's output: there is no per-task log stream as on AWS Batch.
 - **No single-job resume.** The work directory lives on the host's disk and is gone when the run
   ends, so a resume always runs one Batch job per task, never as a single-job run. A Nextflow
   single-job run cannot be resumed at all. A Snakemake single-job run can be (its outputs and run
   metadata are in its output prefix), and its resume runs one Batch job per task. Snakemake runs,
   in either mode, do not re-run a job only because its software environment changed
-  (`--rerun-triggers mtime params input code`): the two modes record it differently, and this keeps
-  either mode's metadata usable by the other. So a single-job run does not re-run a finished job
-  only because its image changed. A "Try again" or "Re-run" of a single-job run in the web app is
+  (`--rerun-triggers mtime params input code`): Snakemake does not know a job's image as one, so
+  either mode's metadata is usable by the other, and a run does not re-run a finished job only
+  because its image changed. A "Try again" or "Re-run" of a single-job run in the web app is
   a single-job run again, on the same queue-class with the same sizing type, not necessarily the
   same actual host type. If the host is lost, Batch runs the job again: a Nextflow run starts
   over, and a Snakemake run picks up after the jobs the lost host finished (their outputs are

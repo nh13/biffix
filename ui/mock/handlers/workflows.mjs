@@ -21,6 +21,8 @@ import { HIDDEN, ME, ME_LABEL, ME_SUB } from '../state.mjs';
 
 // nf-core/rnaseq's listed version: the one with a form, an about page and an estimate.
 const RNASEQ_VERSION_ID = 'aabbccddeeff:v1';
+// A Snakemake version whose biffix.yaml allows single-job runs (the contract test sizes one).
+const WGS_VERSION_ID = '7a8b9c0d1e2f:dev1';
 
 /** A version's current release (`VersionRelease::of`): what the list and the detail carry. */
 function releaseFields(id) {
@@ -129,6 +131,10 @@ function workflowDetail(v) {
       // Its biffix.yaml sends nf-core's heavy processes to the on-demand queue-class.
       queues: { default: 'cpu-spot', by_label: { process_high: 'cpu-ondemand' } },
     };
+  if (v.id === WGS_VERSION_ID) {
+    const base = workflowDetailBase(v);
+    return { ...base, form_schema: { ...base.form_schema, single_job: {} } };
+  }
   return workflowDetailBase(v);
 }
 // Its form declares the key results its analyses write (`reports:`, frozen with the form).

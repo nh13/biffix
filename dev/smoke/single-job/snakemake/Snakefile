@@ -1,7 +1,9 @@
 rule all:
-    """Require the final two-step acceptance result."""
+    """Require the final two-step acceptance result, the group job's and the run: block's."""
     input:
-        result="world.txt"
+        result="world.txt",
+        grouped="grouped.txt",
+        python="python.txt"
     output: []
     log: []
 
@@ -48,3 +50,51 @@ rule ubuntu_world:
             printf 'world ubuntu 24.04\n' >> {output.result:q}
         ) > {log:q} 2>&1
         """
+
+rule ubuntu_group_first:
+    """The first of two jobs that run as one group job, in the image this one names."""
+    input: []
+    output:
+        first=temp("group_first.txt")
+    group: "pair"
+    resources:
+        mem_mb=256,
+        aws_batch_container_image="public.ecr.aws/docker/library/ubuntu:24.04"
+    shell:
+        """
+        test -d /.singularity.d
+        printf 'first\n' > {output.first:q}
+        """
+
+rule ubuntu_group_second:
+    """Names no image: it runs in its group job's (alone it would run in the coordinator)."""
+    input:
+        first="group_first.txt"
+    output:
+        grouped="grouped.txt"
+    group: "pair"
+    resources:
+        mem_mb=256
+    shell:
+        """
+        . /etc/os-release
+        test "$ID" = ubuntu
+        test -d /.singularity.d
+        test "$(cat {input.first:q})" = first
+        printf 'grouped ubuntu 24.04\n' > {output.grouped:q}
+        """
+
+rule ubuntu_run:
+    """A Python run: block runs in its job's image too, on the Snakemake runtime biffix adds."""
+    input: []
+    output:
+        python="python.txt"
+    resources:
+        mem_mb=256,
+        aws_batch_container_image="public.ecr.aws/docker/library/ubuntu:24.04"
+    run:
+        import os
+
+        assert os.path.isdir("/.singularity.d"), "not in an Apptainer container"
+        with open(output.python, "w") as out:
+            out.write("python ubuntu 24.04\n")

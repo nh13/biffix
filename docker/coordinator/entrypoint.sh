@@ -60,8 +60,8 @@
 #                             the project's run role, with the host's instance store at /scratch
 #                             and /dev/fuse; it needs no worker queue, no job definition map and no
 #                             SNAKEMAKE_AWS_BATCH_JOB_ROLE. Then also, required (78 without):
-#   BIFFIX_SINGLE_JOB_CPUS  - the vCPUs the job was given (its whole host's): the engine's local
-#                             executor runs tasks within them
+#   BIFFIX_SINGLE_JOB_CPUS  - the vCPUs the job was given (its whole host's): the engine runs
+#                             its tasks within them
 #   BIFFIX_SINGLE_JOB_MEMORY_MIB - the memory the job was given, MiB: the engine's tasks get it less
 #                             a reserve for the engine itself, and must get at least 1 GiB (78)
 #                             A single-job run never resumes (BIFFIX_RESUME=1 is refused, 78): a
@@ -221,6 +221,15 @@ select_execution
 install_signal_traps
 prepare_scratch
 select_runtime
+# The engine's settings, and a runtime layer that cannot run this run (one without biffix's
+# Nextflow plugins, a Snakemake one without the single-job executor), are refused now (exit 78),
+# before the source is staged and, for a single-job run, every task image converted. The settings
+# are only checked here, in a subshell, so none is left set: run_snakemake and run_nextflow read
+# their own.
+case "$ENGINE" in
+  snakemake) (snakemake_settings); ! is_single_job || require_single_job_executor ;;
+  nextflow) (nextflow_settings) ;;
+esac
 
 SRC="$WORK/src"
 mkdir -p "$SRC"

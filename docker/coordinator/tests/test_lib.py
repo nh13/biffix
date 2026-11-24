@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -19,7 +20,16 @@ from types import ModuleType
 from typing import ClassVar
 
 import pytest
-from helpers import FAKES, LIB, RealSnakemake, bash, helper, module
+from helpers import (
+    FAKES,
+    LIB,
+    TOOL_IMAGE,
+    WORKER_IMAGE,
+    RealSnakemake,
+    bash,
+    helper,
+    module,
+)
 from processes import stop_group
 
 # ── common.sh ──
@@ -1171,111 +1181,6 @@ def test_only_the_region_s_ecr_gets_the_login() -> None:
     assert not ecr.match("quay.io")
 
 
-def test_each_rule_runs_the_image_its_batch_job_would() -> None:
-    sj = module("single_job")
-    rule = sj.RuleImage
-    image_map = {
-        "tool:1": "T",
-        "docker.io/library/other:2": "O",
-        "W": "W",
-        "$default": "W",
-    }
-    images, problems = sj.plan_rule_images(
-        [
-            rule("as_written", image="tool:1"),
-            # Looked up in its normalized spelling, as the AWS Batch executor does.
-            rule("normalized", image="docker.io/library/tool:1"),
-            rule("short", image="other:2"),
-            rule("default"),
-            rule("local", image="tool:1", local=True),
-            rule("unmapped", image="docker://quay.io/x:1"),
-            rule("reserved", image="$default"),
-            rule("dynamic", problem="set by a function"),
-        ],
-        image_map,
-        "W",
-    )
-    assert images == {
-        "as_written": "T",
-        "normalized": "T",
-        "short": "O",
-        "default": "W",
-        "local": None,
-    }
-    assert [p.split(":")[0] for p in problems] == [
-        "rule unmapped",
-        "rule reserved",
-        "rule dynamic",
-    ]
-    assert "not one the run's image map names" in problems[0]
-    # No default image: such a rule runs in the job itself, as its Batch job would run in the
-    # coordinator's own image.
-    images, problems = sj.plan_rule_images([rule("default")], {}, "")
-    assert images == {"default": None} and problems == []
-
-
-def test_a_grouped_rule_without_an_image_runs_in_its_group_s() -> None:
-    """On AWS Batch a group's rules run as one job, in the image its rules name (Snakemake merges
-    the resource across the group job), so a member that names none takes the group's image."""
-    sj = module("single_job")
-    rule = sj.RuleImage
-    planned, problems = sj.group_images(
-        [
-            rule("tool", image="tool:1"),
-            rule("bare"),
-            rule("alone"),
-            rule("other_group"),
-            rule("dynamic", problem="set by a function"),
-            rule("mixed_a", image="tool:1"),
-            rule("mixed_b", image="other:2"),
-            rule("mixed_bare"),
-        ],
-        {
-            "tool": "g",
-            "bare": "g",
-            "alone": None,
-            "other_group": "h",
-            "dynamic": "g",
-            "mixed_a": "m",
-            "mixed_b": "m",
-            "mixed_bare": "m",
-        },
-    )
-    assert {r.name: r.image for r in planned} == {
-        "tool": "tool:1",
-        "bare": "tool:1",
-        "alone": None,
-        "other_group": None,
-        "dynamic": None,
-        "mixed_a": "tool:1",
-        "mixed_b": "other:2",
-        "mixed_bare": None,
-    }
-    assert [r.name for r in planned if r.problem] == ["dynamic"]
-    # Snakemake refuses a group job whose rules name different images; so does a single-job run.
-    assert len(problems) == 1
-    assert problems[0].startswith("group m: its rules name different images (other:2, tool:1)")
-
-
-def test_a_rule_image_resource_must_be_a_plain_string() -> None:
-    sj = module("single_job")
-
-    class Resource:
-        def __init__(self, value: object, evaluable: bool = False):
-            self.value, self._evaluable = value, evaluable
-
-        def is_evaluable(self) -> bool:
-            return self._evaluable
-
-    assert sj.rule_image("a", None, False) == sj.RuleImage("a")
-    assert sj.rule_image("a", Resource(None), True) == sj.RuleImage("a", local=True)
-    assert sj.rule_image("a", Resource(None, True), True) == sj.RuleImage("a", local=True)
-    assert sj.rule_image("a", Resource(3), True) == sj.RuleImage("a", local=True)
-    assert sj.rule_image("a", Resource("t:1"), False) == sj.RuleImage("a", image="t:1")
-    assert "set by a function" in (sj.rule_image("a", Resource(None, True), False).problem or "")
-    assert "not a plain string (3)" in (sj.rule_image("a", Resource(3), False).problem or "")
-
-
 _MODULE_SNAKEFILE = """\
 container: "docker://module-global:1"
 rule m:
@@ -1326,7 +1231,6 @@ rule loc:
 def test_a_real_snakemake_runs_every_rule_in_the_image_its_batch_job_would(tmp_path: Path) -> None:
     pytest.importorskip("snakemake")
     sm = RealSnakemake(tmp_path)
-    (sm.src / "mod/Snakefile").write_text(_MODULE_SNAKEFILE)
     workflow = _SNAKEFILE
     for name in ("a", "b", "c", "l", "g", "gt"):
         workflow = workflow.replace(f"echo {name} >", "echo ${{BIFFIX_TEST_IMAGE:-}} >")
@@ -1334,14 +1238,13 @@ def test_a_real_snakemake_runs_every_rule_in_the_image_its_batch_job_would(tmp_p
         "echo mdef >", "echo $BIFFIX_TEST_IMAGE >"
     )
     (sm.src / "mod/Snakefile").write_text(module_workflow)
-    got = sm.run(workflow, "all")
+    got = sm.run(workflow, "all", events=True)
     assert got.returncode == 0, got.stderr
-    tool = str(sm.images / "reg.io-t@sha256-1.img")
-    worker = str(sm.images / "reg.io-w@sha256-2.img")
-    # One job per image: the rules with the resource (a module rule's included) run the mapped
-    # image; the rest the default image, whatever their own or the workflow's `container:`; the
-    # local rule runs no container, unless it is in a group, whose Batch job runs the image a rule
-    # of the group names (its own naming none). Nothing is pulled.
+    tool, worker = sm.image_file(TOOL_IMAGE), sm.image_file(WORKER_IMAGE)
+    # The rules with the resource (a module rule's included) run the mapped image; the rest the
+    # default image, whatever their own or the workflow's `container:`; the local rule runs no
+    # container, unless it is in a group, whose job runs the image a rule of the group names (its
+    # own naming none). Nothing is pulled.
     assert {
         name: (sm.src / f"{name}.txt").read_text().strip()
         for name in ("a", "b", "c", "l", "m", "mdef", "g", "gt")
@@ -1355,78 +1258,66 @@ def test_a_real_snakemake_runs_every_rule_in_the_image_its_batch_job_would(tmp_p
         "g": tool,
         "gt": tool,
     }
-    assert json.loads(sm.task_images.read_text()) == {
-        "a": "reg.io/t@sha256:1",
-        "b": "reg.io/w@sha256:2",
-        "c": "reg.io/w@sha256:2",
-        "grouped": "reg.io/t@sha256:1",
-        "gtool": "reg.io/t@sha256:1",
-        "mm_m": "reg.io/t@sha256:1",
-        "mm_mdef": "reg.io/w@sha256:2",
+    # One container per job, and one for the group job of `grouped` and `gtool`.
+    assert sorted(sm.recorded.read_text().splitlines()) == sorted([tool] * 3 + [worker] * 3)
+    # Each task reports the image its job ran in, as the run's image map names it.
+    assert sm.task_images() == {
+        "a": TOOL_IMAGE,
+        "b": WORKER_IMAGE,
+        "c": WORKER_IMAGE,
+        "grouped": TOOL_IMAGE,
+        "gtool": TOOL_IMAGE,
+        "mm_m": TOOL_IMAGE,
+        "mm_mdef": WORKER_IMAGE,
+        "loc": None,
+        "all": None,
     }
     assert "Pulling" not in got.stderr
-    prefix = tmp_path / "apptainer/snakemake"
-    assert not prefix.exists() or not any(prefix.iterdir())
 
 
-def test_only_the_main_snakemake_process_writes_the_task_image_report(tmp_path: Path) -> None:
-    """A job Snakemake spawns (a `run:` job) reloads the wrapper Snakefile too: it sets its rules'
-    containers, but two such jobs both publishing the report through one temporary file race, and
-    the loser's rename fails its job. The main process alone writes it, before any job starts."""
-    pytest.importorskip("snakemake")
-    from types import SimpleNamespace
-
+def test_a_job_s_own_snakemake_only_includes_the_workflow(tmp_path: Path) -> None:
+    """A job's own Snakemake runs in a task image, which has no coordinator helper: there the
+    wrapper Snakefile must not load it. The budget and the image checks are the main process's."""
     sj = module("single_job")
-    report = tmp_path / "task-images.json"
-    images = tmp_path / "images.json"
-    tenant = "reg.io/t@sha256:1"
-    images.write_text(json.dumps({"tool": tenant}))
-    for main, written in [(False, False), (True, True)]:
-        rule = SimpleNamespace(
-            name="mapped",
-            resources={
-                sj.IMAGE_RESOURCE: SimpleNamespace(value="tool", is_evaluable=lambda: False)
-            },
-            norun=False,
-            is_template_engine=False,
-            is_run=False,
-            _group=None,
-            container_img=None,
-            is_containerized=True,
-        )
-        workflow = SimpleNamespace(
-            rules=[rule],
-            _localrules=set(),
-            group_settings=SimpleNamespace(overwrite_groups={}),
-            is_main_process=main,
-        )
-        sj.set_rule_containers(workflow, str(images), str(tmp_path), "", str(report), False)
-        # Either process sets the rule's container to its converted image file...
-        assert rule.container_img == str(tmp_path / sj.image_file_name(tenant))
-        assert rule.is_containerized is False
-        # ...but only the main one publishes the report.
-        assert report.exists() == written
-    assert json.loads(report.read_text()) == {"mapped": tenant}
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["images.json", "task-images.json"]
+    snakefile = tmp_path / "Snakefile"
+    snakefile.write_text("")
+    wrapper = Path(sj.snakefile_wrapper(str(snakefile), "", "", str(tmp_path), "", True, 1500))
+    # As a task image sees the wrapper: with no helper at the path it names.
+    text = wrapper.read_text().replace(str(LIB / "single_job.py"), str(tmp_path / "absent.py"))
+    included: list[tuple[str, bool]] = []
+
+    class Workflow:
+        is_main_process = False
+
+        def include(self, path: str, overwrite_default_target: bool = False) -> None:
+            included.append((path, overwrite_default_target))
+
+    exec(compile(text, str(wrapper), "exec"), {"workflow": Workflow()})
+    assert included == [(str(snakefile.resolve()), True)]
+    Workflow.is_main_process = True
+    with pytest.raises(FileNotFoundError):
+        exec(compile(text, str(wrapper), "exec"), {"workflow": Workflow()})
 
 
 def test_a_local_native_run_block_runs_in_the_engine_without_an_image(tmp_path: Path) -> None:
-    """A local Python run: block executes in the engine, so it reports no task image (one with an
-    image is refused: test_snakemake_single_job.py)."""
+    """A local Python run: block executes in the engine, so it reports no task image."""
     pytest.importorskip("snakemake")
     sm = RealSnakemake(tmp_path)
-    got = sm.run("""localrules: native
+    got = sm.run(
+        """localrules: native
 rule native:
     output: "native.txt"
     run:
         import sys
         with open(output[0], "w") as out:
             out.write(sys.executable)
-""")
+""",
+        events=True,
+    )
     assert got.returncode == 0, got.stderr
     assert Path((sm.src / "native.txt").read_text()).resolve() == Path(sys.executable).resolve()
     assert not sm.recorded.exists()
-    assert json.loads(sm.task_images.read_text()) == {}
+    assert sm.task_images() == {"native": None}
 
 
 def test_a_real_snakemake_refuses_a_rule_whose_image_the_run_cannot_have(tmp_path: Path) -> None:
@@ -1434,7 +1325,7 @@ def test_a_real_snakemake_refuses_a_rule_whose_image_the_run_cannot_have(tmp_pat
     sm = RealSnakemake(tmp_path)
     snakefile = """\
 rule all:
-    input: "u.txt", "f.txt", "p.txt"
+    input: "u.txt", "f.txt", "p.txt", "n.txt", "r.txt"
 rule plain:
     output: "p.txt"
     shell: "echo p > {output}"
@@ -1446,17 +1337,43 @@ rule function:
     output: "f.txt"
     resources: aws_batch_container_image=lambda wildcards: "tool:1"
     shell: "echo f > {output}"
+rule number:
+    output: "n.txt"
+    resources: aws_batch_container_image=3
+    shell: "echo n > {output}"
+rule reserved:
+    output: "r.txt"
+    resources: aws_batch_container_image="$default"
+    shell: "echo r > {output}"
 """
     got = sm.run(snakefile, convert=False)
     assert got.returncode != 0
-    assert "rule unmapped: its image 'docker://quay.io/evil:1'" in got.stderr
-    assert "rule function: its aws_batch_container_image is set by a function" in got.stderr
+    assert "a single-job run runs each rule in an image its image map names" in got.stderr
+    # Each problem with its own remedy: biffix writes the map, so an image it lacks is declared.
+    assert (
+        "rule unmapped: its image 'docker://quay.io/evil:1' is not in the run's image map; "
+        "declare it in biffix.yaml's images: and re-register" in got.stderr
+    )
+    assert "add it to the map" not in got.stderr
+    assert (
+        "rule function: its aws_batch_container_image is set by a function, which a single-job run "
+        "cannot resolve before the run; set it to the image's reference" in got.stderr
+    )
+    assert (
+        "rule number: its image 3 (aws_batch_container_image) is not an image reference; set it to "
+        "the image's reference" in got.stderr
+    )
+    # A key of the map that names the default image for its readers is not an image.
+    assert "rule reserved: its image '$default'" in got.stderr
     # The default image, which `plain` runs, was not converted either.
-    assert "the image file of reg.io/w@sha256:2" in got.stderr
-    assert "it was not converted" in got.stderr
+    assert "image reg.io/w@sha256:2: its image file " in got.stderr
+    assert (
+        "is missing (it was not converted); declare it in biffix.yaml's images: and re-register"
+        in got.stderr
+    )
     # Before any job ran.
     assert not sm.recorded.exists()
-    assert not (sm.src / "u.txt").exists() and not sm.task_images.exists()
+    assert not (sm.src / "u.txt").exists() and not (sm.src / "p.txt").exists()
 
 
 def test_a_conversion_failure_names_two_images_that_would_share_a_file(tmp_path: Path) -> None:
@@ -1494,29 +1411,54 @@ def test_the_single_job_mode_and_its_scratch_root_are_checked(tmp_path: Path) ->
     assert "is not a writable directory" in got.stderr
 
 
+def test_the_snakemake_job_reserve_is_the_backend_s_and_the_mock_s() -> None:
+    """The memory a single-job run's Snakemake keeps for each job, which the backend (choosing the
+    instance type) and the UI's mock API reckon too: one value in three files."""
+    repo = Path(__file__).resolve().parents[3]
+
+    def constant(path: str, pattern: str) -> int:
+        found = re.findall(pattern, (repo / path).read_text(), re.MULTILINE)
+        assert len(found) == 1, (path, found)
+        return int(found[0])
+
+    shell = constant(
+        "docker/coordinator/lib/single_job.sh", r"^  local -r SNAKEMAKE_JOB_RESERVE_MIB=(\d+)$"
+    )
+    assert shell == constant(
+        "crates/biffix-backend/src/runs/single_job.rs",
+        r"^pub\(crate\) const SNAKEMAKE_JOB_RESERVE_MIB: u64 = (\d+);$",
+    )
+    assert shell == constant(
+        "ui/mock/handlers/runs.mjs", r"^const SNAKEMAKE_JOB_RESERVE_MIB = (\d+);$"
+    )
+
+
 # The backend mirrors this split to size a run (runs/single_job.rs task_memory_mib), its test pinned
 # to the same values: change the two together.
 @pytest.mark.parametrize(
-    ("engine", "memory", "tasks", "heap"),
+    ("engine", "cpus", "memory", "tasks", "heap"),
     [
-        ("nextflow", "65536", "59392", "4096"),
-        ("nextflow", "524288", "499712", "8192"),
-        ("nextflow", "8192", "6144", "1024"),
+        ("nextflow", "8", "65536", "59392", "4096"),
+        ("nextflow", "64", "524288", "499712", "8192"),
+        ("nextflow", "2", "8192", "6144", "1024"),
         # A c6id.8xlarge's whole-host job.
-        ("nextflow", "61184", "55448", "3824"),
-        ("snakemake", "61184", "57360", ""),
-        ("snakemake", "8192", "6144", ""),
-        ("snakemake", "65536", "61440", ""),
-        ("snakemake", "524288", "516096", ""),
+        ("nextflow", "32", "61184", "55448", "3824"),
+        # Snakemake's reserve grows by SNAKEMAKE_JOB_RESERVE_MIB (160 MiB) a vCPU: each job running
+        # at once has its own Snakemake.
+        ("snakemake", "32", "61184", "52240", ""),
+        ("snakemake", "2", "8192", "5824", ""),
+        ("snakemake", "8", "65536", "60160", ""),
+        ("snakemake", "64", "524288", "505856", ""),
     ],
 )
 def test_the_engine_keeps_a_reserve_of_the_job_s_memory(
-    engine: str, memory: str, tasks: str, heap: str
+    engine: str, cpus: str, memory: str, tasks: str, heap: str
 ) -> None:
     got = bash(
         'single_job_memory; echo "$SJ_TASK_MEMORY_MIB ${SJ_JVM_HEAP_MIB:-}"',
         "single_job",
         ENGINE=engine,
+        SJ_CPUS=cpus,
         SJ_MEMORY_MIB=memory,
     )
     assert got.returncode == 0, got.stderr

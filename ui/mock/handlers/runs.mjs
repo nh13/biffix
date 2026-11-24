@@ -431,14 +431,21 @@ const wholeHost = ([vcpus, mib]) => ({
   memory_mib: Math.floor((mib - Math.floor((mib * 6) / 100) - 256) / 256) * 256,
 });
 
+// What a single-job run's Snakemake keeps for each job that may run at once, MiB: the backend's
+// SNAKEMAKE_JOB_RESERVE_MIB (runs/single_job.rs), and the coordinator's (lib/single_job.sh), whose
+// test (docker/coordinator/tests/test_lib.py) keeps the three equal.
+const SNAKEMAKE_JOB_RESERVE_MIB = 160;
+
 // The memory a single-job run's tasks get of its job's (runs/single_job.rs `task_memory_mib`, the
-// coordinator's `single_job_memory`): the job's less the engine's own reserve, never below 0.
+// coordinator's `single_job_memory`): the job's less the engine's own reserve (Snakemake's grows
+// by SNAKEMAKE_JOB_RESERVE_MIB a vCPU, for each job's own Snakemake), never below 0.
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
-const taskMemoryMib = (engine, jobMib) => {
+const taskMemoryMib = (engine, job) => {
+  const jobMib = job.memory_mib;
   const reserve =
     engine === 'nextflow'
       ? clamp(Math.floor(jobMib / 16), 1024, 8192) + Math.max(Math.floor(jobMib / 32), 1024)
-      : clamp(Math.floor(jobMib / 16), 2048, 8192);
+      : clamp(Math.floor(jobMib / 16), 2048, 8192) + job.vcpus * SNAKEMAKE_JOB_RESERVE_MIB;
   return Math.max(jobMib - reserve, 0);
 };
 
@@ -479,7 +486,7 @@ function resolveSingleJob(request, allowed, engine) {
     type = types.find(
       (t) =>
         INSTANCE_SIZES[t][0] >= size.cpus &&
-        taskMemoryMib(engine, wholeHost(INSTANCE_SIZES[t]).memory_mib) >= size.memory_gib * 1024,
+        taskMemoryMib(engine, wholeHost(INSTANCE_SIZES[t])) >= size.memory_gib * 1024,
     );
     if (!type)
       return `no instance type of single-job queue-class \`${queue.name}\` (${queue.instance_types.join(', ')}) has ${size.cpus} vCPUs and leaves ${size.memory_gib} GiB for the run's tasks (after what the host, ECS and the ${engine} engine keep)`;

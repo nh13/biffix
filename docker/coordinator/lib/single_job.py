@@ -1,10 +1,10 @@
 """A single-job run's task images, converted to Apptainer image files before the engine starts and
-put where each engine looks for them; and, for Snakemake, the wrapper Snakefile that runs the
-workflow on one host (each rule in its image, within the host's CPU and memory budget).
+put where each engine looks for them; and, for Snakemake, the wrapper Snakefile that checks every
+rule's image before any job starts and sets the host's memory budget.
 
 Usage: single_job.py convert <images.json> <images dir> <log dir> <failure file> [<image>...]
        single_job.py snakefile-wrapper <snakefile> <wrapper> <images.json> <images dir> \
-           <default image> <task images file> check|no-check <task memory MiB>
+           <default image> check|no-check <task memory MiB> [<variable>...]
 
 <images.json> is the run's image map (declared image -> the tenant image to run), or "" for none;
 each <image> is one more tenant image the run may name as itself (the version's default image).
@@ -19,16 +19,19 @@ every pull too, and the exit status is then 143, with no failure recorded. Each 
 is in <log dir>.
 
 `snakefile-wrapper` exclusively creates <wrapper> ("" chooses a unique sibling of <snakefile>)
-and prints its path. It includes <snakefile> and then sets every rule's container to the image
-file of the image its job on AWS Batch would run (set_rule_containers): its
-`aws_batch_container_image` through the map, else <default image> ("" for none). A rule naming an
-image the map does not, or naming it with anything but a plain string, fails the run before any job
-starts, as does (with `check`) an image file the conversion did not leave in <images dir>. So a
-single-job run pulls no image, as tasks do not on AWS Batch. Before the workflow is parsed, the
-wrapper also caps the memory of the jobs running at once at <task memory MiB> on top of the
-workflow profile's own resource limits, and clears the remote-execution `nodes` limit that would
-lift Snakemake's CPU budget (configure_local_resources); it keeps the workflow's own default
-target (`workflow.include(..., overwrite_default_target=True)`).
+and prints its path. It includes <snakefile>, keeping the workflow's own default target
+(`workflow.include(..., overwrite_default_target=True)`). In Snakemake's main process it also,
+before the workflow is parsed, caps the memory of the jobs running at once at <task memory MiB> on
+top of the workflow profile's own resource limits, scopes memory and disk to the whole host beside
+the profile's own scopes, and clears the remote-execution `nodes` limit that would lift
+Snakemake's CPU budget (configure_local_resources); registers each <variable> with Snakemake as one
+every job gets, beside a profile's `envvars:`; and, once the workflow is parsed, checks every
+rule's image (check_rule_images): a rule whose image the executor would refuse for its jobs fails
+the run before any job starts, as does (with `check`) an image file the conversion did not leave
+in <images dir>. The image each job runs in is chosen later, per
+job and group job, by the biffix executor plugin (plugins/snakemake-executor-plugin-biffix), from
+the same map and files. A job's own Snakemake, which the executor starts in the job's image, loads
+the wrapper too and only includes the workflow: this file is not in a task image.
 """
 
 from __future__ import annotations
@@ -43,22 +46,26 @@ import subprocess
 import sys
 import tempfile
 import threading
-from collections.abc import Iterable, Mapping
+import time
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 DEFAULT_PARALLEL = 4
 # The bytes of a failed pull's output quoted in the failure.
 FAILURE_TAIL_BYTES = 4096
+# How long a stopped pull's processes have to end on SIGTERM before they are killed.
+STOP_GRACE_SECONDS = 2.0
+# How often a worker checks on its child once the conversion has failed.
+STOP_POLL_SECONDS = 0.05
 # A key naming the run's default image, for people reading the map (crates/biffix-backend
 # images/map.rs); never a container a workflow names.
 RESERVED_KEY_PREFIX = "$"
 
 
 def read_map(path: str) -> dict[str, str]:
-    """The image map at `path` ({} for ""), keeping only string values."""
+    """The image map at `path` ({} for ""), keeping only string values: the images to convert."""
     if not path:
         return {}
     with open(path) as fh:
@@ -124,8 +131,13 @@ class Conversion:
         self.failed = threading.Event()
         self.failure = ""
         self.stopped_by: int | None = None
+        # Taken by the workers, and on the main thread only by the signal handler (stop): never
+        # by the main thread's own code, which a SIGTERM could interrupt while it held it.
         self._lock = threading.Lock()
         self._running: set[subprocess.Popen[bytes]] = set()
+        # When a child the failure stopped is killed if it has not ended (monotonic time; set
+        # with `failed`).
+        self._kill_at = 0.0
 
     def login(self, region: str) -> dict[str, str]:
         """Fetch ECR credentials in a cancellable child; call from a worker like pull().
@@ -146,10 +158,9 @@ class Conversion:
             )
             self._running.add(proc)
         try:
-            output, _ = proc.communicate()
+            output = self._supervise(proc)
         finally:
-            with self._lock:
-                self._running.discard(proc)
+            self._retire(proc)
         if self.failed.is_set():
             return {}
         if proc.returncode != 0:
@@ -184,52 +195,116 @@ class Conversion:
                     start_new_session=True,
                 )
                 self._running.add(proc)
-            status = proc.wait()
-            with self._lock:
-                if status != 0:
-                    # Its own group too, before it leaves the running pulls that fail() stops: a
-                    # child the failed apptainer left (mksquashfs) would keep converting. Just
-                    # reaped, so its group id is not yet another's while any member is left.
+            produced = False
+            try:
+                self._supervise(proc)
+                produced = proc.returncode == 0 and partial.is_file()
+            finally:
+                status = proc.returncode
+
+                def why() -> str:
+                    # Run by _retire under the lock: a read error must not cut short its cleanup
+                    # (the group's kill, the partial image's removal) nor the failure itself.
                     try:
-                        os.killpg(proc.pid, signal.SIGTERM)
-                    except (ProcessLookupError, PermissionError):
-                        pass  # the group is gone, or its last members are exiting
-                self._running.discard(proc)
-        if status == 0 and partial.is_file():
+                        tail = tail_bytes(log, FAILURE_TAIL_BYTES).decode(errors="replace")
+                    except OSError as e:
+                        tail = f"(its log {log} could not be read: {e})"
+                    tail = tail.rstrip()
+                    return (
+                        f"could not convert the task image {image} (apptainer pull exited "
+                        f"{status}):\n{tail}"
+                    )
+
+                # A pull that ended without its image is the conversion's failure, recorded while
+                # its group is still tracked (so the failure stops it too).
+                self._retire(proc, None if produced or status is None else why)
+        if produced:
             os.replace(partial, dest)
             print(f"biffix-coordinator: converted {image} -> {dest}", file=sys.stderr)
             return
         partial.unlink(missing_ok=True)
-        if self.failed.is_set():
-            return  # stopped because another image failed
-        tail = tail_bytes(log, FAILURE_TAIL_BYTES).decode(errors="replace").rstrip()
-        self.fail(
-            f"could not convert the task image {image} (apptainer pull exited {status}):\n{tail}"
-        )
 
     def fail(self, why: str) -> None:
-        """Record the first failure and stop every pull still running."""
+        """Record the first failure and stop every pull still running (SIGTERM; each worker kills
+        its own child's group once the grace period is up: _supervise, _retire)."""
         with self._lock:
-            if self.failed.is_set():
+            self._fail_locked(why)
+
+    def _fail_locked(self, why: str) -> None:
+        """fail(), with the lock held."""
+        if self.failed.is_set():
+            return
+        self.failure = why
+        self._kill_at = time.monotonic() + STOP_GRACE_SECONDS
+        self.failed.set()
+        for proc in self._running:
+            # Every child here was running until at most a moment ago (its worker takes it out
+            # of the set, _retire, right after its wait returns, or keeps it while its group
+            # gets the grace period), and a group's id is not reused while any process of it
+            # lives: so the group is the pull's, even if apptainer itself was just reaped and
+            # only its children (mksquashfs) are left.
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                continue  # the group is gone, or its last members are exiting
+
+    def _retire(
+        self, proc: subprocess.Popen[bytes], failure: Callable[[], str] | None = None
+    ) -> None:
+        """Take `proc` (just waited for) out of the running children: first recording `failure`
+        (its why, when it failed the conversion) unless another failure came first, under the
+        same lock as fail() and stop(). A child no failure or cancel has claimed simply leaves.
+        One claimed (by this failure, another, or a cancel: whichever came first, even after its
+        own wait returned) stays tracked while whatever is left of its group, a child that
+        ignores SIGTERM say, gets the grace period: then it is killed. So the conversion never
+        returns with a claimed child's process still running. Its group id is not reused while
+        any member lives."""
+        with self._lock:
+            if failure is not None and not self.failed.is_set():
+                self._fail_locked(failure())
+            if not self.failed.is_set():
+                self._running.discard(proc)
                 return
-            self.failure = why
-            self.failed.set()
-            for proc in self._running:
-                # A child not yet reaped (its worker's wait() has not returned) still holds its
-                # pid, so its group cannot be another's; one already reaped is skipped.
-                if proc.returncode is not None:
-                    continue
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    pass  # the group is gone, or its last members are exiting
+        try:
+            while _group_alive(proc.pid):
+                if time.monotonic() >= self._kill_at:
+                    _kill_group(proc.pid)
+                    break
+                time.sleep(STOP_POLL_SECONDS)
+        finally:
+            with self._lock:
+                self._running.discard(proc)
+
+    def _supervise(self, proc: subprocess.Popen[bytes]) -> bytes:
+        """Wait for `proc` (a login or a pull, the leader of a process group of its own) and
+        return its stdout (b"" when it has none). Once the conversion has failed, its group has
+        until the grace period after the failure's SIGTERM is up: then whatever is left of it, the
+        child itself or what it started (mksquashfs), is killed, whether or not the child has
+        ended. Bounded on its own, so no other worker's child keeps it, or the conversion,
+        waiting. Run on a worker, never on the main thread."""
+        output = b""
+        while True:
+            try:
+                output, _ = proc.communicate(timeout=STOP_POLL_SECONDS)
+                break
+            except subprocess.TimeoutExpired:
+                if self.failed.is_set() and time.monotonic() >= self._kill_at:
+                    _kill_group(proc.pid)
+        # The child has ended; a process it started may not have.
+        while self.failed.is_set() and _group_alive(proc.pid):
+            if time.monotonic() >= self._kill_at:
+                _kill_group(proc.pid)
+                break
+            time.sleep(STOP_POLL_SECONDS)
+        return output or b""
 
     def stop(self, signum: int) -> None:
         """A signal handler: stop the login and every pull, without recording a run failure."""
-        # The handler runs on the main thread, which otherwise never takes the lock, so a first
-        # SIGTERM at most waits for a worker to release it. A second one can interrupt the first
-        # handler while that holds the (non-reentrant) lock in fail(), and must return rather
-        # than wait on it forever: the first handler stops every child.
+        # The handler runs on the main thread, which otherwise never takes the lock (the workers
+        # kill what the SIGTERM leaves: _supervise), so a first SIGTERM at most waits for a worker
+        # to release it. A second one can interrupt the first handler while that holds the
+        # (non-reentrant) lock in fail(), and must return rather than wait on it forever: the
+        # first handler stops every child.
         if self.stopped_by is not None:
             return
         self.stopped_by = signum
@@ -282,8 +357,9 @@ def _convert(
     for d in (images_dir, log_dir):
         os.makedirs(d, exist_ok=True)
     conversion = Conversion(apptainer, Path(images_dir), Path(log_dir), pull_env(os.environ))
-    # The main thread never holds conversion's lock, including while starting the login child,
-    # so the signal handler can safely stop every child under that lock.
+    # The main thread never holds conversion's lock, including while starting the login child or
+    # once every pull has returned (each worker kills its own stopped child: _supervise), so the
+    # signal handler can safely stop every child under that lock.
     previous_handler = signal.signal(signal.SIGTERM, lambda signum, _frame: conversion.stop(signum))
     try:
         region = os.environ.get("BIFFIX_REGION", "")
@@ -309,6 +385,27 @@ def _convert(
         return 0
     finally:
         signal.signal(signal.SIGTERM, previous_handler)
+
+
+def _group_alive(pgid: int) -> bool:
+    """Whether process group `pgid` still has a process. A copy of the biffix executor plugin's
+    (plugins/snakemake-executor-plugin-biffix `_group_alive`), which `convert` cannot import: a
+    Nextflow run's python3 has no Snakemake runtime, nor that plugin."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass  # a process of the group that is not ours to signal: the group lives
+    return True
+
+
+def _kill_group(pgid: int) -> None:
+    """SIGKILL process group `pgid`, if any process of it is left."""
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 def _parallel(raw: str) -> int:
@@ -348,233 +445,160 @@ def _failed(failure_file: str, why: str) -> int:
     return 1
 
 
-# The rule resource the AWS Batch executor reads a rule's image from.
-IMAGE_RESOURCE = "aws_batch_container_image"
-DOCKER_HUB = "docker.io"
-DOCKER_HUB_ALIASES = ("index.docker.io", "registry-1.docker.io")
+def is_function(resource: Any) -> bool:
+    """Whether a rule's resource (Snakemake's `Resource`, or the raw value older Snakemake 9
+    releases keep) is set by a function."""
+    return callable(resource) or (hasattr(resource, "is_evaluable") and resource.is_evaluable())
 
 
-def normalize(ref: str) -> str:
-    """The canonical spelling of an image reference, as Docker reads it (`ubuntu` is
-    `docker.io/library/ubuntu:latest`): the AWS Batch executor's `image_map.normalize`, which looks
-    an image up in the map as written and then in this form."""
-    ref = ref.strip()
-    name, _, digest = ref.partition("@")
-    tag = None
-    if ":" in name.rsplit("/", 1)[-1]:
-        name, tag = name.rsplit(":", 1)
-    first, _, rest = name.partition("/")
-    if rest and ("." in first or ":" in first or first == "localhost" or first != first.lower()):
-        registry, repository = first.lower(), rest
-    else:
-        registry, repository = DOCKER_HUB, name
-    if registry in DOCKER_HUB_ALIASES:
-        registry = DOCKER_HUB
-    if registry == DOCKER_HUB and "/" not in repository:
-        repository = f"library/{repository}"
-    if digest:
-        return f"{registry}/{repository}@{digest.lower()}"
-    return f"{registry}/{repository}:{tag or 'latest'}"
+def check_rule_images(
+    workflow: Any, map_path: str, images_dir: str, default_image: str, check_files: bool
+) -> None:
+    """Run from the wrapper Snakefile once the workflow is included: check that every rule, module
+    rules (`use rule`) included, names an image the run can run, before any job starts. The biffix
+    executor plugin chooses each job's image when the job starts, and would only fail that one
+    job, perhaps hours in. So each rule's image is chosen here by the plugin's own functions
+    (`job_image`, then `image_file`), from what the executor is given (the map's file as it is,
+    `default_image`, the image files in `images_dir`). Raises Snakemake's WorkflowError naming,
+    each with its remedy, every rule whose resource is set by a function (which cannot be read
+    before the run), names the map's reserved key, or names an image the executor would refuse
+    (one the map lacks, or a resource that is no reference, "" included); and, when
+    `check_files` (not in a dry run, which converts nothing), every image file missing from
+    `images_dir`.
 
+    An ungrouped local rule is not checked: it runs in the engine, as it does beside a Batch run.
+    Which image a group job runs in, and whether its jobs may share one, is Snakemake's to decide
+    when it forms the group job, as for AWS Batch. A rule is taken to be in a group by its
+    Snakefile's `group:` alone: Snakemake installs the groups of `--groups` (or a profile's
+    `groups:`) only after the workflow is parsed, so a local rule they put in a group is not
+    checked here, and a job of it that cannot have its image fails when it starts.
 
-@dataclass(frozen=True)
-class RuleImage:
-    """What a rule names as its image: its `aws_batch_container_image` resource (`image`, None
-    when unset), or why that cannot be read before the run (`problem`), and whether the rule runs
-    in the engine itself on AWS Batch too (`local`: a local rule)."""
+    This reads Snakemake internals no API exposes (`workflow._localrules`, and each rule's
+    `_group`, `norun` and `is_template_engine`): a release without one is refused, naming it,
+    rather than checked wrongly."""
+    import snakemake
+    from snakemake.exceptions import WorkflowError
+    from snakemake_executor_plugin_biffix.images import (
+        IMAGE_RESOURCE,
+        ImageError,
+        ImageMap,
+        image_file,
+        job_image,
+    )
 
-    name: str
-    image: str | None = None
-    problem: str | None = None
-    local: bool = False
-
-
-def group_images(
-    rules: list[RuleImage], groups: dict[str, object]
-) -> tuple[list[RuleImage], list[str]]:
-    """`rules` with each grouped rule that names no image given its group's (`groups`: each rule's
-    group, None for none). On AWS Batch a group's jobs run as one job, in the image its rules name
-    (Snakemake merges the resource across a group job, and the executor reads it once), so a rule
-    that names none runs in that image, not the default one. Returns one problem per group whose
-    rules name different images, which Snakemake refuses for a group job they share.
-
-    This works per group name, from the rules alone: it runs as the Snakefile is parsed, before
-    there is a DAG to form group jobs from, and a rule has one container. So it differs from AWS
-    Batch where the group jobs would: rules of disconnected parts of one group (separate group
-    jobs on Batch) must name one image between them here, and every rule of a group counts, run
-    or not; a rule naming none takes the group's image even beside one naming it in the same
-    layer of a group job, which Snakemake refuses on Batch. Running each group job as Batch does
-    needs real group jobs, which only an executor plugin is given."""
-    named: dict[object, set[str]] = {}
-    for rule in rules:
-        group = groups.get(rule.name)
-        if group is not None and rule.image is not None and rule.problem is None:
-            named.setdefault(group, set()).add(rule.image)
-    problems = [
-        f"group {group}: its rules name different images ({', '.join(sorted(images))}) in "
-        f"{IMAGE_RESOURCE}, which Snakemake refuses for a group job; name one image for the "
-        "group's rules"
-        for group, images in named.items()
-        if len(images) > 1
+    # Snakemake's Workflow.is_local, less its local_exec, which a dry run sets (it runs on
+    # Snakemake's dryrun executor), and which would make every rule local: a rule in a group runs
+    # in its group's job, in its image, even if it is a local rule.
+    rules = list(workflow.rules)
+    missing = [f"workflows have no {a}" for a in ("_localrules",) if not hasattr(workflow, a)] + [
+        f"rules have no {a}"
+        for a in ("_group", "norun", "is_template_engine")
+        if any(not hasattr(rule, a) for rule in rules)
     ]
+    if missing:
+        raise WorkflowError(
+            f"biffix cannot check the rules' images on Snakemake {snakemake.__version__}: its "
+            + ", ".join(missing)
+        )
+    local_rules = workflow._localrules
 
-    def inherited(rule: RuleImage) -> str | None:
-        group = groups.get(rule.name)
-        images = named.get(group, set()) if group is not None else set()
-        if rule.image is None and rule.problem is None and not rule.local and len(images) == 1:
-            return next(iter(images))
-        return None
+    def is_local(rule: Any) -> bool:
+        return rule._group is None and (
+            rule.name in local_rules or rule.norun or rule.is_template_engine
+        )
 
-    planned = [replace(rule, image=image) if (image := inherited(rule)) else rule for rule in rules]
-    return planned, problems
-
-
-def plan_rule_images(
-    rules: Iterable[RuleImage], image_map: dict[str, str], default_image: str
-) -> tuple[dict[str, str | None], list[str]]:
-    """Each rule's tenant image, as its job on AWS Batch would run it (the executor's
-    `_container_image` with the strict image map): its resource's image through the map, else the
-    run's default image (`default_image`; "" for none: the rule runs in the job itself, as its
-    Batch job would run in the coordinator's own image). A local rule runs in the engine, as it
-    does beside a Batch run. A rule's `container:` directive plays no part, as on AWS Batch.
-    Returns the images (None: no container) and one problem per rule that cannot run: a resource
-    that is not a plain string, or an image the map does not name."""
-    by_normal: dict[str, str] = {}
-    for key, value in image_map.items():
-        if not key.startswith(RESERVED_KEY_PREFIX):
-            by_normal.setdefault(normalize(key), value)
-    images: dict[str, str | None] = {}
+    try:
+        image_map = ImageMap.from_file(map_path) if map_path else None
+    except (OSError, ValueError) as e:
+        raise WorkflowError(f"biffix: the run's image map {map_path} cannot be used: {e}") from e
+    declare = "declare it in biffix.yaml's images: and re-register"
     problems: list[str] = []
+    images: set[str] = set()
     for rule in rules:
-        if rule.problem is not None:
-            problems.append(f"rule {rule.name}: {rule.problem}")
+        if is_local(rule):
             continue
-        if rule.local:
-            images[rule.name] = None
-            continue
-        if rule.image is None:
-            images[rule.name] = default_image or None
-            continue
-        tenant = image_map.get(rule.image) or by_normal.get(normalize(rule.image))
-        if tenant is None or rule.image.startswith(RESERVED_KEY_PREFIX):
+        resource: Any = rule.resources.get(IMAGE_RESOURCE) if rule.resources is not None else None
+        if is_function(resource):
             problems.append(
-                f"rule {rule.name}: its image {rule.image!r} ({IMAGE_RESOURCE}) is not one the "
-                "run's image map names; declare it in biffix.yaml's images: and re-register"
+                f"rule {rule.name}: its {IMAGE_RESOURCE} is set by a function, which a single-job "
+                "run cannot resolve before the run; set it to the image's reference"
             )
             continue
-        images[rule.name] = tenant
-    return images, problems
-
-
-def rule_image(name: str, resource: Any, local: bool) -> RuleImage:
-    """A rule's RuleImage from its `aws_batch_container_image` resource (Snakemake's `Resource`,
-    or None when the rule has none)."""
-    if local or resource is None:
-        return RuleImage(name, local=local)
-    # Older Snakemake 9 releases keep raw values; newer ones wrap them in Resource.
-    wrapped = hasattr(resource, "is_evaluable")
-    if callable(resource) or (wrapped and resource.is_evaluable()):
-        return RuleImage(
-            name,
-            problem=f"its {IMAGE_RESOURCE} is set by a function, which a single-job run cannot "
-            "resolve before the run; set it to the image's reference",
-        )
-    value = resource.value if wrapped else resource
-    if value is None or value == "":
-        return RuleImage(name, local=local)
-    if not isinstance(value, str):
-        return RuleImage(
-            name,
-            problem=f"its {IMAGE_RESOURCE} is not a plain string ({value!r}); set it to the "
-            "image's reference",
-        )
-    return RuleImage(name, image=value, local=local)
-
-
-def set_rule_containers(
-    workflow: Any,
-    map_path: str,
-    images_dir: str,
-    default_image: str,
-    task_images_file: str,
-    check_files: bool,
-) -> None:
-    """Run from the wrapper Snakefile once the workflow is included: set every rule's container,
-    module rules (`use rule`) included, to the image file of its tenant image (plan_rule_images;
-    a grouped rule naming none, its group's: group_images), or to none. Every image is then one
-    the run's map names and the coordinator converted before the engine started, so no task pulls
-    an image. Writes `{rule: tenant image}` to `task_images_file` (from Snakemake's main process
-    only), for the logger plugin to report each task's image. Raises Snakemake's WorkflowError,
-    naming every rule that cannot run, before any job starts; so does an image file missing when
-    `check_files` (not in a dry run, which converts nothing)."""
-    from snakemake.exceptions import WorkflowError
-
-    # Snakemake's Workflow.is_local, less its local_exec (which holds for every rule here): a rule
-    # in a group runs in its group's Batch job, in its image, even if it is a local rule. Its
-    # `group` reads None outside a remote executor, so the group is read as a remote run sees it.
-    local_rules = set(getattr(workflow, "_localrules", ()))
-    overwrite_groups = getattr(getattr(workflow, "group_settings", None), "overwrite_groups", {})
-
-    def group_of(rule: Any) -> object:
-        return overwrite_groups.get(rule.name, getattr(rule, "_group", None))
-
-    rules = list(workflow.rules)
-    planned = [
-        rule_image(
-            rule.name,
-            rule.resources.get(IMAGE_RESOURCE) if rule.resources is not None else None,
-            group_of(rule) is None
-            and (rule.name in local_rules or rule.norun or rule.is_template_engine),
-        )
-        for rule in rules
-    ]
-    planned, group_problems = group_images(planned, {rule.name: group_of(rule) for rule in rules})
-    images, problems = plan_rule_images(planned, read_map(map_path), default_image)
-    problems = group_problems + problems
-    problems += [
-        f"rule {rule.name}: its Python run: block cannot execute in its assigned task image; "
-        "use script: instead, or declare it local (outside any group) if it should run in the "
-        "coordinator"
-        for rule in rules
-        if images.get(rule.name) and rule.is_run
-    ]
-    files = {image: Path(images_dir) / image_file_name(image) for image in images.values() if image}
+        # Older Snakemake 9 releases keep raw values; newer ones wrap them in Resource.
+        value = resource.value if hasattr(resource, "is_evaluable") else resource
+        if isinstance(value, str) and value.startswith(RESERVED_KEY_PREFIX):
+            problems.append(
+                f"rule {rule.name}: its image {value!r} ({IMAGE_RESOURCE}) is the map's reserved "
+                "key, not an image; set it to the image's reference"
+            )
+            continue
+        named = "its image" if value is not None else "the default image"
+        try:
+            image = job_image(
+                {} if value is None else {IMAGE_RESOURCE: value},
+                f"rule {rule.name}",
+                default_image or None,
+                image_map,
+            )
+        except ImageError as e:
+            if e.reason == ImageError.NOT_IN_MAP:
+                problems.append(
+                    f"{e.job_name}: {named} {e.image!r} is not in the run's image map; {declare}"
+                )
+            elif e.reason == ImageError.NOT_A_REFERENCE:
+                problems.append(
+                    f"{e.job_name}: {named} {e.image!r} ({IMAGE_RESOURCE}) is not an image "
+                    "reference; set it to the image's reference"
+                )
+            else:
+                problems.append(str(e))
+            continue
+        if image is not None:
+            images.add(image)
     if check_files:
-        problems += [
-            f"the image file of {image} ({path}) is missing: it was not converted"
-            for image, path in sorted(files.items())
-            if not path.is_file()
-        ]
+        for image in sorted(images):
+            try:
+                image_file(Path(images_dir), image, f"image {image}")
+            except ImageError as e:
+                problems.append(
+                    f"image {image}: its image file {e.path} is missing (it was not converted); "
+                    + declare
+                )
     if problems:
         raise WorkflowError(
             "biffix: a single-job run runs each rule in an image its image map names, converted "
-            "before the run (it pulls none):\n  " + "\n  ".join(problems)
+            "before the run (it pulls none), so it cannot run:\n  " + "\n  ".join(problems)
         )
-    for rule in rules:
-        image = images.get(rule.name)
-        rule.container_img = str(files[image]) if image else None
-        rule.is_containerized = False
-    # A job Snakemake spawns (a `run:` job) loads this Snakefile again and needs its rules'
-    # containers, but not the report: the main process wrote it before any job started, and two
-    # spawned jobs publishing it through one temporary file would race (the loser's rename fails
-    # its job).
-    if not getattr(workflow, "is_main_process", True):
-        return
-    tmp = f"{task_images_file}.tmp"
-    # A Python run: block with an image was refused above, so every image here is a task's own.
-    Path(tmp).write_text(json.dumps({k: v for k, v in sorted(images.items()) if v}))
-    os.replace(tmp, task_images_file)
+
+
+# The resources whose limits bound the jobs running at once on the host: for a remote executor
+# Snakemake reckons them per job (each on a node of its own), but every job here shares the host.
+HOST_SCOPED_RESOURCES = {"mem_mb": "global", "disk_mb": "global"}
+# The same in MiB, for a Snakemake 9 release before `snakemake.resources.Resource`: it takes each
+# unit for a resource of its own, so a profile could keep `mem_mib` local, and the scheduler would
+# then admit jobs on their `mem_mb` alone. A later release normalizes the aliases to the MB names.
+LEGACY_HOST_SCOPED_RESOURCES = {"mem_mib": "global", "disk_mib": "global"}
 
 
 def configure_local_resources(workflow: Any, memory_mib: int) -> None:
-    """Keep profile limits and defaults, adding the host budget before rules are parsed.
+    """Keep profile limits, defaults and resource scopes, adding the host budget before rules are
+    parsed.
 
-    Clearing nodes is essential: Snakemake lifts its CPU limit whenever nodes is set, even
-    with the local executor. Mutate the effective resources rather than passing --resources,
-    which would discard the workflow profile's other limits.
+    Clearing the nodes limit is essential: Snakemake's scheduler lifts its CPU limit whenever one
+    is set, as --jobs sets it, and a remote executor (the biffix executor) cannot run without
+    --jobs. Only the scheduler's limit (`global_resources`) is cleared: the setting itself stays,
+    since Snakemake checks, after the workflow is parsed, that a remote executor was given one.
+    Mutate the effective resources rather than passing --resources, which would discard the
+    workflow profile's other limits. Likewise memory and disk are scoped to the whole host
+    (HOST_SCOPED_RESOURCES, and LEGACY_HOST_SCOPED_RESOURCES on a release that keeps the MiB
+    units apart) on top of the profile's `set-resource-scopes`, which
+    --set-resource-scopes would replace: in the settings, which outrank a workflow's own
+    `resource_scopes:` and reach each job's Snakemake, and in the scopes the workflow already
+    took from them.
 
     This reaches into Snakemake internals no option exposes: `workflow.resource_settings` (its
-    `nodes` and `default_resources`), `workflow.global_resources`, and the `cached_property` cache
+    `default_resources` and `overwrite_resource_scopes`), `workflow.global_resources`,
+    `workflow.resource_scopes`, and the `cached_property` cache
     `ResourceSettings._parsed_default_resources`. A release without the first two fails here,
     loudly, rather than running unbounded.
     """
@@ -589,11 +613,19 @@ def configure_local_resources(workflow: Any, memory_mib: int) -> None:
             + ", ".join(missing)
         )
     settings = workflow.resource_settings
-    settings.nodes = None
     limits = workflow.global_resources
     limits["_nodes"] = None
+    # Snakemake's own ResourceScopes, which spells each size as its release does (`mem` or
+    # `mem_mb`), as it spells the profile's.
+    scopes = type(workflow.resource_scopes)
+    legacy = not hasattr(sm_resources, "Resource")
+    host_scopes = scopes(HOST_SCOPED_RESOURCES | (LEGACY_HOST_SCOPED_RESOURCES if legacy else {}))
+    settings.overwrite_resource_scopes = scopes(
+        {**settings.overwrite_resource_scopes, **host_scopes}
+    )
+    workflow.resource_scopes.update(host_scopes)
     memory_mb = memory_mib * 1048576 // 1000000
-    if hasattr(sm_resources, "Resource"):
+    if not legacy:
         caps = sm_resources.Resources.from_mapping({"mem_mb": memory_mb})
         for name, cap in caps.items():
             existing = limits.get(name)
@@ -619,35 +651,47 @@ def snakefile_wrapper(
     map_path: str,
     images_dir: str,
     default_image: str,
-    task_images_file: str,
     check_files: bool,
     memory_mib: int,
+    envvars: list[str] | None = None,
 ) -> str:
     """Create the wrapper exclusively and return its path (a unique sibling for wrapper="").
 
-    It sets the host's resource budget (configure_local_resources, `memory_mib` for the jobs
-    running at once), includes `snakefile` keeping its default target, then sets every rule's
-    container (set_rule_containers, from this file). Snakemake has no option for the containers
-    outside a remote executor. Keeping the generated file beside the entrypoint preserves
-    relative includes and scripts.
+    In Snakemake's main process it sets the host's resource budget (configure_local_resources,
+    `memory_mib` for the jobs running at once), registers `envvars` as variables every job gets,
+    includes `snakefile` keeping its default target, then checks every rule's image
+    (check_rule_images, from this file). Snakemake has no option for the budget or the check; the
+    variables are registered as `envvars:` registers them, so Snakemake takes the union with a
+    workflow profile's (or the command line's) `envvars`, which `--envvars` would replace instead.
+    (The executor passes registered variables to its jobs on every Snakemake 9: before 9.6
+    Snakemake itself passes a remote executor's jobs only `--envvars`.) A job's own Snakemake
+    (which the executor starts, in the job's image) loads the wrapper too, and only includes the
+    workflow: this file is in the coordinator's image, not a task's, and the budget and the checks
+    are the main process's (a group job's Snakemake gets the memory reserved for the group job
+    from the biffix executor instead, as --resources mem_mb). Keeping the generated file beside
+    the entrypoint preserves relative includes and scripts.
     """
-    args = ", ".join(ascii(a) for a in (map_path, images_dir, default_image, task_images_file))
+    args = ", ".join(ascii(a) for a in (map_path, images_dir, default_image))
     text = (
-        "# Written by biffix for a single-job run (lib/single_job.py): the workflow, with every\n"
-        "# rule's container set to the image its job on AWS Batch would run.\n"
+        "# Written by biffix for a single-job run (lib/single_job.py): the workflow, with the\n"
+        "# host's resource budget and a check of every rule's image, in Snakemake's main process.\n"
         "\n"
-        "import importlib.util as _biffix_importlib\n"
-        "import sys as _biffix_sys\n"
-        "_biffix_spec = _biffix_importlib.spec_from_file_location(\n"
-        f'    "biffix_single_job", {ascii(str(Path(__file__).resolve()))}\n'
-        ")\n"
-        "_biffix = _biffix_importlib.module_from_spec(_biffix_spec)\n"
-        "_biffix_sys.modules[_biffix_spec.name] = _biffix\n"
-        "_biffix_spec.loader.exec_module(_biffix)\n"
-        f"_biffix.configure_local_resources(workflow, {memory_mib})\n"
-        f"workflow.include({ascii(str(Path(snakefile).resolve()))}, "
+        "_biffix = None\n"
+        "if workflow.is_main_process:\n"
+        "    import importlib.util as _biffix_importlib\n"
+        "    import sys as _biffix_sys\n"
+        "    _biffix_spec = _biffix_importlib.spec_from_file_location(\n"
+        f'        "biffix_single_job", {ascii(str(Path(__file__).resolve()))}\n'
+        "    )\n"
+        "    _biffix = _biffix_importlib.module_from_spec(_biffix_spec)\n"
+        "    _biffix_sys.modules[_biffix_spec.name] = _biffix\n"
+        "    _biffix_spec.loader.exec_module(_biffix)\n"
+        f"    _biffix.configure_local_resources(workflow, {memory_mib})\n"
+        + (f"    workflow.register_envvars(*{ascii(list(envvars))})\n" if envvars else "")
+        + f"workflow.include({ascii(str(Path(snakefile).resolve()))}, "
         "overwrite_default_target=True)\n"
-        f"_biffix.set_rule_containers(workflow, {args}, {check_files!r})\n"
+        "if _biffix is not None:\n"
+        f"    _biffix.check_rule_images(workflow, {args}, {check_files!r})\n"
     )
     if wrapper:
         with open(wrapper, "x") as out:
@@ -679,9 +723,9 @@ def main(argv: list[str]) -> int:
             map_path,
             images_dir,
             default_image,
-            task_images_file,
             check,
             memory,
+            *envvars,
         ]:
             print(
                 snakefile_wrapper(
@@ -690,9 +734,9 @@ def main(argv: list[str]) -> int:
                     map_path,
                     images_dir,
                     default_image,
-                    task_images_file,
                     check == "check",
                     int(memory),
+                    envvars,
                 )
             )
             return 0
