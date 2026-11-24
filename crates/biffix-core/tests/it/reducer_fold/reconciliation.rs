@@ -591,3 +591,68 @@ fn display_attempt_prefers_success_then_highest_attempt() {
     ]);
     assert!(p3.runs["r1"].tasks["all"].display_attempt().is_none());
 }
+
+#[test]
+fn a_backfilled_start_and_terminal_fold_the_same_in_any_order() {
+    use biffix_core::eventbridge::describe::{
+        started_run_event, terminal_run_event, DescribedJobFacts, DescribedStartedJob,
+        DescribedTerminalJob, TerminalStatus,
+    };
+    // The reconciler backfills a job whose live events never arrived: its start (from Batch's
+    // `startedAt`) and its terminal, both on host ci-1. A live STARTING turns up late, under its
+    // own key, with an earlier time.
+    let start = started_run_event(&DescribedStartedJob {
+        batch_job_id: "job-1".into(),
+        started_at_millis: 4_000,
+        prior_attempts: 0,
+        facts: DescribedJobFacts {
+            log_stream: Some("ls".into()),
+            instance_id: Some("ci-1".into()),
+            queue: Some("q-new".into()),
+            is_coordinator: false,
+            requested: Default::default(),
+        },
+    });
+    let terminal = terminal_run_event(&DescribedTerminalJob {
+        batch_job_id: "job-1".into(),
+        status: TerminalStatus::Succeeded,
+        stopped_at_millis: 6_000,
+        exit_code: Some(0),
+        status_reason: None,
+        facts: DescribedJobFacts {
+            log_stream: Some("ls".into()),
+            instance_id: Some("ci-1".into()),
+            queue: Some("q-new".into()),
+            is_coordinator: false,
+            requested: Default::default(),
+        },
+    });
+    let mut live_starting =
+        batch(3.5, "job-1", EventData::TaskStarted { started_at: None, log_stream: None });
+    live_starting.dedup_key = "aws-batch:job-1:STARTING".into();
+    let log = vec![
+        run_anchor(1.0, "r1"),
+        task_submitted(2.0, "r1", "align:sample=A", 1, "job-1"),
+        start.clone(),
+        terminal,
+        live_starting,
+    ];
+    assert_incremental_equals_replay(&log);
+    let p = Projection::replay(&log);
+    let ap = &p.runs["r1"].tasks["align:sample=A"].attempts["job-1"];
+    assert_eq!(ap.state, AttemptState::Succeeded);
+    assert_eq!(ap.started_at_micros, Some(3_500_000), "the earliest start, the live STARTING");
+    assert_eq!(ap.finished_at_micros, Some(6_000_000));
+    assert_eq!(ap.instance_id.as_ref().map(biffix_core::ids::InstanceId::as_str), Some("ci-1"));
+
+    // Still running: only the backfilled start, and the job shows on its host.
+    let log =
+        vec![run_anchor(1.0, "r1"), task_submitted(2.0, "r1", "align:sample=A", 1, "job-1"), start];
+    assert_incremental_equals_replay(&log);
+    let p = Projection::replay(&log);
+    let ap = &p.runs["r1"].tasks["align:sample=A"].attempts["job-1"];
+    assert_eq!(ap.state, AttemptState::Running);
+    assert_eq!(task_state(&p, "r1", "align:sample=A"), TaskState::Running);
+    assert_eq!(ap.instance_id.as_ref().map(biffix_core::ids::InstanceId::as_str), Some("ci-1"));
+    assert_eq!(ap.started_at_micros, Some(4_000_000));
+}

@@ -441,6 +441,15 @@ variants**).
 Never use it to apply an upgrade: a release can change the backend and the build projects
 together (the image-build script reports a Dockerfile build's target and build args back to the
 backend), so deploy an upgrade with a full `deploy.sh` run (no `--stack`), not `--stack biffix-<tenant>-api` alone.
+Nor to add, rename or remove a `queue_classes` entry: the ingest stack carries the Batch event
+rule (one exact queue ARN per entry) and the reconcile Lambda's per-queue pricing map
+(`BIFFIX_QUEUE_PRICING`), both fixed at synth. With only compute and api deployed, the new
+queue's jobs run but their state changes do not reach biffix; from some 15 to 20 minutes after
+submit the reconcile backstop fills in what DescribeJobs reports for each job (its start and host
+once Batch has a start time, its end once the job has stopped; a running job is described again
+on later polls), and prices it without its queue's volume and capacity fallback. A job that ends
+after the ingest stack is redeployed, before the backstop has described it, keeps no start and is
+never priced.
 
 ### Task job definitions
 
@@ -1074,7 +1083,7 @@ that allows `<tenant-account>:root`) is managed **outside** biffix and is not re
 - **`--release` deploys the release's artifacts with this checkout's infra code** — check out the
   release tag first; deploy.sh refuses another version and warns on another commit.
 - **`--exclusively`** deploys just the named stack; drop it (or use `--all`) when a change crosses
-  stack boundaries.
+  stack boundaries. A `queue_classes` change always does (compute, api and ingest).
 - **Don't trust the in-app API docs (`/api-docs`)** to confirm a deploy — check the live endpoints.
 - **A fresh deploy has no admin** — every user is a Viewer until added to a Cognito group; bootstrap
   the first admin with `admin-add-user-to-group` (see **Roles & the first-admin bootstrap**).

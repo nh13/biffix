@@ -1,16 +1,23 @@
-//! AWS Batch reconciliation backstop: what the reaper does with a run's still-live
-//! children, decided from DescribeJobs' answer.
+//! AWS Batch reconciliation backstop: which events a described job yields, and what the reaper
+//! does with a run's still-live children, decided from DescribeJobs' answer.
 //!
-//! A DescribeJobs terminal becomes a `RunEvent` through
-//! `biffix_core::eventbridge::describe::terminal_run_event`, the same shape and dedup key as the
-//! live EventBridge one; this module plans the reap around it and synthesizes the FAILED of a child
-//! Batch has forgotten. The caller enqueues every event on the ordinary ingest queue; it never
-//! writes the event store directly.
+//! A DescribeJobs start or terminal becomes a `RunEvent` through
+//! `biffix_core::eventbridge::describe` (`started_run_event`, `terminal_run_event`), the same shape
+//! and dedup key as the live EventBridge one, so a job whose live events never arrived still gets
+//! its start (and host) as well as its end. This module picks which of them to enqueue (a start
+//! only when the log lacks it, on the stale path and the reaper's alike, and a terminal only once
+//! its job's start was accepted), plans the reap around them and synthesizes the FAILED of a child
+//! Batch has forgotten. The caller enqueues
+//! every event on the ordinary ingest queue; it never writes the event store directly.
+
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use biffix_core::event::RunEvent;
 use biffix_core::eventbridge::describe::{
-    terminal_run_event, DescribedTerminalJob, TerminalStatus,
+    started_run_event, terminal_run_event, DescribedJobFacts, DescribedStartedJob,
+    DescribedTerminalJob, TerminalStatus,
 };
+use biffix_core::ids::BatchJobId;
 
 /// Maximum number of job IDs accepted by one AWS Batch `DescribeJobs` request.
 pub const DESCRIBE_JOBS_BATCH_SIZE: usize = 100;
@@ -37,12 +44,66 @@ pub fn reap_terminal_event(
         stopped_at_millis,
         exit_code: None,
         status_reason: Some(forgotten_reason(coordinator_job_id)),
-        log_stream: None,
-        instance_id: None,
-        queue: None,
-        is_coordinator: false,
-        requested: Default::default(),
+        // Batch no longer knows the job, so nothing about it is known but its id: no stream, host,
+        // queue or request, and a reaped child is a task.
+        facts: DescribedJobFacts::default(),
     })
+}
+
+/// The events the backstop enqueues for one described job: its start, when Batch reports one the
+/// log does not hold (its dedup key is not among `log_start_keys`, the keys of the job's AWS Batch
+/// starts in the log), then its terminal. Keyed on the fact rather than on "any start", so a Batch
+/// retry's start is still backfilled when only the first attempt's reached the log.
+pub fn described_events(
+    start: Option<&DescribedStartedJob>,
+    terminal: Option<&DescribedTerminalJob>,
+    log_start_keys: &[String],
+) -> Vec<RunEvent> {
+    let start =
+        start.map(started_run_event).filter(|event| !log_start_keys.contains(&event.dedup_key));
+    start.into_iter().chain(terminal.map(terminal_run_event)).collect()
+}
+
+/// The starts the reaper enqueues for one page of an ended run's live children: each described
+/// child's start ([`described_events`] with no terminal, since the reaper's terminals come from
+/// [`plan_reap`]), only when the log lacks it. `children` maps every child of the page to the keys
+/// of the AWS Batch starts the log holds for it (`store::reconcile::LiveChild::start_keys`); a
+/// start for any other job is ignored, as [`plan_reap`] ignores one.
+pub fn reap_start_events(
+    starts: &[DescribedStartedJob],
+    children: &HashMap<String, Vec<String>>,
+) -> Vec<RunEvent> {
+    starts
+        .iter()
+        .filter_map(|start| {
+            let log_start_keys = children.get(&start.batch_job_id)?;
+            Some(described_events(Some(start), None, log_start_keys))
+        })
+        .flatten()
+        .collect()
+}
+
+/// The terminals to enqueue once the starts described with them have been: each of `terminals`
+/// except one whose job had a start among `starts` that SQS rejected (`failed_starts`, indices into
+/// `starts`). SendMessageBatch is not atomic, so a start and its job's terminal sent together can
+/// split, and once the terminal is logged the job is no longer a candidate on either path: its
+/// start would never be retried and the attempt never priced. Held back, the terminal keeps the
+/// job a candidate, so a later poll describes it again and retries both.
+pub fn terminals_to_send(
+    starts: &[RunEvent],
+    failed_starts: &BTreeSet<usize>,
+    terminals: Vec<RunEvent>,
+) -> Vec<RunEvent> {
+    let held: HashSet<&str> = failed_starts
+        .iter()
+        .filter_map(|&index| starts.get(index)?.batch_job_id.as_ref().map(BatchJobId::as_str))
+        .collect();
+    terminals
+        .into_iter()
+        .filter(|terminal| {
+            terminal.batch_job_id.as_ref().is_none_or(|id| !held.contains(id.as_str()))
+        })
+        .collect()
 }
 
 /// The reason biffix gives AWS for terminating a child job of an ended run.
@@ -152,11 +213,13 @@ mod tests {
             stopped_at_millis: 1_000,
             exit_code: None,
             status_reason: None,
-            log_stream: None,
-            instance_id: None,
-            queue: None,
-            is_coordinator: false,
-            requested: Default::default(),
+            facts: DescribedJobFacts {
+                log_stream: None,
+                instance_id: None,
+                queue: None,
+                is_coordinator: false,
+                requested: Default::default(),
+            },
         }
     }
 
@@ -181,6 +244,121 @@ mod tests {
         );
         assert_eq!(plan.terminate, vec!["b".to_string()]);
         assert_eq!(plan.missing, vec!["d".to_string()]);
+    }
+
+    fn start(id: &str) -> DescribedStartedJob {
+        DescribedStartedJob {
+            batch_job_id: id.into(),
+            started_at_millis: 500,
+            prior_attempts: 0,
+            facts: DescribedJobFacts {
+                log_stream: None,
+                instance_id: Some("ci-1".into()),
+                queue: None,
+                is_coordinator: false,
+                requested: Default::default(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_described_job_yields_its_start_only_when_the_log_lacks_that_fact() {
+        let (start, terminal) = (start("a"), terminal("a", TerminalStatus::Succeeded));
+        let kinds = |start: Option<&DescribedStartedJob>,
+                     terminal: Option<&DescribedTerminalJob>,
+                     log_start_keys: &[&str]| {
+            let keys: Vec<String> = log_start_keys.iter().map(|&key| key.to_owned()).collect();
+            described_events(start, terminal, &keys).iter().map(RunEvent::kind).collect::<Vec<_>>()
+        };
+        // The log has no start: Batch's start is enqueued, ahead of the terminal.
+        assert_eq!(
+            kinds(Some(&start), Some(&terminal), &[]),
+            [Kind::TaskStarted, Kind::TaskSucceeded]
+        );
+        assert_eq!(kinds(Some(&start), None, &[]), [Kind::TaskStarted]);
+        assert_eq!(kinds(None, Some(&terminal), &[]), [Kind::TaskSucceeded]);
+        assert_eq!(kinds(None, None, &[]), []);
+        // The log holds this start: only the terminal (a long-running job adds nothing each
+        // rotation).
+        let held = ["aws-batch:a:RUNNING"];
+        assert_eq!(kinds(Some(&start), Some(&terminal), &held), [Kind::TaskSucceeded]);
+        assert_eq!(kinds(Some(&start), None, &held), []);
+        assert_eq!(kinds(None, Some(&terminal), &held), [Kind::TaskSucceeded]);
+        assert_eq!(kinds(None, None, &held), []);
+        // The log holds only the first attempt's start, and Batch reports its retry's: the retry's
+        // start (its host and container) is a fact the log lacks.
+        let retry = DescribedStartedJob { prior_attempts: 1, ..start.clone() };
+        assert_eq!(kinds(Some(&retry), None, &held), [Kind::TaskStarted]);
+        assert_eq!(kinds(Some(&retry), None, &["aws-batch:a:RUNNING:1"]), []);
+        // The events are the shared translator's.
+        assert_eq!(
+            described_events(Some(&start), Some(&terminal), &[]),
+            [started_run_event(&start), terminal_run_event(&terminal)]
+        );
+    }
+
+    #[test]
+    fn the_reaper_enqueues_a_childs_start_only_when_the_log_lacks_it() {
+        let children = HashMap::from([
+            ("a".to_string(), vec![]),
+            ("b".to_string(), vec!["aws-batch:b:RUNNING".to_string()]),
+            ("c".to_string(), vec!["aws-batch:c:RUNNING".to_string()]),
+        ]);
+        let retry = DescribedStartedJob { prior_attempts: 1, ..start("c") };
+        let events = reap_start_events(
+            &[
+                // The log holds no start: enqueued.
+                start("a"),
+                // The log holds this one: nothing (an ended run's live child adds nothing each
+                // poll).
+                start("b"),
+                // The log holds only the first attempt's: the retry's is a fact it lacks.
+                retry.clone(),
+                // Not one of the page's children: ignored.
+                start("zz"),
+            ],
+            &children,
+        );
+        assert_eq!(events, [started_run_event(&start("a")), started_run_event(&retry)]);
+        assert!(reap_start_events(&[], &children).is_empty());
+    }
+
+    #[test]
+    fn a_terminal_waits_while_its_jobs_start_was_rejected() {
+        let starts = [started_run_event(&start("a")), started_run_event(&start("b"))];
+        let terminals = vec![
+            terminal_run_event(&terminal("a", TerminalStatus::Succeeded)),
+            terminal_run_event(&terminal("b", TerminalStatus::Failed)),
+            // A job with no start to send (the log holds it, or Batch reports none).
+            terminal_run_event(&terminal("c", TerminalStatus::Succeeded)),
+        ];
+        let ids = |events: Vec<RunEvent>| {
+            events
+                .into_iter()
+                .map(|event| event.batch_job_id.unwrap().as_str().to_owned())
+                .collect::<Vec<_>>()
+        };
+        // Every start accepted: every terminal goes.
+        assert_eq!(
+            ids(terminals_to_send(&starts, &BTreeSet::new(), terminals.clone())),
+            ["a", "b", "c"]
+        );
+        // b's start rejected: its terminal is held back, so the job stays a candidate and both are
+        // retried next poll; the others still go.
+        assert_eq!(
+            ids(terminals_to_send(&starts, &BTreeSet::from([1]), terminals.clone())),
+            ["a", "c"]
+        );
+        // Every start rejected: only the job that had none to send.
+        assert_eq!(
+            ids(terminals_to_send(&starts, &BTreeSet::from([0, 1]), terminals.clone())),
+            ["c"]
+        );
+        // An index past the starts names no job.
+        assert_eq!(
+            ids(terminals_to_send(&starts, &BTreeSet::from([7]), terminals)),
+            ["a", "b", "c"]
+        );
     }
 
     #[test]

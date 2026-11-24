@@ -3,10 +3,11 @@
 //! The pure EventBridge decoding lives in `biffix_core::eventbridge`; this crate does the IO
 //! around it.
 //!
-//! - [`decode`] — the reconciler's AWS SDK facts (DescribeJobs terminals and requests, EC2 host
-//!   lifecycle), mapped as core's EventBridge decoders map the same facts. Pure; unit-tested.
-//! - [`reconcile`] — the reaper's pure plan for a run's live children, from DescribeJobs' answer
-//!   (the terminal facts themselves map in `biffix_core::eventbridge::describe`).
+//! - [`decode`] — the reconciler's AWS SDK facts (DescribeJobs starts, terminals and requests, EC2
+//!   host lifecycle), mapped as core's EventBridge decoders map the same facts. Pure; unit-tested.
+//! - [`reconcile`] — which events a described job yields, and the reaper's pure plan for a run's
+//!   live children, from DescribeJobs' answer (the start and terminal facts themselves map in
+//!   `biffix_core::eventbridge::describe`).
 //! - [`pricing`] — pure tier-1 cost estimate of one Batch job from its host facts and run time.
 //! - [`retention`] — pure selection of the Nextflow work dirs the reconcile tick may delete.
 //! - [`cache_expiry`] — pure selection of the Snakemake cache entries the reconcile tick may delete.

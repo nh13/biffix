@@ -66,7 +66,7 @@ pub(super) async fn sweep_retention(state: &State, deadline: Deadline) -> Result
                         )
                     })
                     .collect();
-                match enqueue_events(state, &events).await {
+                match enqueue_events(state, &events).await.into_result() {
                     Ok(_) => {
                         tracing::info!(prefix = %group.output_prefix, runs = events.len(), "retention: work dir deleted");
                     }

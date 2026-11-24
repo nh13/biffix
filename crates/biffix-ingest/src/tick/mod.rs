@@ -1,8 +1,11 @@
 //! The scheduled reconcile tick: the reconcile Lambda's periodic work.
 //!
 //! The reconcile step reads stale non-terminal attempt IDs from Aurora, describes them in bounded
-//! AWS batches, and enqueues any terminal facts onto the ordinary ingest SQS queue. It deliberately
-//! does not append or fold directly: the single ingest writer remains the sole append path.
+//! AWS batches, and enqueues the start and terminal facts Batch reports (a start only when the log
+//! lacks it) onto the ordinary ingest SQS queue; the reaper does the same for the live children of
+//! ended runs. A job whose terminal reached the log is not described again, so a start lost while
+//! its terminal arrived is not backfilled. It deliberately does not append or fold directly: the
+//! single ingest writer remains the sole append path.
 //!
 //! [`run`] runs every step, one module each — `describe` (reconcile + reap), `probe` (status
 //! probe), `hosts` (host lifecycles), `pricing`, `retention` and `cache` (cache expiry) —
@@ -20,6 +23,7 @@ mod pricing;
 mod probe;
 mod retention;
 
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -90,7 +94,8 @@ impl State {
 /// retry that failure triggers is safe. The steps that drain a backlog (retention, cache expiry)
 /// stop starting work once `deadline`, the invocation's, is near, and resume on the next tick.
 /// `why` is the reason the tick runs in full, which the status probe's samples carry forward.
-/// Returns `{"emitted": n}`, the reconciliation events enqueued.
+/// Returns `{"emitted": n}`, every event the reconcile step enqueued: the starts and terminals it
+/// backfilled (the reaper's included) and the reaper's synthetic FAILEDs.
 pub async fn run(state: &State, deadline: Deadline, why: Why) -> Result<serde_json::Value, Error> {
     let reconciled = describe::reconcile(state).await;
     let mut failures = Vec::new();
@@ -170,20 +175,40 @@ fn micros_before(at: Duration, ago: Duration) -> i64 {
     micros(at.saturating_sub(ago))
 }
 
+/// What one [`enqueue_events`] did. SendMessageBatch is not atomic (it can accept some entries of
+/// a request and reject others), so a caller that must not let one event land without another
+/// reads which ones failed.
+#[derive(Debug, Default)]
+struct Enqueued {
+    /// How many events SQS accepted.
+    sent: usize,
+    /// The events SQS did not accept, as indices into the events passed: its rejected entries,
+    /// and every event of a request that failed outright or could not be built.
+    failed: BTreeSet<usize>,
+    /// The first error, when any event failed.
+    error: Option<Error>,
+}
+
+impl Enqueued {
+    /// How many events were sent, or the first error when any failed.
+    fn into_result(self) -> Result<usize, Error> {
+        self.error.map_or(Ok(self.sent), Err)
+    }
+}
+
 /// Enqueue `events` on the ingest queue, in `SendMessageBatch` requests of at most
-/// [`SQS_BATCH_SIZE`]; returns how many were sent.
-async fn enqueue_events(
-    state: &State,
-    events: &[biffix_core::event::RunEvent],
-) -> Result<usize, Error> {
-    let mut emitted = 0usize;
-    for chunk in events.chunks(SQS_BATCH_SIZE) {
-        let entries = chunk
-            .iter()
-            .enumerate()
+/// [`SQS_BATCH_SIZE`]. A failed request or rejected entry does not stop the rest: it is recorded
+/// (the first error, and which events failed) and the next request still goes.
+async fn enqueue_events(state: &State, events: &[biffix_core::event::RunEvent]) -> Enqueued {
+    let mut enqueued = Enqueued::default();
+    for (chunk_index, chunk) in events.chunks(SQS_BATCH_SIZE).enumerate() {
+        let indices = chunk_index * SQS_BATCH_SIZE..chunk_index * SQS_BATCH_SIZE + chunk.len();
+        let entries = indices
+            .clone()
+            .zip(chunk)
             .map(|(index, event)| {
                 Ok(aws_sdk_sqs::types::SendMessageBatchRequestEntry::builder()
-                    .id(format!("event-{index}"))
+                    .id(entry_id(index))
                     // Wrap in the typed ingest envelope so the writer routes on the explicit
                     // `biffix_ingest` tag, not on which RunEvent fields happen to be present.
                     .message_body(serde_json::to_string(
@@ -191,26 +216,68 @@ async fn enqueue_events(
                     )?)
                     .build()?)
             })
-            .collect::<Result<Vec<_>, Error>>()?;
-        let result = state
-            .sqs
-            .send_message_batch()
-            .queue_url(&state.config.ingest_queue_url)
-            .set_entries(Some(entries))
-            .send()
-            .await
-            .map_err(|error| aws_error("SQS SendMessageBatch", error))?;
-        if let Some(failed) = result.failed().first() {
-            return Err(Error::from(format!(
-                "SQS rejected {} reconciliation events (first: {} {})",
-                result.failed().len(),
-                failed.code(),
-                failed.message().unwrap_or_default()
-            )));
+            .collect::<Result<Vec<_>, Error>>();
+        let result = match entries {
+            Ok(entries) => state
+                .sqs
+                .send_message_batch()
+                .queue_url(&state.config.ingest_queue_url)
+                .set_entries(Some(entries))
+                .send()
+                .await
+                .map_err(|error| aws_error("SQS SendMessageBatch", error)),
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(result) => {
+                enqueued.sent += result.successful().len();
+                if let Some(failed) = result.failed().first() {
+                    note(
+                        &mut enqueued.error,
+                        Error::from(format!(
+                            "SQS rejected {} reconciliation events (first: {} {})",
+                            result.failed().len(),
+                            failed.code(),
+                            failed.message().unwrap_or_default()
+                        )),
+                    );
+                    let ids =
+                        result.failed().iter().map(aws_sdk_sqs::types::BatchResultErrorEntry::id);
+                    enqueued.failed.extend(failed_entries(indices, ids));
+                }
+            }
+            Err(error) => {
+                note(&mut enqueued.error, error);
+                enqueued.failed.extend(indices);
+            }
         }
-        emitted += result.successful().len();
     }
-    Ok(emitted)
+    enqueued
+}
+
+/// The SendMessageBatch entry id of the event at `index` of an [`enqueue_events`] call: unique
+/// within each request, and read back by [`failed_entries`].
+fn entry_id(index: usize) -> String {
+    format!("event-{index}")
+}
+
+/// The events (indices of the [`enqueue_events`] call) of one request's rejected entry `ids`,
+/// whose events are `request`. An id that names none of them (SQS never answers so) counts the
+/// whole request as failed, since which event it means is unknown.
+fn failed_entries<'a, I: IntoIterator<Item = &'a str>>(
+    request: std::ops::Range<usize>,
+    ids: I,
+) -> BTreeSet<usize> {
+    let mut failed = BTreeSet::new();
+    for id in ids {
+        match id.strip_prefix("event-").and_then(|index| index.parse::<usize>().ok()) {
+            Some(index) if request.contains(&index) => {
+                failed.insert(index);
+            }
+            _ => return request.collect(),
+        }
+    }
+    failed
 }
 
 /// Delete `keys` from `bucket` in one DeleteObjects call; any per-key failure is an error.
@@ -249,4 +316,19 @@ fn object_ids<'a>(
     objects
         .filter_map(|o| aws_sdk_s3::types::ObjectIdentifier::builder().key(o.key()?).build().ok())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rejected_entry_names_its_event_and_an_unknown_one_fails_the_whole_request() {
+        assert_eq!(entry_id(12), "event-12");
+        assert_eq!(failed_entries(10..14, ["event-12", "event-10"]), BTreeSet::from([10, 12]));
+        assert!(failed_entries(10..14, []).is_empty());
+        // Outside the request, or not an id this call made: which event it means is unknown.
+        assert_eq!(failed_entries(10..14, ["event-3"]), BTreeSet::from([10, 11, 12, 13]));
+        assert_eq!(failed_entries(10..14, ["entry-1"]), BTreeSet::from([10, 11, 12, 13]));
+    }
 }

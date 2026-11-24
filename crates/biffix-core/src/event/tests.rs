@@ -248,6 +248,31 @@ fn terminal_kind_constants_are_terminals() {
     );
 }
 
+#[test]
+fn start_kind_constants_are_the_translators_starts() {
+    use crate::translate::from_aws_batch;
+    use crate::wire::aws_batch::{AwsBatchEvent, BatchStatus};
+    // Guards the shared constant the reconcile SQL derives from: a Batch RUNNING of either shape.
+    let running = |is_coordinator: bool| {
+        from_aws_batch(&AwsBatchEvent {
+            ts: crate::time::Timestamp::from_epoch_millis(1),
+            batch_job_id: crate::ids::BatchJobId::new("job"),
+            status: BatchStatus::Running,
+            exit_code: None,
+            status_reason: None,
+            log_stream: None,
+            instance_id: None,
+            queue: None,
+            is_coordinator,
+            requested_vcpus: None,
+            requested_memory_mib: None,
+            prior_attempts: None,
+        })
+        .kind()
+    };
+    assert_eq!(BATCH_JOB_START_KINDS, [running(false), running(true)]);
+}
+
 /// Extract the documentation `examples` from an open-enum's generated JSON Schema.
 fn schema_examples<T: schemars::JsonSchema>() -> Vec<String> {
     let mut generator = schemars::SchemaGenerator::default();

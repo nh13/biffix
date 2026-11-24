@@ -1,6 +1,7 @@
 //! SQL rules that more than one crate's queries apply, defined once so they cannot drift apart:
-//! what counts as a job's authoritative terminal, and which jobs the pricer can still price (the
-//! reconcile tick's `unpriced_jobs` picks them up; the backend counts them as cost "pending").
+//! what counts as a job's authoritative terminal (and its start), and which jobs the pricer can
+//! still price (the reconcile tick's `unpriced_jobs` picks them up; the backend counts them as cost
+//! "pending").
 //!
 //! Every function returns an SQL fragment built only from code constants and the column or
 //! placeholder names its caller passes (never a runtime value), so splicing it into a query with
@@ -8,7 +9,9 @@
 
 use std::time::Duration;
 
-use biffix_core::event::{Kind, COORDINATOR_TERMINAL_KINDS, TASK_TERMINAL_KINDS};
+use biffix_core::event::{
+    Kind, BATCH_JOB_START_KINDS, COORDINATOR_TERMINAL_KINDS, TASK_TERMINAL_KINDS,
+};
 use biffix_core::source::EventSource;
 use biffix_core::state::RunState;
 
@@ -20,13 +23,13 @@ use biffix_core::state::RunState;
 pub const PRICING_WINDOW: Duration = Duration::from_secs(85 * 24 * 3600);
 
 /// The canonical strings of `kinds` ([`Kind::as_str`]), bound as a `text[]` for a
-/// `kind = ANY($n)` (such as a [`batch_terminal_predicate`]'s).
+/// `kind = ANY($n)` (such as a [`batch_fact_predicate`]'s).
 pub fn kind_strings(kinds: &[Kind]) -> Vec<String> {
     kinds.iter().map(|kind| kind.as_str().to_owned()).collect()
 }
 
 /// The kinds of a Batch job's terminal fact, of either shape ([`kind_strings`] of
-/// `TASK_TERMINAL_KINDS` and `COORDINATOR_TERMINAL_KINDS`), for a [`batch_terminal_predicate`]. The
+/// `TASK_TERMINAL_KINDS` and `COORDINATOR_TERMINAL_KINDS`), for a [`batch_fact_predicate`]. The
 /// translator shapes a job's events as a task's or a coordinator's by its queue
 /// (`BIFFIX_COORDINATOR_QUEUES`), while the fold reads them by the job's binding, so a coordinator
 /// on a queue the deploy does not list ends task-shaped (and a task on a listed one
@@ -35,13 +38,20 @@ pub fn batch_job_terminal_kinds() -> Vec<String> {
     kind_strings(&[TASK_TERMINAL_KINDS, COORDINATOR_TERMINAL_KINDS].concat())
 }
 
-/// The authoritative terminal predicate: an AWS-Batch fact whose kind is one of the array bound at
-/// `kinds_param` ([`batch_job_terminal_kinds`]). Built from the shared terminal lists and
-/// [`EventSource::AwsBatch`] so it cannot drift from the fold's own terminal logic
-/// (`AttemptState::is_terminal`), whichever shape the translator gave the fact, and every terminal
-/// test shares one rule: an engine-reported terminal is never Batch's authoritative exit. `alias`
-/// qualifies the columns for a correlated subquery.
-pub fn batch_terminal_predicate(alias: Option<&str>, kinds_param: &str) -> String {
+/// [`kind_strings`] of `BATCH_JOB_START_KINDS` (a Batch job's start fact, of either shape, as
+/// [`batch_job_terminal_kinds`]), for a [`batch_fact_predicate`].
+pub fn batch_job_start_kinds() -> Vec<String> {
+    kind_strings(&BATCH_JOB_START_KINDS)
+}
+
+/// An authoritative AWS Batch fact: an [`EventSource::AwsBatch`] event whose kind is one of the
+/// array bound at `kinds_param` ([`batch_job_terminal_kinds`] for a terminal,
+/// [`batch_job_start_kinds`] for a start). An engine-reported fact never counts: an engine's
+/// terminal is never Batch's authoritative exit, nor its start Batch's. Bound to the shared kind
+/// lists, the terminal test cannot drift from the fold's own terminal logic
+/// (`AttemptState::is_terminal`), whichever shape the translator gave the fact. `alias` qualifies
+/// the columns for a correlated subquery.
+pub fn batch_fact_predicate(alias: Option<&str>, kinds_param: &str) -> String {
     let column = |name: &str| match alias {
         Some(alias) => format!("{alias}.{name}"),
         None => name.to_owned(),
@@ -107,7 +117,7 @@ pub fn coordinator_window(job: &str) -> String {
     let kinds = |kinds: &[Kind]| {
         kinds.iter().map(|kind| format!("'{}'", kind.as_str())).collect::<Vec<_>>().join(", ")
     };
-    let started = kinds(&[Kind::CoordinatorRunning, Kind::TaskStarted]);
+    let started = kinds(&BATCH_JOB_START_KINDS);
     let terminal = kinds(&[TASK_TERMINAL_KINDS, COORDINATOR_TERMINAL_KINDS].concat());
     format!(
         "SELECT MIN(ts_micros) FILTER (WHERE kind IN ({started})) AS started, \

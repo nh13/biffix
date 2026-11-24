@@ -19,16 +19,17 @@ use crate::wire::aws_batch::BatchStatus;
 /// - **Terminals** (`SUCCEEDED`/`FAILED`) are reached once per job id, however many attempts it
 ///   took (Batch sends a failed attempt it will retry back to RUNNABLE, not to FAILED), so
 ///   `(job, status)` identifies them — and collapses the live and reconciled terminal (and any
-///   redelivery) to one no-op. Reconciliation sees only terminals, so it never needs the count.
+///   redelivery) to one no-op.
 /// - **Non-terminal edges** (SUBMITTED … RUNNING) recur when the job definition has a Batch
 ///   `retryStrategy` (the infrastructure retry layer, same `batch_job_id`). The
 ///   number of attempts Batch had already finished (`len(detail.attempts)`, carried on every
 ///   state change) tells the retry's edges from the first attempt's, so a retried attempt's
-///   RUNNING is a new fact rather than a dropped "redelivery".
+///   RUNNING is a new fact rather than a dropped "redelivery". A reconciled start carries the
+///   count it derives from DescribeJobs' attempts, so it shares the live RUNNING's key.
 ///
-/// The first attempt (`prior_attempts` 0 or unknown) keeps the plain `(job, status)` key, so the
-/// live EventBridge terminal and the reconciler's (which may not know the count) collapse onto one
-/// fact. Only a retry's edges get the suffix.
+/// The first attempt (`prior_attempts` 0 or unknown) keeps the plain `(job, status)` key, and a
+/// terminal ignores the count, so the live EventBridge terminal and the reconciler's collapse onto
+/// one fact. Only a retry's non-terminal edges get the suffix.
 pub fn aws_batch(job: &BatchJobId, status: &BatchStatus, prior_attempts: u32) -> String {
     let (terminal, status) = (status.is_terminal(), status.as_wire());
     if terminal || prior_attempts == 0 {

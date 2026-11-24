@@ -13,8 +13,8 @@
 //! [`HostFact`] for the host registry instead (see [`Ingested`]). An unrecognized event is
 //! dropped (the ingest drain logs it at debug level); nothing stores it.
 //!
-//! [`describe`] maps the same Batch terminal facts as `DescribeJobs` reports them, for the ingest
-//! reconciler's backstop, onto the event [`decode`] makes of the live one.
+//! [`describe`] maps the same Batch start and terminal facts as `DescribeJobs` reports them, for
+//! the ingest reconciler's backstop, onto the event [`decode`] makes of the live one.
 
 pub mod decode;
 pub mod describe;
