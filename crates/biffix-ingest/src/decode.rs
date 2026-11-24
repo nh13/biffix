@@ -1,6 +1,7 @@
-//! The AWS SDK side of decoding: what the reconciler reads from DescribeJobs and
-//! DescribeInstances, mapped the way `biffix_core::eventbridge::decode` maps the same facts in
-//! EventBridge JSON, so a reconciled fact and a live event record a job and host identically.
+//! The AWS SDK side of decoding: what the reconciler reads from DescribeJobs (a job's start and
+//! terminal) and DescribeInstances, mapped the way `biffix_core::eventbridge::decode` maps the
+//! same facts in EventBridge JSON, so a reconciled fact and a live event record a job and host
+//! identically.
 
 #[cfg(feature = "aws")]
 use biffix_core::eventbridge::decode::{
@@ -8,7 +9,8 @@ use biffix_core::eventbridge::decode::{
 };
 #[cfg(feature = "aws")]
 use biffix_core::eventbridge::describe::{
-    terminal_time_millis, DescribedJobFacts, DescribedTerminalJob, TerminalStatus,
+    prior_attempts_before, start_time_millis, terminal_time_millis, DescribedJobFacts,
+    DescribedStartedJob, DescribedTerminalJob, TerminalStatus,
 };
 
 /// A DescribeJobs result's terminal fact, as the EventBridge decoder maps the same job's live
@@ -30,7 +32,6 @@ pub fn described_terminal(
     };
     let batch_job_id = job.job_id()?;
     let container = job.container();
-    let queue_arn = job.job_queue().unwrap_or_default();
     Some(DescribedTerminalJob {
         batch_job_id: batch_job_id.to_owned(),
         status,
@@ -44,21 +45,63 @@ pub fn described_terminal(
             job.status_reason(),
             container.and_then(|value| value.reason()),
         ),
-        facts: DescribedJobFacts {
-            log_stream: container.and_then(|value| value.log_stream_name()).map(str::to_owned),
-            instance_id: container
-                .and_then(|value| value.container_instance_arn())
-                .map(|arn| container_instance_id(arn).to_owned()),
-            queue: job.job_queue().map(|arn| queue_name(arn).to_owned()),
-            is_coordinator: bound_coordinator || queue_context.is_coordinator(queue_arn),
-            requested: container.map(requested_resources_from_container).unwrap_or_default(),
-        },
+        facts: described_facts(job, queue_context, bound_coordinator),
     })
 }
 
+/// The start a DescribeJobs result reports, as the EventBridge decoder maps the same job's live
+/// RUNNING, or `None` when Batch reports none (not started yet, ended without running, no id).
+#[cfg(feature = "aws")]
+pub fn described_start(
+    job: &aws_sdk_batch::types::JobDetail,
+    queue_context: &QueueContext,
+    bound_coordinator: bool,
+) -> Option<DescribedStartedJob> {
+    let batch_job_id = job.job_id()?;
+    let attempts = job.attempts();
+    let started_at_millis = start_time_millis(
+        job.started_at(),
+        attempts.iter().map(aws_sdk_batch::types::AttemptDetail::started_at),
+    )?;
+    let prior_attempts = prior_attempts_before(
+        started_at_millis,
+        attempts.iter().map(|attempt| (attempt.started_at(), attempt.stopped_at())),
+    );
+    Some(DescribedStartedJob {
+        batch_job_id: batch_job_id.to_owned(),
+        started_at_millis,
+        prior_attempts,
+        facts: described_facts(job, queue_context, bound_coordinator),
+    })
+}
+
+/// What a start and a terminal read alike from one DescribeJobs result, read in one place so the
+/// two cannot drift apart: `job`'s log stream, host (`container_instance_id` of its
+/// container-instance ARN), queue name and request, as the EventBridge decoder reads them. The job
+/// is a coordinator when its queue is one of `queue_context`'s, or when the control plane bound it
+/// as one (`bound_coordinator`).
+#[cfg(feature = "aws")]
+fn described_facts(
+    job: &aws_sdk_batch::types::JobDetail,
+    queue_context: &QueueContext,
+    bound_coordinator: bool,
+) -> DescribedJobFacts {
+    let container = job.container();
+    let queue_arn = job.job_queue().unwrap_or_default();
+    DescribedJobFacts {
+        log_stream: container.and_then(|value| value.log_stream_name()).map(str::to_owned),
+        instance_id: container
+            .and_then(|value| value.container_instance_arn())
+            .map(|arn| container_instance_id(arn).to_owned()),
+        queue: job.job_queue().map(|arn| queue_name(arn).to_owned()),
+        is_coordinator: bound_coordinator || queue_context.is_coordinator(queue_arn),
+        requested: container.map(requested_resources_from_container).unwrap_or_default(),
+    }
+}
+
 /// [`requested_resources`] of a DescribeJobs `container` (the reconciler's view of the same block
-/// the EventBridge event carries), so a reconciled terminal records the request the live event
-/// would have.
+/// the EventBridge event carries), so a reconciled start or terminal records the request the live
+/// event would have.
 #[cfg(feature = "aws")]
 pub fn requested_resources_from_container(
     container: &aws_sdk_batch::types::ContainerDetail,
@@ -156,6 +199,101 @@ mod tests {
         assert_eq!(described_terminal(&job(JobStatus::Running, "q"), &context, false, 0), None);
         let no_id = JobDetail::builder().status(JobStatus::Succeeded).build();
         assert_eq!(described_terminal(&no_id, &context, false, 0), None);
+    }
+
+    #[cfg(feature = "aws")]
+    #[test]
+    fn a_describe_jobs_start_maps_every_fact_the_running_event_carries() {
+        use aws_sdk_batch::types::{AttemptDetail, ContainerDetail, JobDetail, JobStatus};
+        let context = QueueContext { coordinator_queues: vec!["biffix-t-coordinator".into()] };
+        let container = || {
+            ContainerDetail::builder()
+                .log_stream_name("batch/default/abc")
+                .container_instance_arn("arn:aws:ecs:us-east-1:1:container-instance/cluster/ci-7")
+                .vcpus(2)
+                .memory(4096)
+                .build()
+        };
+        let job = |status: JobStatus, queue: &str| {
+            JobDetail::builder()
+                .job_id("job-1")
+                .status(status)
+                .job_queue(format!("arn:aws:batch:us-east-1:1:job-queue/{queue}"))
+                .container(container())
+        };
+        let expected = DescribedStartedJob {
+            batch_job_id: "job-1".into(),
+            started_at_millis: 5_000,
+            prior_attempts: 0,
+            facts: DescribedJobFacts {
+                log_stream: Some("batch/default/abc".into()),
+                instance_id: Some("ci-7".into()),
+                queue: Some("q-spot".into()),
+                is_coordinator: false,
+                requested: RequestedResources { vcpus: Some(2.0), memory_mib: Some(4096) },
+            },
+        };
+        let attempt = |started: i64, stopped: i64| {
+            AttemptDetail::builder().started_at(started).stopped_at(stopped).build()
+        };
+
+        // Running, first attempt: Batch lists no attempts yet.
+        let running = job(JobStatus::Running, "q-spot").started_at(5_000).build();
+        assert_eq!(described_start(&running, &context, false), Some(expected.clone()));
+        // Finished: the attempt that started is listed, stopped after it started; not a prior one.
+        let finished = job(JobStatus::Succeeded, "q-spot")
+            .started_at(5_000)
+            .stopped_at(7_000)
+            .attempts(attempt(5_000, 7_000))
+            .build();
+        assert_eq!(described_start(&finished, &context, false), Some(expected.clone()));
+        // A Batch retry, running: the first attempt stopped before it started.
+        let retry = job(JobStatus::Running, "q-spot")
+            .started_at(5_000)
+            .attempts(attempt(1_000, 4_000))
+            .build();
+        assert_eq!(
+            described_start(&retry, &context, false),
+            Some(DescribedStartedJob { prior_attempts: 1, ..expected.clone() })
+        );
+        // A Batch retry, finished: both attempts are listed; only the earlier one is prior.
+        let finished_retry = job(JobStatus::Succeeded, "q-spot")
+            .started_at(5_000)
+            .stopped_at(7_000)
+            .attempts(attempt(1_000, 4_000))
+            .attempts(attempt(5_000, 7_000))
+            .build();
+        assert_eq!(
+            described_start(&finished_retry, &context, false),
+            Some(DescribedStartedJob { prior_attempts: 1, ..expected.clone() })
+        );
+        // A retry after an attempt that never ran (no start, no stop): it counts, as the live
+        // RUNNING's `len(attempts)` counts it.
+        let after_unrun = job(JobStatus::Running, "q-spot")
+            .started_at(5_000)
+            .attempts(AttemptDetail::builder().build())
+            .build();
+        assert_eq!(
+            described_start(&after_unrun, &context, false),
+            Some(DescribedStartedJob { prior_attempts: 1, ..expected.clone() })
+        );
+        // No job-level start, but an attempt reports one.
+        let from_attempt = job(JobStatus::Failed, "q-spot").attempts(attempt(5_000, 6_000)).build();
+        assert_eq!(described_start(&from_attempt, &context, false), Some(expected.clone()));
+        // Not started yet, or no id: nothing to report, and no time is made up.
+        for status in [JobStatus::Runnable, JobStatus::Starting] {
+            assert_eq!(described_start(&job(status, "q-spot").build(), &context, false), None);
+        }
+        let no_id = JobDetail::builder().status(JobStatus::Running).started_at(5_000).build();
+        assert_eq!(described_start(&no_id, &context, false), None);
+        // A listed coordinator queue, or the control plane's binding on any queue.
+        let coordinator = |queue: &str, bound: bool| {
+            let job = job(JobStatus::Running, queue).started_at(5_000).build();
+            described_start(&job, &context, bound).unwrap().facts.is_coordinator
+        };
+        assert!(coordinator("biffix-t-coordinator", false));
+        assert!(coordinator("unlisted", true));
+        assert!(!coordinator("unlisted", false));
     }
 
     #[cfg(feature = "aws")]

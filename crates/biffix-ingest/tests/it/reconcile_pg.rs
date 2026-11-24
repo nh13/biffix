@@ -6,14 +6,15 @@
 use biffix_core::event::EventData;
 use biffix_core::event::RunEvent;
 use biffix_core::eventbridge::describe::{
-    terminal_run_event, DescribedJobFacts, DescribedTerminalJob, TerminalStatus,
+    started_run_event, terminal_run_event, DescribedJobFacts, DescribedStartedJob,
+    DescribedTerminalJob, TerminalStatus,
 };
 use biffix_core::ids::RunId;
 use biffix_core::source::EventSource;
 use biffix_core::time::Timestamp;
 use biffix_ingest::store::reconcile::{
-    live_children_of_run, run_id_for_coordinator, stale_attempts, stale_coordinators, StaleAttempt,
-    StaleWindow,
+    live_children_of_run, run_id_for_coordinator, stale_attempts, stale_coordinators, LiveChild,
+    StaleAttempt, StaleWindow,
 };
 
 use crate::common;
@@ -70,6 +71,11 @@ async fn append_bound(pool: &sqlx::PgPool, job_id: &str, ts: f64, dedup: &str) {
     append(pool, &common::coordinator_bound(&format!("run-{job_id}"), ts, job_id, dedup))
         .await
         .unwrap();
+}
+
+/// The live children's job ids, in order.
+fn child_ids(children: Vec<LiveChild>) -> Vec<String> {
+    children.into_iter().map(|c| c.batch_job_id).collect()
 }
 
 /// The candidates' job ids, in order.
@@ -207,16 +213,17 @@ async fn reap_queries_map_coordinator_to_run_and_find_live_children() {
     // run-reconcile has two submitted children; job-1 later reaches an aws-batch terminal.
     append_submitted(&pool, "job-1", 1.0).await;
     append_submitted(&pool, "job-2", 1.0).await;
-    let live = live_children_of_run(&pool, "run-reconcile", None, 100).await.unwrap();
+    let live = child_ids(live_children_of_run(&pool, "run-reconcile", None, 100).await.unwrap());
     assert_eq!(live, ["job-1", "job-2"], "both children live before any terminal");
     // Keyset pagination: passing the first child as the cursor skips it and returns the rest, so
     // the reaper can page a run with more live children than one `limit`-sized page.
     // Asked while job-1 is still live, so an ignored cursor would return it.
-    let paged = live_children_of_run(&pool, "run-reconcile", Some("job-1"), 100).await.unwrap();
+    let paged =
+        child_ids(live_children_of_run(&pool, "run-reconcile", Some("job-1"), 100).await.unwrap());
     assert_eq!(paged, ["job-2"], "keyset cursor skips ids <= the cursor");
 
     append_succeeded(&pool, "job-1", 2.0).await;
-    let after = live_children_of_run(&pool, "run-reconcile", None, 100).await.unwrap();
+    let after = child_ids(live_children_of_run(&pool, "run-reconcile", None, 100).await.unwrap());
     assert_eq!(after, ["job-2"], "a terminated child is no longer live (reap skips it)");
 }
 
@@ -238,11 +245,13 @@ async fn live_children_of_run_pages_by_keyset_cursor_and_limit() {
         .with_run("run-paged");
         append(&pool, &submitted).await.unwrap();
     }
-    let first = live_children_of_run(&pool, "run-paged", None, 2).await.unwrap();
+    let first = child_ids(live_children_of_run(&pool, "run-paged", None, 2).await.unwrap());
     assert_eq!(first, ["child-1", "child-2"], "a full first page");
-    let second = live_children_of_run(&pool, "run-paged", Some("child-2"), 2).await.unwrap();
+    let second =
+        child_ids(live_children_of_run(&pool, "run-paged", Some("child-2"), 2).await.unwrap());
     assert_eq!(second, ["child-3"], "the cursor resumes after the last id");
-    let done = live_children_of_run(&pool, "run-paged", Some("child-3"), 2).await.unwrap();
+    let done =
+        child_ids(live_children_of_run(&pool, "run-paged", Some("child-3"), 2).await.unwrap());
     assert!(done.is_empty(), "then the pages end: {done:?}");
 }
 
@@ -541,4 +550,291 @@ async fn status_samples_are_written_at_one_timestamp_and_pruned_past_retention()
             row("recent", "ok", None, None, false),
         ]
     );
+}
+
+/// What DescribeJobs reports for job `job_id` started at 1.5 s on host `ci-7` (no prior attempt).
+fn described_start(job_id: &str) -> DescribedStartedJob {
+    DescribedStartedJob {
+        batch_job_id: job_id.into(),
+        started_at_millis: 1_500,
+        prior_attempts: 0,
+        facts: DescribedJobFacts {
+            log_stream: Some(format!("batch/{job_id}")),
+            instance_id: Some("ci-7".into()),
+            queue: Some("q-new".into()),
+            is_coordinator: false,
+            requested: Default::default(),
+        },
+    }
+}
+
+/// Each candidate's job id and the dedup keys of the starts the log holds for it.
+fn starts(candidates: Vec<StaleAttempt>) -> Vec<(String, Vec<String>)> {
+    candidates.into_iter().map(|c| (c.batch_job_id, c.start_keys)).collect()
+}
+
+/// `(job, keys)`, owned, for comparing with [`starts`].
+fn keyed(job: &str, keys: &[&str]) -> (String, Vec<String>) {
+    (job.to_owned(), keys.iter().map(|&key| key.to_owned()).collect())
+}
+
+/// The backstop emits a start only while the log lacks that fact, so a job that runs for hours
+/// does not enqueue a duplicate every rotation, yet a Batch retry's start is still backfilled: a
+/// candidate carries the dedup keys of the AWS starts of either shape its log holds.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness"]
+async fn a_stale_candidate_carries_the_keys_of_the_starts_the_log_holds() {
+    let pool =
+        common::isolated_pool("a_stale_candidate_carries_the_keys_of_the_starts_the_log_holds")
+            .await;
+    let batch = |job: &str, ts: f64, data: EventData| {
+        testing::event(ts, EventSource::AwsBatch, format!("aws:{job}:{ts}"), data).with_job(job)
+    };
+    for job in ["job-task-start", "job-coord-start", "job-none", "job-retried"] {
+        append_submitted(&pool, job, 1.0).await;
+    }
+    // Two starts (a STARTING and a retry's RUNNING, say): every key comes back, in order.
+    for ts in [1.3, 1.1] {
+        let started = EventData::TaskStarted { started_at: None, log_stream: None };
+        append(&pool, &batch("job-retried", ts, started)).await.unwrap();
+    }
+    append(
+        &pool,
+        &batch(
+            "job-task-start",
+            1.2,
+            EventData::TaskStarted { started_at: None, log_stream: None },
+        ),
+    )
+    .await
+    .unwrap();
+    // A task on a listed coordinator queue: its start arrives coordinator-shaped.
+    append(
+        &pool,
+        &batch("job-coord-start", 1.2, EventData::CoordinatorRunning { log_stream: None }),
+    )
+    .await
+    .unwrap();
+    // An engine's own start is not Batch's.
+    append(
+        &pool,
+        &event(
+            "job-none",
+            1.2,
+            "engine:job-none:started",
+            EventSource::Snakemake,
+            EventData::TaskStarted { started_at: None, log_stream: None },
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        starts(stale_attempts(&pool, window(2_000_000, 100, 0)).await.unwrap()),
+        [
+            keyed("job-coord-start", &["aws:job-coord-start:1.2"]),
+            keyed("job-none", &[]),
+            keyed("job-task-start", &["aws:job-task-start:1.2"]),
+            // Last: its newest observation (1.3) is the latest.
+            keyed("job-retried", &["aws:job-retried:1.1", "aws:job-retried:1.3"]),
+        ]
+    );
+
+    append_bound(&pool, "coord-1", 1.0, "cp:coord-1:sub").await;
+    assert_eq!(
+        starts(stale_coordinators(&pool, window(2_000_000, 100, 0)).await.unwrap()),
+        [keyed("coord-1", &[])]
+    );
+    append(&pool, &batch("coord-1", 1.5, EventData::CoordinatorRunning { log_stream: None }))
+        .await
+        .unwrap();
+    assert_eq!(
+        starts(stale_coordinators(&pool, window(2_000_000, 100, 0)).await.unwrap()),
+        [keyed("coord-1", &["aws:coord-1:1.5"])]
+    );
+}
+
+/// The reaper filters a described child's start by the starts the log holds, as the stale path
+/// does: each live child carries the dedup keys of its AWS Batch starts of either shape, and an
+/// engine's own start is not one.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness"]
+async fn a_live_child_carries_the_keys_of_the_starts_the_log_holds() {
+    let pool =
+        common::isolated_pool("a_live_child_carries_the_keys_of_the_starts_the_log_holds").await;
+    let batch = |job: &str, ts: f64, data: EventData| {
+        testing::event(ts, EventSource::AwsBatch, format!("aws:{job}:{ts}"), data).with_job(job)
+    };
+    for job in ["job-a", "job-b", "job-c", "job-done"] {
+        append_submitted(&pool, job, 1.0).await;
+    }
+    // job-a: a first attempt's start and a retry's, both Batch's.
+    for ts in [1.3, 1.1] {
+        let started = EventData::TaskStarted { started_at: None, log_stream: None };
+        append(&pool, &batch("job-a", ts, started)).await.unwrap();
+    }
+    // job-b: its start arrived coordinator-shaped (a listed coordinator queue).
+    append(&pool, &batch("job-b", 1.2, EventData::CoordinatorRunning { log_stream: None }))
+        .await
+        .unwrap();
+    // job-c: only the engine's own start, which is not Batch's.
+    append(
+        &pool,
+        &event(
+            "job-c",
+            1.2,
+            "engine:job-c:started",
+            EventSource::Snakemake,
+            EventData::TaskStarted { started_at: None, log_stream: None },
+        ),
+    )
+    .await
+    .unwrap();
+    // job-done: started and ended, so it is not live.
+    append(
+        &pool,
+        &batch("job-done", 1.2, EventData::TaskStarted { started_at: None, log_stream: None }),
+    )
+    .await
+    .unwrap();
+    append_succeeded(&pool, "job-done", 2.0).await;
+
+    let live = live_children_of_run(&pool, "run-reconcile", None, 100).await.unwrap();
+    let children: Vec<(String, Vec<String>)> =
+        live.into_iter().map(|c| (c.batch_job_id, c.start_keys)).collect();
+    assert_eq!(
+        children,
+        [
+            keyed("job-a", &["aws:job-a:1.1", "aws:job-a:1.3"]),
+            keyed("job-b", &["aws:job-b:1.2"]),
+            keyed("job-c", &[]),
+        ]
+    );
+    // A later page carries its own children's keys.
+    let paged = live_children_of_run(&pool, "run-reconcile", Some("job-a"), 1).await.unwrap();
+    assert_eq!(
+        paged,
+        [LiveChild { batch_job_id: "job-b".into(), start_keys: vec!["aws:job-b:1.2".into()] }]
+    );
+}
+
+/// A running job whose live events never arrived (its queue unrouted) shows running on its host
+/// once the backstop enqueues the start DescribeJobs reports, and the live RUNNING, should it come
+/// after all, collapses onto it.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness"]
+async fn a_reconciled_start_shows_a_running_job_on_its_host() {
+    use biffix_core::eventbridge::decode::{decode_batch, QueueContext};
+    let pool = common::isolated_pool("a_reconciled_start_shows_a_running_job_on_its_host").await;
+    append_submitted(&pool, "job-r", 1.0).await;
+    let start = started_run_event(&described_start("job-r"));
+    assert!(append(&pool, &start).await.unwrap());
+
+    let (state, started_at, instance): (String, Option<i64>, Option<String>) = sqlx::query_as(
+        "SELECT state, started_at, instance_id FROM attempt_projection \
+         WHERE batch_job_id = 'job-r'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "running");
+    assert_eq!(started_at, Some(1_500_000));
+    assert_eq!(instance.as_deref(), Some("ci-7"));
+    let task_state: String = sqlx::query_scalar(
+        "SELECT state FROM task_projection \
+         WHERE run_id = 'run-reconcile' AND task_key = 'align:sample=job-r'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(task_state, "running");
+
+    // The next rotation's start, and the late live RUNNING, are the same fact.
+    assert!(!append(&pool, &start).await.unwrap());
+    let live = decode_batch(
+        &serde_json::json!({
+            "time": "2026-09-12T04:12:32Z",
+            "detail": {
+                "jobId": "job-r",
+                "jobQueue": "q/q-new",
+                "status": "RUNNING",
+                "startedAt": 1_500,
+                "attempts": [],
+                "container": {
+                    "logStreamName": "batch/job-r",
+                    "containerInstanceArn": "arn:aws:ecs:us-east-1:1:container-instance/c/ci-7"
+                }
+            }
+        }),
+        &QueueContext { coordinator_queues: vec![] },
+    )
+    .unwrap();
+    assert!(!append(&pool, &live).await.unwrap());
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM run_events WHERE batch_job_id = 'job-r'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(rows, 2, "the submit and one start");
+
+    // Its terminal is still owed, so it stays a candidate, now holding its start's key.
+    assert_eq!(
+        starts(stale_attempts(&pool, window(2_000_000, 100, 0)).await.unwrap()),
+        [keyed("job-r", &[start.dedup_key.as_str()])]
+    );
+}
+
+/// A backfilled terminal alone leaves the attempt without a start, so the pricer cannot price it;
+/// with the backfilled start (here folded after the terminal) it has a run time and is priced.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness"]
+async fn a_reconciled_terminal_with_its_start_has_a_run_time() {
+    use biffix_ingest::store::pricing::{unpriced_jobs, JobRole};
+    let pool = common::isolated_pool("a_reconciled_terminal_with_its_start_has_a_run_time").await;
+    sqlx::query(
+        "INSERT INTO host_registry (container_instance_id, ec2_instance_id, cluster_arn, \
+         instance_type, availability_zone, detail_version, raw_detail, first_seen_at, lifecycle) \
+         VALUES ('ci-7', 'i-7', 'arn:cluster', 'm6i.large', 'us-east-1a', 1, '{}', 0, NULL)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    append_submitted(&pool, "job-p", 1.0).await;
+    let terminal = terminal_run_event(&DescribedTerminalJob {
+        facts: DescribedJobFacts {
+            instance_id: Some("ci-7".into()),
+            queue: Some("q-new".into()),
+            ..Default::default()
+        },
+        ..described("job-p")
+    });
+    assert!(append(&pool, &terminal).await.unwrap());
+    assert!(
+        unpriced_jobs(&pool, JobRole::Task, 0, None, 100).await.unwrap().is_empty(),
+        "a terminal without its start has no run time to price"
+    );
+
+    assert!(append(&pool, &started_run_event(&described_start("job-p"))).await.unwrap());
+    let (state, started_at, finished_at, instance): (
+        String,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT state, started_at, finished_at, instance_id FROM attempt_projection \
+         WHERE batch_job_id = 'job-p'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "succeeded");
+    assert_eq!(started_at, Some(1_500_000));
+    assert_eq!(finished_at, Some(2_000_000));
+    assert_eq!(instance.as_deref(), Some("ci-7"));
+    let priced: Vec<String> = unpriced_jobs(&pool, JobRole::Task, 0, None, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|job| job.batch_job_id)
+        .collect();
+    assert_eq!(priced, ["job-p"]);
 }

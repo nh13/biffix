@@ -2,6 +2,8 @@
 //! describe, what each describe answered (`reconcile_describe`), and the reaper's ended runs and
 //! live children.
 
+use std::collections::HashMap;
+
 use biffix_core::event::Kind;
 use sqlx::postgres::PgPool;
 // `AssertSqlSafe` marks the queries whose text is assembled with `format!`: every piece is a code
@@ -9,7 +11,8 @@ use sqlx::postgres::PgPool;
 use sqlx::AssertSqlSafe;
 
 use biffix_db::rules::{
-    batch_fact_predicate, batch_job_terminal_kinds, ended_run_states, kind_strings,
+    batch_fact_predicate, batch_job_start_kinds, batch_job_terminal_kinds, ended_run_states,
+    kind_strings,
 };
 use biffix_db::DbError;
 
@@ -26,11 +29,14 @@ pub struct StaleWindow {
     pub limit: i64,
 }
 
-/// One attempt that has a `task_submitted` binding but no authoritative AWS terminal event.
+/// One stale job: a task attempt (`task_submitted` binding) or a coordinator
+/// (`coordinator_submitted` binding) with no authoritative AWS terminal event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StaleAttempt {
     pub batch_job_id: String,
     pub last_observed_micros: i64,
+    /// The dedup keys of the job's AWS Batch starts (either shape) the log already holds.
+    pub start_keys: Vec<String>,
 }
 
 /// The stale candidates of one variant: the jobs bound by a `bound_by` event whose latest
@@ -48,9 +54,17 @@ pub struct StaleAttempt {
 /// returned: Batch has forgotten it (it keeps a finished job about a week), so asking again cannot
 /// produce its terminal. Nothing is fabricated for it; it only stops holding a candidate slot.
 ///
+/// **Start.** Each candidate carries the dedup keys of the AWS Batch starts the log already holds
+/// for the job ([`start_keys_of`]), so the backstop enqueues the start DescribeJobs reports only
+/// while the log lacks that fact, rather than on every rotation of a job that runs for hours, and
+/// still backfills a Batch retry's start (its own key) when only the first attempt's reached the
+/// log.
+///
 /// **Bound.** Only jobs bound at or after `bound_since_micros` are candidates: the query starts
 /// from those bindings (`run_events_job_binding`) and probes each job's own facts
-/// (`run_events_batch_lifecycle`), so a poll costs what that window holds, not the whole log.
+/// (`run_events_batch_lifecycle`), so a poll costs what that window holds, not the whole log. The
+/// probe reads only columns that index holds, so it can stay an index-only scan; the start keys
+/// (`dedup_key` is not in it) come from a second query over the returned candidates alone.
 async fn fetch_stale(
     pool: &PgPool,
     bound_by: Kind,
@@ -94,13 +108,48 @@ async fn fetch_stale(
         .bind(kind_strings(observed))
         .fetch_all(pool)
         .await?;
+    let ids: Vec<String> = rows.iter().map(|(id, _)| id.clone()).collect();
+    let mut start_keys = start_keys_of(pool, &ids).await?;
     Ok(rows
         .into_iter()
         .map(|(batch_job_id, last_observed_micros)| StaleAttempt {
+            start_keys: start_keys.remove(&batch_job_id).unwrap_or_default(),
             batch_job_id,
             last_observed_micros,
         })
         .collect())
+}
+
+/// The dedup keys of the AWS Batch starts the log holds for each of `ids`, of either shape
+/// ([`batch_job_start_kinds`]), sorted; a job with none has no entry. One query, restricted to the
+/// start kinds, over the `run_events_batch_lifecycle` index (its `batch_job_id`, `source` and
+/// `kind`), so only the start rows themselves are read from the table.
+pub async fn start_keys_of(
+    pool: &PgPool,
+    ids: &[String],
+) -> Result<HashMap<String, Vec<String>>, DbError> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let sql = format!(
+        r"
+        SELECT e.batch_job_id, e.dedup_key
+          FROM run_events e
+         WHERE e.batch_job_id = ANY($1::text[]) AND {start}
+         ORDER BY e.batch_job_id, e.dedup_key
+        ",
+        start = batch_fact_predicate(Some("e"), "$2"),
+    );
+    let rows: Vec<(String, String)> = sqlx::query_as(AssertSqlSafe(sql))
+        .bind(ids)
+        .bind(batch_job_start_kinds())
+        .fetch_all(pool)
+        .await?;
+    let mut keys: HashMap<String, Vec<String>> = HashMap::new();
+    for (batch_job_id, dedup_key) in rows {
+        keys.entry(batch_job_id).or_default().push(dedup_key);
+    }
+    Ok(keys)
 }
 
 /// Find attempts whose latest known non-terminal lifecycle fact is older than `cutoff_micros`,
@@ -148,7 +197,7 @@ pub async fn record_describe_results(
     missing: &[String],
     now_micros: i64,
     forget_before_micros: i64,
-) -> Result<std::collections::HashMap<String, i64>, DbError> {
+) -> Result<HashMap<String, i64>, DbError> {
     let mut tx = pool.begin().await?;
     if !present.is_empty() {
         sqlx::query(
@@ -164,7 +213,7 @@ pub async fn record_describe_results(
         .await?;
     }
     let missing_since = if missing.is_empty() {
-        std::collections::HashMap::new()
+        HashMap::new()
     } else {
         sqlx::query_as::<_, (String, i64)>(
             r"INSERT INTO reconcile_describe
@@ -283,11 +332,21 @@ pub async fn run_id_for_coordinator(
     .await?)
 }
 
+/// One still-live child job of a run (see [`live_children_of_run`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveChild {
+    pub batch_job_id: String,
+    /// The dedup keys of the job's AWS Batch starts the log already holds ([`start_keys_of`]), so
+    /// the reaper enqueues a described start only while the log lacks it, as the stale path does.
+    pub start_keys: Vec<String>,
+}
+
 /// One keyset page of the still-live child jobs of a run: attempts with a `task_submitted` binding
-/// but no authoritative `aws-batch` terminal. These are the jobs to terminate when the run's
-/// coordinator dies so a crashed coordinator does not strand — and keep billing —
-/// orphaned child jobs. Terminality is keyed on `source = 'aws-batch'` for the same reason as
-/// [`stale_attempts`]: an engine-reported terminal is not Batch's authoritative exit.
+/// but no authoritative `aws-batch` terminal, each with the keys of the starts the log holds for
+/// it. These are the jobs to terminate when the run's coordinator dies so a crashed coordinator
+/// does not strand — and keep billing — orphaned child jobs. Terminality is keyed on
+/// `source = 'aws-batch'` for the same reason as [`stale_attempts`]: an engine-reported terminal is
+/// not Batch's authoritative exit.
 ///
 /// **Keyset-paginated** on `batch_job_id`: pass `after = None` for the first page, then the last id
 /// of the previous page. The reaper must page to exhaustion — a run with more live children than
@@ -299,7 +358,7 @@ pub async fn live_children_of_run(
     run_id: &str,
     after: Option<&str>,
     limit: i64,
-) -> Result<Vec<String>, DbError> {
+) -> Result<Vec<LiveChild>, DbError> {
     let sql = format!(
         r"
         SELECT DISTINCT e.batch_job_id
@@ -317,7 +376,7 @@ pub async fn live_children_of_run(
         ",
         terminal = batch_fact_predicate(Some("t"), "$4"),
     );
-    Ok(sqlx::query_scalar(AssertSqlSafe(sql))
+    let ids: Vec<String> = sqlx::query_scalar(AssertSqlSafe(sql))
         .bind(run_id)
         .bind(limit.max(0))
         // job ids are non-empty, so `> ''` matches all on the first page.
@@ -325,5 +384,13 @@ pub async fn live_children_of_run(
         .bind(batch_job_terminal_kinds())
         .bind(Kind::TaskSubmitted.as_str())
         .fetch_all(pool)
-        .await?)
+        .await?;
+    let mut start_keys = start_keys_of(pool, &ids).await?;
+    Ok(ids
+        .into_iter()
+        .map(|batch_job_id| LiveChild {
+            start_keys: start_keys.remove(&batch_job_id).unwrap_or_default(),
+            batch_job_id,
+        })
+        .collect())
 }

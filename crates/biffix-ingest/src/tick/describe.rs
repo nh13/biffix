@@ -1,19 +1,21 @@
-//! The reconcile step: describe stale attempts and coordinators and enqueue
-//! the terminals Batch reports, then reap the live children of every ended run.
+//! The reconcile step: describe stale attempts and coordinators and enqueue the starts and
+//! terminals Batch reports, then reap the live children of every ended run.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use aws_sdk_batch::error::{DisplayErrorContext, ProvideErrorMetadata};
 use biffix_core::clock::{micros, millis, since_epoch};
-use biffix_core::eventbridge::describe::terminal_run_event;
+use biffix_core::event::{RunEvent, BATCH_JOB_START_KINDS};
+use biffix_core::eventbridge::describe::{terminal_run_event, DescribedStartedJob};
 use lambda_runtime::Error;
 
 use super::{aws_error, enqueue_events, micros_before, note, State};
-use crate::decode::described_terminal;
+use crate::decode::{described_start, described_terminal};
 use crate::reconcile::{
-    forgotten_children, plan_reap, reap_reason, reap_terminal_event, terminate_error_is_benign,
-    DescribedChild, DESCRIBE_JOBS_BATCH_SIZE,
+    described_events, forgotten_children, plan_reap, reap_reason, reap_start_events,
+    reap_terminal_event, terminals_to_send, terminate_error_is_benign, DescribedChild,
+    DESCRIBE_JOBS_BATCH_SIZE,
 };
 use crate::store::reconcile::{
     ended_runs_with_live_children, live_children_of_run, record_describe_results,
@@ -65,6 +67,11 @@ async fn describe_jobs(
     Ok(result.jobs.unwrap_or_default())
 }
 
+/// Describe the stale attempts and coordinators, enqueue the starts and terminals Batch reports,
+/// then reap the live children of every ended run. Returns how many events it enqueued (`emitted`:
+/// the stale path's and the reaper's starts and terminals, and the reaper's synthetic FAILEDs);
+/// the poll's log line also counts the starts among them (`started`, of either path) and the
+/// children terminated (`reaped`).
 pub(super) async fn reconcile(state: &State) -> Result<usize, Error> {
     let now = since_epoch();
     let now_micros = micros(now);
@@ -88,9 +95,17 @@ pub(super) async fn reconcile(state: &State) -> Result<usize, Error> {
     // Union, de-duplicated by batch_job_id (a job is never both a task and a coordinator).
     let known: HashSet<String> = candidates.iter().map(|c| c.batch_job_id.clone()).collect();
     candidates.extend(coordinators.into_iter().filter(|c| !known.contains(&c.batch_job_id)));
+    // The keys of the starts the log already holds, by job: Batch's start is enqueued only when
+    // its key is not among them, so a job that runs for hours does not add a duplicate to the
+    // queue every rotation, while a Batch retry's start (its own key) still gets backfilled.
+    let start_keys_in_log: HashMap<String, Vec<String>> = candidates
+        .iter_mut()
+        .filter(|c| !c.start_keys.is_empty())
+        .map(|c| (c.batch_job_id.clone(), std::mem::take(&mut c.start_keys)))
+        .collect();
     let ids: Vec<String> = candidates.into_iter().map(|c| c.batch_job_id).collect();
 
-    let mut emitted = 0usize;
+    let mut totals = PollTotals::default();
     // Coordinators found terminal this poll; after enqueuing terminals we reap their live children
     // so a crashed coordinator does not strand orphaned, still-billing Batch jobs.
     let mut terminal_coordinators: Vec<String> = Vec::new();
@@ -124,23 +139,29 @@ pub(super) async fn reconcile(state: &State) -> Result<usize, Error> {
             note(&mut first_error, error.into());
         }
 
-        let mut events = Vec::new();
-        for terminal in jobs.iter().filter_map(|job| {
-            let bound = job.job_id().is_some_and(|id| bound_coordinators.contains(id));
-            described_terminal(job, &state.queue_context, bound, poll_millis)
-        }) {
-            if terminal.facts.is_coordinator {
+        let (mut starts, mut terminals) = (Vec::new(), Vec::new());
+        for job in &jobs {
+            let Some(id) = job.job_id() else { continue };
+            let bound = bound_coordinators.contains(id);
+            let terminal = described_terminal(job, &state.queue_context, bound, poll_millis);
+            let start = described_start(job, &state.queue_context, bound);
+            if let Some(terminal) =
+                terminal.as_ref().filter(|terminal| terminal.facts.is_coordinator)
+            {
                 terminal_coordinators.push(terminal.batch_job_id.clone());
             }
-            events.push(terminal_run_event(&terminal));
-        }
-        match enqueue_events(state, &events).await {
-            Ok(count) => emitted += count,
-            Err(error) => {
-                tracing::warn!(error = %error, "reconcile: enqueue chunk failed (will retry)");
-                note(&mut first_error, error);
+            let log_start_keys = start_keys_in_log.get(id).map_or(&[][..], Vec::as_slice);
+            for event in described_events(start.as_ref(), terminal.as_ref(), log_start_keys) {
+                if BATCH_JOB_START_KINDS.contains(&event.kind()) {
+                    starts.push(event);
+                } else {
+                    terminals.push(event);
+                }
             }
         }
+        let sent = enqueue_starts_then_terminals(state, &starts, terminals, &mut first_error).await;
+        totals.emitted += sent.events;
+        totals.started += sent.starts;
     }
 
     // Targeted reap: the live children of every coordinator whose missed terminal was
@@ -148,14 +169,11 @@ pub(super) async fn reconcile(state: &State) -> Result<usize, Error> {
     // dead). The ended-run sweep below would reach the same run on a later poll once that terminal
     // is folded; reaping here saves that poll's latency, and still covers a coordinator whose
     // terminal is older than the sweep window (a reconciler outage longer than it).
-    let mut reaped = 0usize;
     for coordinator_job_id in &terminal_coordinators {
-        match reap_orphaned_children(state, coordinator_job_id).await {
-            Ok(count) => reaped += count,
-            Err(error) => {
-                tracing::warn!(coordinator = coordinator_job_id, error = %error, "reap failed (will retry next poll)");
-                note(&mut first_error, error);
-            }
+        let outcome = reap_orphaned_children(state, coordinator_job_id).await;
+        if let Some(error) = totals.add_reap(outcome) {
+            tracing::warn!(coordinator = coordinator_job_id, error = %error, "reap failed (will retry next poll)");
+            note(&mut first_error, error);
         }
     }
 
@@ -168,12 +186,10 @@ pub(super) async fn reconcile(state: &State) -> Result<usize, Error> {
     match ended_runs_with_live_children(&state.pool, since_micros, CANDIDATE_LIMIT).await {
         Ok(runs) => {
             for (run_id, coordinator_job_id) in &runs {
-                match reap_run_children(state, run_id, coordinator_job_id).await {
-                    Ok(count) => reaped += count,
-                    Err(error) => {
-                        tracing::warn!(run_id, error = %error, "ended-run reap failed (will retry next poll)");
-                        note(&mut first_error, error);
-                    }
+                let outcome = reap_run_children(state, run_id, coordinator_job_id).await;
+                if let Some(error) = totals.add_reap(outcome) {
+                    tracing::warn!(run_id, error = %error, "ended-run reap failed (will retry next poll)");
+                    note(&mut first_error, error);
                 }
             }
         }
@@ -183,16 +199,95 @@ pub(super) async fn reconcile(state: &State) -> Result<usize, Error> {
         }
     }
 
-    tracing::info!(candidates = ids.len(), emitted, reaped, "reconciliation poll complete");
+    let PollTotals { emitted, started, reaped } = totals;
+    tracing::info!(
+        candidates = ids.len(),
+        emitted,
+        started,
+        reaped,
+        "reconciliation poll complete"
+    );
     first_error.map_or(Ok(emitted), Err)
 }
 
-/// Reap the still-live child jobs of a coordinator found terminal this poll.
-async fn reap_orphaned_children(state: &State, coordinator_job_id: &str) -> Result<usize, Error> {
-    let Some(run_id) = run_id_for_coordinator(&state.pool, coordinator_job_id).await? else {
-        return Ok(0);
-    };
-    reap_run_children(state, &run_id, coordinator_job_id).await
+/// A poll's running counts, for its log line and its result.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PollTotals {
+    /// Events SQS accepted: starts, terminals and the reaper's synthetic FAILEDs.
+    emitted: usize,
+    /// The starts among them.
+    started: usize,
+    /// Children terminated.
+    reaped: usize,
+}
+
+impl PollTotals {
+    /// Add what one reap did, then hand back its error for the caller to log and keep. The counts
+    /// are added even when the reap also failed: what SQS accepted and Batch terminated before the
+    /// error still happened.
+    fn add_reap(&mut self, (reap, error): (Reaped, Option<Error>)) -> Option<Error> {
+        self.reaped += reap.terminated;
+        self.emitted += reap.enqueued;
+        self.started += reap.started;
+        error
+    }
+}
+
+/// What [`enqueue_starts_then_terminals`] got SQS to accept.
+#[derive(Clone, Copy, Debug, Default)]
+struct Sent {
+    /// Events accepted, starts and terminals.
+    events: usize,
+    /// The starts among them.
+    starts: usize,
+}
+
+/// Enqueue one describe's events: its `starts` first, then the `terminals` [`terminals_to_send`]
+/// keeps once SQS has answered for the starts. SendMessageBatch is not atomic, so a terminal sent
+/// with its job's start could be logged while the start is rejected, and the job would then stop
+/// being a candidate with its start never retried; a terminal whose job's start was rejected is
+/// held back instead, and a later poll retries both. A failure is noted in `first_error` (the rest
+/// still go; every enqueue is idempotent).
+async fn enqueue_starts_then_terminals(
+    state: &State,
+    starts: &[RunEvent],
+    terminals: Vec<RunEvent>,
+    first_error: &mut Option<Error>,
+) -> Sent {
+    let sent_starts = enqueue_events(state, starts).await;
+    let planned = terminals.len();
+    let terminals = terminals_to_send(starts, &sent_starts.failed, terminals);
+    let held = planned - terminals.len();
+    let sent_terminals = enqueue_events(state, &terminals).await;
+    for error in [sent_starts.error, sent_terminals.error].into_iter().flatten() {
+        tracing::warn!(error = %error, held, "reconcile: enqueue failed (will retry next poll)");
+        note(first_error, error);
+    }
+    Sent { events: sent_starts.sent + sent_terminals.sent, starts: sent_starts.sent }
+}
+
+/// What one reap of a run's live children did, kept when the reap also failed.
+#[derive(Clone, Copy, Debug, Default)]
+struct Reaped {
+    /// Children terminated.
+    terminated: usize,
+    /// Events enqueued: the children's starts, recovered terminals and synthetic FAILEDs.
+    enqueued: usize,
+    /// The starts among them.
+    started: usize,
+}
+
+/// Reap the still-live child jobs of a coordinator found terminal this poll. Returns what it did
+/// and its first error, as [`reap_run_children`] does.
+async fn reap_orphaned_children(
+    state: &State,
+    coordinator_job_id: &str,
+) -> (Reaped, Option<Error>) {
+    match run_id_for_coordinator(&state.pool, coordinator_job_id).await {
+        Ok(Some(run_id)) => reap_run_children(state, &run_id, coordinator_job_id).await,
+        Ok(None) => (Reaped::default(), None),
+        Err(error) => (Reaped::default(), Some(error.into())),
+    }
 }
 
 /// Reap every still-"live" child job of `run_id` (whose coordinator is `coordinator_job_id`).
@@ -203,13 +298,20 @@ async fn reap_orphaned_children(state: &State, coordinator_job_id: &str) -> Resu
 /// child still active is terminated, and its real FAILED arrives through EventBridge or a later
 /// poll's describe; a child Batch has omitted for [`REAP_FORGOTTEN_AFTER`] gets a synthetic FAILED
 /// ([`reap_terminal_event`]), since no real terminal can come. Nothing is ever fabricated for a
-/// job Batch still knows. Returns how many children were terminated; errors are collected so one
-/// child or page never stops the rest, and the first is returned at the end.
+/// job Batch still knows. A described child's start, when Batch reports one the log lacks (its
+/// dedup key is not among the child's [`LiveChild::start_keys`](crate::store::reconcile::LiveChild),
+/// as the stale path filters), is enqueued too ([`reap_start_events`]), ahead of the terminals
+/// ([`enqueue_starts_then_terminals`]), so a recovered terminal keeps its run time (and the
+/// attempt its price); a start the log already holds is not enqueued again on each poll.
+///
+/// Returns what it terminated and enqueued together with its first error: errors are collected so
+/// one child or chunk never stops the rest, and a failed page query ends the paging but keeps what
+/// the earlier pages did, since those enqueues and terminations already happened.
 async fn reap_run_children(
     state: &State,
     run_id: &str,
     coordinator_job_id: &str,
-) -> Result<usize, Error> {
+) -> (Reaped, Option<Error>) {
     let now = since_epoch();
     let now_micros = micros(now);
     let poll_millis = millis(now);
@@ -217,19 +319,38 @@ async fn reap_run_children(
     let forget_before = micros_before(now, DESCRIBE_FORGET_AFTER);
     let mut first_error: Option<Error> = None;
     let (mut terminated, mut recovered, mut forgotten) = (0usize, 0usize, 0usize);
+    let (mut enqueued, mut started) = (0usize, 0usize);
     // Page through ALL live children by `batch_job_id` keyset, not just the first
     // `CANDIDATE_LIMIT`: what this enqueues is not folded synchronously, so a re-query would return
     // the same still-"live" children; only the cursor makes progress within a poll.
     let reason = reap_reason(coordinator_job_id);
     let mut after: Option<String> = None;
     loop {
-        let children =
-            live_children_of_run(&state.pool, run_id, after.as_deref(), CANDIDATE_LIMIT).await?;
+        let children = match live_children_of_run(
+            &state.pool,
+            run_id,
+            after.as_deref(),
+            CANDIDATE_LIMIT,
+        )
+        .await
+        {
+            Ok(children) => children,
+            Err(error) => {
+                note(&mut first_error, error.into());
+                break;
+            }
+        };
         if children.is_empty() {
             break;
         }
         for chunk in children.chunks(DESCRIBE_JOBS_BATCH_SIZE) {
-            let jobs = match describe_jobs(state, chunk).await {
+            let ids: Vec<String> = chunk.iter().map(|child| child.batch_job_id.clone()).collect();
+            // Each child of the page, with the keys of the starts the log holds for it.
+            let start_keys: HashMap<String, Vec<String>> = chunk
+                .iter()
+                .map(|child| (child.batch_job_id.clone(), child.start_keys.clone()))
+                .collect();
+            let jobs = match describe_jobs(state, &ids).await {
                 Ok(jobs) => jobs,
                 Err(error) => {
                     // Never terminate or close a child whose state is unknown; the next poll
@@ -247,8 +368,16 @@ async fn reap_run_children(
                 })
                 .collect();
             let present: Vec<String> = described.iter().map(|(id, _)| id.clone()).collect();
-            let plan = plan_reap(chunk, described);
-            let mut events: Vec<biffix_core::event::RunEvent> =
+            // The children's starts, sent ahead of the terminals: a terminal the reaper recovers
+            // otherwise leaves its attempt with a host and an end but no start, so it is never
+            // priced.
+            let described_starts: Vec<DescribedStartedJob> = jobs
+                .iter()
+                .filter_map(|job| described_start(job, &state.queue_context, false))
+                .collect();
+            let starts = reap_start_events(&described_starts, &start_keys);
+            let plan = plan_reap(&ids, described);
+            let mut terminals: Vec<RunEvent> =
                 plan.terminals.iter().map(terminal_run_event).collect();
             recovered += plan.terminals.len();
             for child in &plan.terminate {
@@ -276,32 +405,64 @@ async fn reap_run_children(
                 Ok(missing_since) => {
                     for child in forgotten_children(&plan.missing, &missing_since, forgotten_before)
                     {
-                        events.push(reap_terminal_event(&child, coordinator_job_id, poll_millis));
+                        terminals.push(reap_terminal_event(
+                            &child,
+                            coordinator_job_id,
+                            poll_millis,
+                        ));
                         forgotten += 1;
                     }
                 }
                 Err(error) => note(&mut first_error, error.into()),
             }
-            if let Err(error) = enqueue_events(state, &events).await {
-                note(&mut first_error, error);
-            }
+            let sent =
+                enqueue_starts_then_terminals(state, &starts, terminals, &mut first_error).await;
+            enqueued += sent.events;
+            started += sent.starts;
         }
         // Advance the keyset cursor past this page; a short page means we reached the end.
         let page_len = children.len() as i64;
-        after = children.into_iter().last();
+        after = children.into_iter().last().map(|child| child.batch_job_id);
         if page_len < CANDIDATE_LIMIT {
             break;
         }
     }
-    if terminated + recovered + forgotten > 0 {
+    if terminated + recovered + forgotten + started > 0 {
         tracing::info!(
             run_id,
             coordinator = coordinator_job_id,
             terminated,
             recovered,
             forgotten,
+            started,
             "reaped the live children of an ended run"
         );
     }
-    first_error.map_or(Ok(terminated), Err)
+    (Reaped { terminated, enqueued, started }, first_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_reap_keeps_the_counts_of_a_reap_that_also_failed() {
+        let mut totals = PollTotals { emitted: 3, started: 1, reaped: 0 };
+        let reap = Reaped { terminated: 2, enqueued: 5, started: 4 };
+
+        let error = totals.add_reap((reap, Some(Error::from("SQS rejected an entry"))));
+
+        assert_eq!(totals, PollTotals { emitted: 8, started: 5, reaped: 2 });
+        assert_eq!(error.map(|error| error.to_string()).as_deref(), Some("SQS rejected an entry"));
+    }
+
+    #[test]
+    fn add_reap_adds_a_clean_reap_and_returns_no_error() {
+        let mut totals = PollTotals::default();
+
+        let error = totals.add_reap((Reaped { terminated: 1, enqueued: 2, started: 1 }, None));
+
+        assert_eq!(totals, PollTotals { emitted: 2, started: 1, reaped: 1 });
+        assert!(error.is_none());
+    }
 }
