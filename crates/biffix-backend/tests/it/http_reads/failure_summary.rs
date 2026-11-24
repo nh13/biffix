@@ -382,3 +382,73 @@ async fn a_failure_summary_finds_the_earliest_failure_beyond_the_first_page() {
         v["items"].as_array().unwrap().iter().map(|i| i["task_key"].as_str().unwrap()).collect();
     assert_eq!(keys, vec!["zzz", "t0000", "t0001"]);
 }
+
+#[test]
+fn the_api_doc_names_how_long_a_summary_may_be_pending() {
+    // The UI cannot import the window, so it reads it from this text (`failureLoader`'s test).
+    use utoipa::OpenApi;
+    let doc = serde_json::to_value(biffix_backend::api::ApiDoc::openapi()).unwrap();
+    let text = doc["components"]["schemas"]["FailureSummary"]["properties"]["pending"]
+        ["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let window = format!("at most {} seconds", biffix_api::FAILURE_SUMMARY_SETTLE_SECS);
+    assert!(text.contains(&window), "{text}");
+}
+
+#[tokio::test]
+async fn an_engine_failure_is_pending_until_batch_reports_the_stop() {
+    let now = biffix_core::clock::epoch_secs();
+    let engine_failed = |completed_at: f64| {
+        let mut detail = testing::run_detail("r1", "failed");
+        detail.run.completed_at = Some(completed_at);
+        detail
+    };
+    // The engine said the run failed a moment ago, and Batch has said nothing about the stop yet.
+    let state = summary_state(engine_failed(now), &[]);
+    let (status, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["pending"], true, "{v}");
+    // Batch reported the coordinator's exit: settled.
+    let mut detail = engine_failed(now);
+    detail.coordinator_stop.exit_code = Some(1);
+    let (_, v) =
+        get_json(api::router(summary_state(detail, &[])), "/runs/r1/failure-summary").await;
+    assert!(v.get("pending").is_none(), "{v}");
+    // Any one of Batch's stop facts settles it.
+    let mut detail = engine_failed(now);
+    detail.coordinator_stop.status_reason = Some("Essential container in task exited".into());
+    let (_, v) =
+        get_json(api::router(summary_state(detail, &[])), "/runs/r1/failure-summary").await;
+    assert!(v.get("pending").is_none(), "{v}");
+    let mut detail = engine_failed(now);
+    detail.coordinator_stop.termination_category = Some("app_error".into());
+    let (_, v) =
+        get_json(api::router(summary_state(detail, &[])), "/runs/r1/failure-summary").await;
+    assert!(v.get("pending").is_none(), "{v}");
+    // An end time in the future (a producer's clock ahead of ours) never waits.
+    let (_, v) = get_json(
+        api::router(summary_state(engine_failed(now + 600.0), &[])),
+        "/runs/r1/failure-summary",
+    )
+    .await;
+    assert!(v.get("pending").is_none(), "{v}");
+    // Long past the run's end: settled with whatever is there, even with no stop facts.
+    let (_, v) = get_json(
+        api::router(summary_state(
+            engine_failed(now - biffix_api::FAILURE_SUMMARY_SETTLE_SECS as f64 - 1.0),
+            &[],
+        )),
+        "/runs/r1/failure-summary",
+    )
+    .await;
+    assert!(v.get("pending").is_none(), "{v}");
+    // A summary of failed steps never waits.
+    let mut detail = engine_failed(now);
+    detail.tasks = vec![failed_task("A", "A", 10.0, 1, "s-a")];
+    let (_, v) =
+        get_json(api::router(summary_state(detail, &[])), "/runs/r1/failure-summary").await;
+    assert_eq!(v["items"][0]["step"], "A");
+    assert!(v.get("pending").is_none(), "{v}");
+}

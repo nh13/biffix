@@ -4535,6 +4535,10 @@
             },
             "description": "The first failed steps, earliest first; or the engine's own failure when no step failed.\nEmpty for a run that did not fail."
           },
+          "pending": {
+            "type": "boolean",
+            "description": "The run failed by the engine's own report and its coordinator job has not reported its end\nyet, so the engine's last lines and AWS's account of the stop may still be missing: ask\nagain shortly. Only set for a run that failed without a failed step,\nfor at most 120 seconds after the run ended (`FAILURE_SUMMARY_SETTLE_SECS`; clients read\nthe number from this sentence). Omitted when false."
+          },
           "support": {
             "oneOf": [
               {

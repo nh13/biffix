@@ -1952,6 +1952,14 @@ export interface components {
        *     Empty for a run that did not fail.
        */
       items: components['schemas']['FailureItem'][];
+      /**
+       * @description The run failed by the engine's own report and its coordinator job has not reported its end
+       *     yet, so the engine's last lines and AWS's account of the stop may still be missing: ask
+       *     again shortly. Only set for a run that failed without a failed step,
+       *     for at most 120 seconds after the run ended (`FAILURE_SUMMARY_SETTLE_SECS`; clients read
+       *     the number from this sentence). Omitted when false.
+       */
+      pending?: boolean;
       support?: components['schemas']['SupportContact'] | null;
     };
     /** @description FastQC's basic statistics as MultiQC recorded them (each absent when MultiQC had none). */

@@ -361,6 +361,11 @@ pub struct LaunchEstimate {
     pub runs: i64,
 }
 
+/// How long after a run's end, at most, its failure summary may say it is still
+/// [`pending`](FailureSummary::pending): a client that re-asks a pending summary needs to keep
+/// asking no longer than this (the server then answers with whatever it has).
+pub const FAILURE_SUMMARY_SETTLE_SECS: u64 = 120;
+
 /// Why a failed run failed, in plain words (`GET /runs/{id}/failure-summary`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -374,6 +379,13 @@ pub struct FailureSummary {
     /// contact; `None` when neither is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support: Option<SupportContact>,
+    /// The run failed by the engine's own report and its coordinator job has not reported its end
+    /// yet, so the engine's last lines and AWS's account of the stop may still be missing: ask
+    /// again shortly. Only set for a run that failed without a failed step,
+    /// for at most 120 seconds after the run ended (`FAILURE_SUMMARY_SETTLE_SECS`; clients read
+    /// the number from this sentence). Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
 }
 
 /// One failed step (or the engine), its cause and what to try.

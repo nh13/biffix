@@ -41,6 +41,11 @@ async fn snakemake_job_log(
     biffix_core::failure::snakemake_job_log(&lines, SUMMARY_LOG_LINES as usize)
 }
 
+/// How long after a run's end its coordinator's own end is still awaited (`pending`): an engine
+/// that reports the run failed (Nextflow at flow completion) does so before its coordinator has
+/// uploaded the engine's last lines and Batch has reported the job's stop.
+const SETTLE_WINDOW_SECS: f64 = biffix_api::FAILURE_SUMMARY_SETTLE_SECS as f64;
+
 /// The exit code Snakemake's AWS Batch job exits with when its rule fails, whatever the rule's
 /// command exited with.
 const SNAKEMAKE_FAILED_JOB_EXIT: i64 = 1;
@@ -146,7 +151,12 @@ pub(crate) async fn failure_summary(
 
     let rid = &run.run.run_id;
     if run.run.state != biffix_core::state::RunState::Failed.as_str() {
-        return Ok(FailureSummary { failed_steps: 0, items: vec![], support: None });
+        return Ok(FailureSummary {
+            failed_steps: 0,
+            items: vec![],
+            support: None,
+            pending: false,
+        });
     }
     let support = support_contact(state, run).await;
     // The submit path's own resume check (what `GET /runs/{id}` serves as `resumable`): a cause
@@ -304,7 +314,7 @@ pub(crate) async fn failure_summary(
                     stage.unwrap_or_else(|| biffix_core::event::FAILURE_STAGE_LAUNCH.to_string()),
                 ),
             });
-            return Ok(FailureSummary { failed_steps, items, support });
+            return Ok(FailureSummary { failed_steps, items, support, pending: false });
         }
         // Coordinators always log to the shared group.
         let tail = log_tail(state, None, run.coordinator_log_stream.as_deref()).await;
@@ -327,6 +337,19 @@ pub(crate) async fn failure_summary(
             reason: stop.status_reason.clone(),
             stage: None,
         });
+        // Batch has said nothing yet about how the coordinator stopped, shortly after the run
+        // ended: the engine reported the failure first, and its last lines may not be in yet. The
+        // window keeps a run whose stop facts never arrive (or predate them) from waiting forever,
+        // and an end time ahead of this clock (the producer's) never waits.
+        let now = biffix_core::clock::epoch_secs();
+        let pending = stop.exit_code.is_none()
+            && stop.status_reason.is_none()
+            && stop.termination_category.is_none()
+            && run
+                .run
+                .completed_at
+                .is_some_and(|at| (0.0..SETTLE_WINDOW_SECS).contains(&(now - at)));
+        return Ok(FailureSummary { failed_steps, items, support, pending });
     }
-    Ok(FailureSummary { failed_steps, items, support })
+    Ok(FailureSummary { failed_steps, items, support, pending: false })
 }

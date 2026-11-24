@@ -1019,7 +1019,7 @@ fn minimal_responses_round_trip() {
         enrichment_pending: 0,
     });
     rt(Host::default());
-    rt(FailureSummary {
+    let mut summary = FailureSummary {
         failed_steps: 1,
         items: vec![FailureItem {
             task_key: None,
@@ -1037,7 +1037,15 @@ fn minimal_responses_round_trip() {
             batch_job_id: None,
         }],
         support: None,
-    });
+        pending: true,
+    };
+    rt(summary.clone());
+    summary.pending = false;
+    assert!(
+        serde_json::to_value(&summary).unwrap().get("pending").is_none(),
+        "pending is omitted when false"
+    );
+    rt(summary);
     let experiment = Experiment {
         id: "e1".into(),
         project: "p".into(),
