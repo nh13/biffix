@@ -57,6 +57,23 @@ export const FAILED_BEFORE_LAUNCH = new Map([
   ],
 ]);
 
+// Runs whose workflow engine failed before any step did: the end of the engine's output, as the
+// failure summary shows it (the server reads it from the run's `logs/failure.txt`).
+export const ENGINE_FAILED = new Map([
+  [
+    'run_01HGWBengfail',
+    {
+      exit_code: 1,
+      log_tail: [
+        'ERROR ~ Validation of pipeline parameters failed!',
+        " -- Check '.nextflow.log' file for details",
+        'The following invalid input values have been detected:',
+        '* --max_cpus (lots): Value is [string] but should be [integer]',
+      ],
+    },
+  ],
+]);
+
 // Each entry is a RunDetail's stored facts (RunSummary fields + tasks/params, and the declared DAG
 // as `dag_nodes`/`dag_edges`). The task counters, output counts and the DAG's per-node counts are
 // derived (`withTaskCounts`, the output-count loop in fixtures/outputs.mjs, `buildDag`), so they
@@ -475,6 +492,22 @@ RUNS.push({
     },
   ],
 });
+
+// A Nextflow run whose engine failed before any step started (its parameters did not validate):
+// launched, but no task, so the failure summary is the engine's own, with the end of its output.
+RUNS.push(
+  runLike('run_01HGW0cancel', {
+    run_id: 'run_01HGWBengfail',
+    state: 'failed',
+    cancelled_by: undefined,
+    submitted_at: now - 7 * h,
+    completed_at: now - 7 * h + 90,
+    completed: 0,
+    total: 0,
+    coordinator_job_id: 'coord-engfail',
+    tasks: [],
+  }),
+);
 
 // A big run (nf-core scale) for paging: 3,000 tasks over three steps, some failed.
 {

@@ -7,6 +7,7 @@
   import { jobsHref } from '#lib/runs/jobsUrl.js';
   import { runTabHref } from '#lib/runs/runNav.js';
   import { plural } from '#lib/util/format.js';
+  import { openOnCreate } from '#lib/util/openOnCreate.js';
 
   interface Props {
     run: RunDetail;
@@ -50,7 +51,9 @@
           <p class="reason"><span class="muted">AWS says:</span> <code>{item.reason}</code></p>
         {/if}
         {#if item.log_tail.length > 0}
-          <details>
+          <!-- An item with no task is the engine's own failure: its log is the reason, so open
+               (once: a re-ask of a pending summary must not reopen a log the reader closed). -->
+          <details use:openOnCreate={!item.task_key}>
             <summary>Last {item.log_tail.length} log lines</summary>
             <pre>{item.log_tail.join('\n')}</pre>
           </details>
