@@ -45,7 +45,8 @@ any other object's ETag) and size (`contentSize`); biffix does not read objects 
 
 ## biffix terms
 
-Resource usage on a task's `CreateAction` uses these `propertyID`s.
+Resource usage on a task's `CreateAction`, and on a single-job run's engine run (`#engine-run`),
+uses these `propertyID`s.
 
 ### attempts
 
@@ -53,7 +54,9 @@ How many AWS Batch attempts the task took (retries included).
 
 ### instancetype
 
-The EC2 instance type the task's winning attempt ran on.
+The EC2 instance type the task's winning attempt ran on; on a single-job run's engine run, the
+instance type its job was sized for (Batch may place it on another instance type of the
+queue-class, of the same size).
 
 ### jobqueue
 
@@ -69,3 +72,23 @@ spot rate, plus its EBS share. An estimate, not a bill.
 ### cached
 
 `true` when the task was not run because its result came from the engine's cache.
+
+### executionmode
+
+On a [single-job run](user-guide.md#single-job-runs)'s engine run (`#engine-run`, the
+`OrganizeAction`): `single_job`, the whole run executed as one Batch job on one host. Its tasks
+record their own `containerImage`, as in a run of one Batch job per task (the engine reports the
+image of each task it runs in one), and the engine configuration biffix generated for it is in the
+run's `logs/` folder.
+
+### queueclass
+
+On a single-job run's engine run: the single-job queue-class it ran on.
+
+### vcpus
+
+On a single-job run's engine run: the vCPUs its one Batch job was given.
+
+### memory
+
+On a single-job run's engine run: the memory its one Batch job was given (`unitText` `MiB`).

@@ -53,6 +53,10 @@ Lambda is the backstop: it finds attempts whose terminal event never arrived and
 also refreshes prices, runs the status probe, and deletes intermediate files whose retention has
 passed.
 
+A run can also execute as **one** Batch job on one host ([single-job runs](#single-job-runs)): the
+engine runs every task itself with its local executor, each in the image its Batch job would run,
+and AWS reports only that one job.
+
 ```mermaid
 flowchart LR
   subgraph Coordinator["Coordinator Batch job (one per run)"]
@@ -113,9 +117,10 @@ Rust types).
 One base image serves as the coordinator and, for a Snakemake version with no image of its own,
 as the task image. It has no `ENTRYPOINT`; the Batch job definition picks the role.
 `entrypoint.sh` documents the environment the backend injects (`BIFFIX_RUN_ID`, `BIFFIX_ENGINE`,
-`BIFFIX_PARAMS`, and so on). The base image carries no Snakemake or Nextflow: each workflow
-version pins an engine release, and a CodeBuild project builds that release into a runtime layer
-on top of the base. Versions pinning the same release share it.
+`BIFFIX_PARAMS`, and so on). On x86_64 it also carries a non-setuid Apptainer, which a
+[single-job run](#single-job-runs) runs its tasks with. The base image carries no Snakemake or
+Nextflow: each workflow version pins an engine release, and a CodeBuild project builds that
+release into a runtime layer on top of the base. Versions pinning the same release share it.
 
 The image is built in CI for both x86 and Graviton and tagged by commit or release, in an
 immutable ECR repository, so a tag always means the same bytes.
@@ -193,13 +198,19 @@ biffix does not invent an authorization mechanism that a bug could bypass. Isola
 - **The backend, not workflow code, registers task job definitions.** A job definition decides
   whether a container is privileged and which host paths and devices it sees, and the compute
   environments are shared by every project, so the coordinator (which runs the workflow's code)
-  may not register, deregister or tag one. At launch the backend registers one per (project,
-  image, engine), reused across runs: never privileged, with no volumes or devices beyond the
-  read-only host AWS CLI Nextflow's tasks stage files with, running as the project's run role and
-  logging to its task log group. IAM limits the backend to that name prefix, tenant ECR images
-  and unprivileged definitions, and the hosts' ECS agents refuse privileged containers too. The
-  run's coordinator gets a map of image to definition, and the engines submit every task on its
-  image's definition.
+  may not register, deregister or tag one. At the launch of a run of one Batch job per task, the
+  backend registers one per (project, image, engine), reused across runs: never privileged, with
+  no volumes or devices beyond the read-only host AWS CLI Nextflow's tasks stage files with,
+  running as the project's run role and logging to its task log group. IAM limits the backend to
+  that name prefix, tenant ECR images and unprivileged definitions, and the hosts' ECS agents
+  refuse privileged containers too. The run's coordinator gets a map of image to definition, and
+  the engines submit every task on its image's definition. A single-job run registers none: its
+  tasks run inside its one job, whose definition (an `sj-` clone of the project's single-job
+  template) carries that template's `/dev/fuse` and host `/scratch` volume.
+- **A single-job run runs as its project's run role.** It submits no Batch job, so it gets
+  none of the coordinator role's Batch permissions, only the run role's (its project's bucket,
+  key and data sources) and pulls from the tenant's image repositories, to convert task images
+  on its host. See [single-job runs](#single-job-runs).
 - **No long-lived secrets in containers.** No AWS credentials are forwarded into a run. The only
   secret a run carries is its capability token, which is signed, expires, and authorizes the
   engine plugin's event POSTs for that one run.
@@ -225,7 +236,9 @@ twice:
 - **Infrastructure interruptions** (a spot reclaim, a lost host) are retried by AWS Batch's own
   `retryStrategy`. That is invisible to the engine and keeps the same `batch_job_id`.
 - **Application failures** are retried by the engine (`retries:` in Snakemake, `errorStrategy` in
-  Nextflow). Each retry is a new Batch job, which biffix shows as a new attempt of the same task.
+  Nextflow). In a run of one Batch job per task, each retry is a new Batch job, which biffix shows
+  as a new attempt of the same task. In a single-job run, the engine retries the task inside the
+  run's one Batch job, on the same host.
 
 The event model carries spot warnings and termination categories, so the UI can say a task is
 retrying after a reclaim rather than showing it as failed.
@@ -237,11 +250,81 @@ It uses services AWS lists as HIPAA-eligible, encrypts data at rest with custome
 by default, requires TLS to buckets, isolates projects, keeps secrets out of the event log
 (secret parameters are redacted before they are recorded), and lets workflows use opaque sample
 identifiers so names, tags and events need not carry personal data. Workers can be restricted to
-VPC endpoints with no internet route (`worker_egress: ecr_s3_only`).
+VPC endpoints with no internet route (`worker_egress: ecr_s3_only`); a single-job host is not (it
+is a run's coordinator as well as its tasks' host, and keeps the NAT).
+
+A single-job run's working files (a Nextflow run's work directory; a Snakemake run's local copies of
+its inputs and outputs, every output still being published to the run's output prefix) are on its
+host's instance-store NVMe disks, which AWS encrypts in hardware with keys that are not the
+project's KMS key and are discarded with the instance; the files do not outlive the host. A
+deployment that must keep every byte under its own keys should not define a single-job queue-class.
 
 None of this makes a deployment compliant. biffix does not provision an audit trail (a CloudTrail
 trail, CloudFront access logs, an application access log) out of the box, and running regulated
 data needs a Business Associate Agreement with AWS, those audit controls, and your own review.
+
+### Single-job runs
+
+A run that fits on one host can execute as one Batch job (`single_job` at submit, for a version
+whose `biffix.yaml` allows it). The engine still drives the DAG; biffix schedules nothing. What
+changes is where the tasks run, and the isolation that holds around them:
+
+- **One run per host.** Single-job runs go to a dedicated compute environment of exact instance
+  types, on-demand only, never shared with task queues, and each asks for its host's whole
+  allocatable vCPUs and memory, so two runs (of any projects) never share a host. The isolation
+  boundary stays the project, enforced by IAM: the job runs as the project's run role. IAM also
+  keeps the two kinds of coordinator apart: single-job variants are named apart from tasks-mode
+  ones, a single-job job is born tagged `biffix:execution=single_job`, and the control plane may
+  submit a tagged job only to a single-job queue on a single-job variant and an untagged one only
+  to the coordinator queue on a tasks-mode variant. A host is reused for later runs, so the
+  coordinator wipes the host's `/scratch` before it stages anything (and refuses to run unless
+  the host's boot, once it mounted the instance store there, wrote its marker outside `/scratch`,
+  which the job sees read-only and a run cannot forge), and again at the end unless a signal
+  stopped it (then the next run clears it). The deploy config allows one instance size per
+  single-job queue-class, which is what keeps a whole-host request from fitting twice on a larger
+  type; the backend relies on that rule.
+- **Nested containers without privilege.** Each task runs in the image its Batch job would run (a
+  Nextflow process's `container`; a Snakemake rule's `aws_batch_container_image` through the image
+  map, else the version's default image), converted before the run, through a non-setuid Apptainer
+  inside the job's container, which is not privileged and gets only `/dev/fuse`, the host's
+  `/scratch` and, read-only, the directory of the boot's instance-store marker. An image the run's
+  map does not name fails a Snakemake run before any task starts (every rule's image is resolved
+  first), and a Nextflow run when the process that names it is dispatched (nf-biffix's container
+  resolver), so earlier processes may already have run and published outputs. Either way no image
+  is pulled while it runs.
+  Apptainer needs to create a user namespace and mount inside it, which Docker's default seccomp
+  profile refuses, so these hosts' Docker daemon uses that profile plus `mount`, `umount2`,
+  `unshare` and `setns`. The relaxation grants no host capability, and container root still cannot
+  get past Docker's `/proc` masking (tested), but it exposes kernel code reachable through user
+  namespaces, the class of past `nf_tables` and overlayfs vulnerabilities. It is confined to the
+  dedicated single-job hosts, which run one run at a time. They run the newest ECS-optimized Amazon
+  Linux 2023 AMI as of their compute environment's last infrastructure update. Redeploying
+  unchanged inputs makes no such update, so taking a kernel fix is an explicit refresh and a check
+  of the replacement hosts' AMI (`infra/README.md`, "Taking a kernel fix on single-job hosts").
+  Rejected alternatives (each tested or ruled out): the Docker socket (root on the host),
+  privileged containers or rootless Podman with privileges (host root by another name), unmasking
+  `/proc` (let container root write the host's `/proc/sysrq-trigger`), and Sysbox or gVisor (not
+  supported by ECS).
+- **Tasks share the job's process space and limits.** A task sees the job container's processes (not
+  the host's) and a `/tmp` (also its `$TMPDIR`) on the host's disk that the run's tasks share.
+  cgroups are read-only inside the container, so there is no per-task CPU or memory limit: only the
+  job's applies. The engine keeps memory back for itself and tasks in an image run at a higher OOM
+  score, so an out-of-memory kill is more likely to take such a task than the engine (likelier,
+  not certain: the kernel can still pick the engine, which ends the run). A task that runs in its own image does not
+  inherit the job's environment (Snakemake runs those with `--cleanenv` and Nextflow with `env -`),
+  but it runs as the engine's user in the engine's PID namespace, so it can read the engine's
+  environment through `/proc`, the run's capability token included. That token authorizes only the
+  run's own event POSTs, and expires; a run of one Batch job per task does not have this exposure. A
+  task with no image (a Snakemake local rule, a rule with no image when the version has no default
+  image, a Nextflow `exec:` process) and the Python of a Snakemake `run:` block run in the engine's
+  own environment, as they would on the coordinator in a run of one Batch job per task, and get no
+  raised OOM score.
+- **Cancel tears everything down.** Stopping the job ends its PID namespace, so no nested
+  process or FUSE mount outlives it.
+- **Failure.** A lost host re-runs the whole run (Batch's retry, a second attempt with a clean
+  work directory). There is no work-directory checkpointing: it would bring back the S3 traffic
+  the mode removes. A single-job run cannot itself be a resume, and a Nextflow one cannot be
+  resumed (its work directory was on the host).
 
 ### Fix it upstream, not in a fork
 

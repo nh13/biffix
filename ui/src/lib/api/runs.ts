@@ -182,6 +182,7 @@ export function getAttempts(runId: string, taskKey: string): Promise<TaskAttempt
 }
 
 export type RunSubmitRequest = components['schemas']['RunSubmitRequest'];
+export type SingleJobRequest = components['schemas']['SingleJobRequest'];
 export type SubmittedRun = components['schemas']['SubmittedRun'];
 
 /** Launch a run (`POST /runs`); the server validates the params against the version's form. */

@@ -2,6 +2,7 @@
 // example's *Undo* puts back, and how a restored draft and an imported params file land in it.
 // Kept apart from `LaunchForm`, which holds this state reactively, so it is unit-tested.
 
+import type { SingleJobRequest } from '#lib/api/index.js';
 import type { FormSchema } from '#lib/workflows/schema.js';
 import { formHasInput, parseParamsYaml, type Draft, type FormValues } from '../form';
 import { choiceFor, NO_CHOICE, type RefChoice } from '../referenceChoice';
@@ -16,6 +17,8 @@ export interface FromRun {
   resume: boolean;
   secrets: string[];
   images: string[];
+  /** The run's single-job settings, when it ran as one job on a whole host (`Prefill.singleJob`). */
+  singleJob: SingleJobRequest | null;
 }
 
 /** The form as it was before an example replaced it, for *Undo*. */
