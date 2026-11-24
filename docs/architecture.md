@@ -49,9 +49,11 @@ Three kinds of producer append to the log:
 
 The ingest Lambda drains the SQS queue, translates each source's wire format into a `RunEvent`,
 drops duplicates by `dedup_key`, appends, and advances the projections. A scheduled reconcile
-Lambda is the backstop: it finds attempts whose terminal event never arrived and asks AWS, and it
-also refreshes prices, runs the status probe, and deletes intermediate files whose retention has
-passed.
+Lambda is the backstop: it asks AWS about jobs whose terminal event has not arrived (and the
+still-live children of ended runs), and records their terminal and, when the log lacks it, their
+start. A known limit: a job whose terminal arrived but whose start was lost is not asked about
+again, so its start is not repaired. The Lambda also refreshes prices, runs the status probe, and
+deletes intermediate files whose retention has passed.
 
 A run can also execute as **one** Batch job on one host ([single-job runs](#single-job-runs)): the
 engine runs every task on that host, each in the image its Batch job would run, and AWS reports
