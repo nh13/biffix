@@ -9,7 +9,7 @@ use sqlx::postgres::PgPool;
 use sqlx::AssertSqlSafe;
 
 use biffix_db::rules::{
-    batch_job_terminal_kinds, batch_terminal_predicate, ended_run_states, kind_strings,
+    batch_fact_predicate, batch_job_terminal_kinds, ended_run_states, kind_strings,
 };
 use biffix_db::DbError;
 
@@ -83,7 +83,7 @@ async fn fetch_stale(
          LIMIT $2
         ",
         bound_by = bound_by.as_str(),
-        terminal = batch_terminal_predicate(Some("e"), "$4"),
+        terminal = batch_fact_predicate(Some("e"), "$4"),
     );
     let rows: Vec<(String, i64)> = sqlx::query_as(AssertSqlSafe(sql))
         .bind(window.cutoff_micros)
@@ -252,7 +252,7 @@ pub async fn ended_runs_with_live_children(
          ORDER BY r.completed_at, r.run_id
          LIMIT $2
         ",
-        terminal = batch_terminal_predicate(Some("t"), "$3"),
+        terminal = batch_fact_predicate(Some("t"), "$3"),
     );
     Ok(sqlx::query_as(AssertSqlSafe(sql))
         .bind(since_micros)
@@ -315,7 +315,7 @@ pub async fn live_children_of_run(
          ORDER BY e.batch_job_id
          LIMIT $2
         ",
-        terminal = batch_terminal_predicate(Some("t"), "$4"),
+        terminal = batch_fact_predicate(Some("t"), "$4"),
     );
     Ok(sqlx::query_scalar(AssertSqlSafe(sql))
         .bind(run_id)
