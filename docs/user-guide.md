@@ -431,6 +431,13 @@ biffix runs rename <run-id> "new name"     # or --clear
 biffix runs experiment <run-id> <experiment-id>   # or --none
 ```
 
+For a failed run, `runs show` and `runs follow` (and `runs submit --follow`) also print why it
+failed: each of the first failed steps (or the workflow engine, when it failed before any step) with
+its cause, what to try, and the end of its log; the follow's error line names the first of them.
+With `--output json` the run's detail carries this as `failure_summary`. Right after a run fails,
+the engine's last output can take a moment to arrive: `runs follow` waits for it, up to two
+minutes; `runs show` does not wait, so it may show less and says so. Run it again shortly.
+
 Cancelling a run stops its coordinator and its running jobs. The tasks it ended read `cancelled`:
 those still queued or running, and those that failed only after the cancel was requested. A task
 that had already finished keeps its outcome, so one that failed on its own still reads `failed`.
@@ -596,7 +603,10 @@ step's own error, and so on), the relevant log lines, and advice. **Try again** 
 calls for: resume from where the run stopped, run it again unchanged, or open the launch form to
 fix the samples or options first. **Copy report for support** copies the details to send to
 whoever runs biffix for your lab; when the pipeline's `catalog.contact` (or the site's support
-contact) is set, **Ask** writes to that person directly.
+contact) is set, **Ask** writes to that person directly. For a run that failed before any step
+did (a parameter the engine refused, an input it could not find), the summary shows the end of the
+engine's own output from the run's `failure.txt` (or of the coordinator's log when there is none),
+open without a click.
 
 Every run also keeps its logs in the project's bucket, under the run's own prefix:
 `s3://<bucket>/<run prefix>logs/`. They are uploaded while the engine runs and once more when it

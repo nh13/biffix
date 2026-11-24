@@ -15,10 +15,10 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use biffix_api::{
-    EngineSupport, ExperimentList, Project, RegisterRequest, ReregisterPlan, ReregisterRequest,
-    RunDetail, RunExperimentSetRequest, RunFilter, RunPage, RunRenameRequest, RunSubmitRequest,
-    RunSummary, SourceUploadRequest, SourceUploadTarget, StatusReport, SubmittedRun,
-    VersionRuntime, WorkflowImage, WorkflowRelease, WorkflowReleaseUpdateRequest,
+    EngineSupport, ExperimentList, FailureSummary, Project, RegisterRequest, ReregisterPlan,
+    ReregisterRequest, RunDetail, RunExperimentSetRequest, RunFilter, RunPage, RunRenameRequest,
+    RunSubmitRequest, RunSummary, SourceUploadRequest, SourceUploadTarget, StatusReport,
+    SubmittedRun, VersionRuntime, WorkflowImage, WorkflowRelease, WorkflowReleaseUpdateRequest,
     WorkflowVersionDetail, WorkflowVersionSummary,
 };
 
@@ -439,6 +439,11 @@ impl ApiClient {
 
     pub(crate) async fn get_run(&self, run_id: &str) -> CliResult<RunDetail> {
         self.get_json(&format!("/runs/{}", urlencoding::encode(run_id))).await
+    }
+
+    /// Why a failed run failed (`GET /runs/{id}/failure-summary`).
+    pub(crate) async fn get_failure_summary(&self, run_id: &str) -> CliResult<FailureSummary> {
+        self.get_json(&format!("/runs/{}/failure-summary", urlencoding::encode(run_id))).await
     }
 
     /// The live (not archived) experiments of `project` (`GET /experiments?project=`).

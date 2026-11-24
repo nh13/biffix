@@ -713,7 +713,11 @@ async fn e2e_refresh_submit_and_follow() {
     {
         let mut session = Session::resolve(&args()).unwrap();
         let out = runs::follow(&mut session, "run-fail").await;
-        assert!(matches!(out, Err(CliError::RunFailed(_))), "expected RunFailed, got {out:?}");
+        // The error names why, from the server's failure summary (its engine: no step failed).
+        assert!(
+            matches!(&out, Err(CliError::RunFailed(m)) if m.contains("workflow engine failed:")),
+            "expected RunFailed naming why, got {out:?}"
+        );
         assert_eq!(out.unwrap_err().exit_code(), 8);
     }
 

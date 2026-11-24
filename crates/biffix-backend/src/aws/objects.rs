@@ -47,6 +47,34 @@ pub struct RangeBody {
     pub(crate) total_size: Option<u64>,
 }
 
+/// Why [`read_capped`] read nothing. Its text completes "… because ", e.g. "reading it failed: not
+/// found".
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CappedReadError {
+    #[error("reading it failed: {0}")]
+    Failed(AwsError),
+    #[error("reading it took more than {}s", .0.as_secs())]
+    TimedOut(std::time::Duration),
+}
+
+/// The first `cap` bytes of `s3://bucket/key` (all of a shorter object), given up on after
+/// `timeout`: the bounded read of a small object a request needs but can do without (a samplesheet,
+/// a run's failure report), so a slow or stalled S3 cannot hold the request.
+pub(crate) async fn read_capped<S: ObjectStore + ?Sized>(
+    store: &S,
+    uri: &str,
+    cap: u64,
+    timeout: std::time::Duration,
+) -> Result<RangeBody, CappedReadError> {
+    // The range is inclusive, so `cap - 1` reads at most `cap` bytes.
+    let read = store.get_object_range(uri, 0, cap.saturating_sub(1));
+    match tokio::time::timeout(timeout, read).await {
+        Ok(Ok(body)) => Ok(body),
+        Ok(Err(e)) => Err(CappedReadError::Failed(e)),
+        Err(_) => Err(CappedReadError::TimedOut(timeout)),
+    }
+}
+
 /// A presigned PUT for a staged workflow-source tarball (return of
 /// [`ObjectStore::presign_source_put`]).
 #[derive(Debug, Clone)]

@@ -42,6 +42,9 @@ pub struct FakeCloud {
     pub ranges: Mutex<Vec<String>>,
     /// Make `get_object_range` never answer (after recording the URI), as a stalled S3 read.
     pub stall_ranges: std::sync::atomic::AtomicBool,
+    /// Make `get_object_range` fail (after recording the URI) with an error other than not found,
+    /// as a refused S3 read.
+    pub fail_ranges: std::sync::atomic::AtomicBool,
     /// Every URI `head_object` and `prefix_exists` were asked about (submit's input existence
     /// check), in call order.
     pub object_checks: Mutex<Vec<String>>,
@@ -252,6 +255,7 @@ impl FakeCloud {
             heads: Mutex::new(vec![]),
             ranges: Mutex::new(vec![]),
             stall_ranges: std::sync::atomic::AtomicBool::new(false),
+            fail_ranges: std::sync::atomic::AtomicBool::new(false),
             object_checks: Mutex::new(vec![]),
             absent: Mutex::new(Default::default()),
             folders: Mutex::new(Default::default()),
@@ -871,6 +875,9 @@ impl ObjectStore for FakeCloud {
         self.ranges.lock().unwrap().push(uri.to_string());
         if self.stall_ranges.load(std::sync::atomic::Ordering::SeqCst) {
             std::future::pending::<()>().await;
+        }
+        if self.fail_ranges.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(AwsError::Forbidden(format!("reading {uri}")));
         }
         let objects = self.objects.lock().unwrap();
         let bytes = objects.get(uri).ok_or(AwsError::NotFound)?;

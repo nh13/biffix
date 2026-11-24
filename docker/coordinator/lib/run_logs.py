@@ -53,7 +53,8 @@ MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_FAILED_TASKS = 20
 COMMAND_FILES = (".command.sh", ".command.run", ".command.out", ".command.err", ".command.log")
 # The run's failure report, under the prefix, and the state file's record (under that name, which no
-# upload has) that this attempt has removed an earlier attempt's.
+# upload has) that this attempt has removed an earlier attempt's. The backend reads the report at
+# the key biffix_core::s3_layout::run_failure_report_key names.
 FAILURE_NAME = "failure.txt"
 CLEARED = "cleared"
 

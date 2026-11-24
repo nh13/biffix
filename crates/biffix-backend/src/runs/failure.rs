@@ -2,7 +2,9 @@
 
 use biffix_api::{FailureItem, FailureSummary, Task};
 use biffix_core::event::{EventData, Kind};
+use biffix_core::failure::FailureReport;
 use biffix_core::ids::RunId;
+use std::time::Duration;
 
 use crate::error::ServiceError;
 use crate::runs::logs::{log_lines, project_task_log_group};
@@ -29,6 +31,37 @@ async fn log_tail(
     log_lines(state, project_group, stream, SUMMARY_LOG_LINES).await
 }
 
+/// The run's failure.txt, the end of its engine's output the coordinator wrote when the engine
+/// (or a step of its own) failed, from the run's own prefix in its project's bucket
+/// ([`biffix_core::s3_layout::run_failure_report_key`]; the coordinator writes its logs there even
+/// for a run with a shared output prefix, or a resume). `None` when the project has no bucket, or
+/// the file is absent, blank, or cannot be read in time (logged at warn, except absent).
+async fn failure_report(state: &AppState, bucket: &str, rid: &RunId) -> Option<FailureReport> {
+    use crate::aws::objects::{read_capped, CappedReadError};
+    if bucket.is_empty() {
+        return None;
+    }
+    let uri =
+        format!("s3://{bucket}/{}", biffix_core::s3_layout::run_failure_report_key(rid.as_str()));
+    let read =
+        read_capped(&*state.cloud, &uri, FAILURE_REPORT_BYTES, FAILURE_REPORT_READ_TIMEOUT).await;
+    let body = match read {
+        Ok(body) => body,
+        Err(CappedReadError::Failed(crate::aws::AwsError::NotFound)) => return None,
+        Err(e) => {
+            tracing::warn!(%uri, "failure_summary: the run's failure.txt is not shown: {e}");
+            return None;
+        }
+    };
+    biffix_core::failure::parse_failure_report(&String::from_utf8_lossy(&body.bytes))
+}
+
+/// `lines` (the end of the engine's output, or of the coordinator's log) under a failure.txt's
+/// `headline`, when it is shown.
+fn under_headline(headline: Option<String>, lines: Vec<String>) -> Vec<String> {
+    headline.into_iter().chain(lines).collect()
+}
+
 /// What [`SNAKEMAKE_JOB_SCAN_LINES`] of a Snakemake job's log's end say about its step: its own
 /// last lines, cut above the job's own Snakemake's failure epilogue (which otherwise fills the
 /// whole tail), and its command's failure from that epilogue.
@@ -40,6 +73,19 @@ async fn snakemake_job_log(
     let lines = log_lines(state, project_group, stream, SNAKEMAKE_JOB_SCAN_LINES).await;
     biffix_core::failure::snakemake_job_log(&lines, SUMMARY_LOG_LINES as usize)
 }
+
+/// Lines of a run's failure.txt an engine failure's summary shows.
+const ENGINE_REPORT_LINES: usize = 50;
+/// The most of failure.txt that is read. The coordinator quotes at most 64 KiB of the engine's
+/// output, but decodes it with replacement characters (3 bytes each in UTF-8), so a file of
+/// undecodable output can reach about 192 KiB; a read from the start must not cut its end.
+const FAILURE_REPORT_BYTES: u64 = 256 * 1024;
+const FAILURE_REPORT_READ_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How long after a run's end its coordinator's own end is still awaited (`pending`): an engine
+/// that reports the run failed (Nextflow at flow completion) does so before its coordinator has
+/// uploaded the engine's last lines and Batch has reported the job's stop.
+const SETTLE_WINDOW_SECS: f64 = biffix_api::FAILURE_SUMMARY_SETTLE_SECS as f64;
 
 /// The exit code Snakemake's AWS Batch job exits with when its rule fails, whatever the rule's
 /// command exited with.
@@ -134,19 +180,26 @@ async fn control_plane_failure(state: &AppState, rid: &RunId) -> Option<(String,
 
 /// Why `run` failed, in plain words (`GET /runs/{id}/failure-summary`): its first failed steps
 /// (earliest first), each with its cause, what to try, and the end of its log; or the control
-/// plane's or the workflow engine's own failure when no step failed. Empty for a run that did not
-/// fail.
+/// plane's or the workflow engine's own failure when no step failed (with the end of the engine's
+/// output from the run's failure.txt, else of the coordinator's log), `pending` while that may
+/// still change. Empty for a run that did not fail.
 pub(crate) async fn failure_summary(
     state: &AppState,
     run: &RunDetailView,
 ) -> Result<FailureSummary, ServiceError> {
     use biffix_core::failure::{
-        diagnose, diagnose_coordinator, FailedAttempt, FailureCause, TryAgain,
+        diagnose, diagnose_coordinator_stop, diagnose_engine, diagnose_setup_step, FailedAttempt,
+        FailureCause, TryAgain,
     };
 
     let rid = &run.run.run_id;
     if run.run.state != biffix_core::state::RunState::Failed.as_str() {
-        return Ok(FailureSummary { failed_steps: 0, items: vec![], support: None });
+        return Ok(FailureSummary {
+            failed_steps: 0,
+            items: vec![],
+            support: None,
+            pending: false,
+        });
     }
     let support = support_contact(state, run).await;
     // The submit path's own resume check (what `GET /runs/{id}` serves as `resumable`): a cause
@@ -304,14 +357,50 @@ pub(crate) async fn failure_summary(
                     stage.unwrap_or_else(|| biffix_core::event::FAILURE_STAGE_LAUNCH.to_string()),
                 ),
             });
-            return Ok(FailureSummary { failed_steps, items, support });
+            return Ok(FailureSummary { failed_steps, items, support, pending: false });
         }
-        // Coordinators always log to the shared group.
-        let tail = log_tail(state, None, run.coordinator_log_stream.as_deref()).await;
-        // Batch's account of the coordinator's stop outranks its log (which a coordinator that
-        // never started does not have).
+        // Batch's account of the coordinator's stop outranks its output (which a coordinator that
+        // never started does not have). Coordinators always log to the shared group.
         let stop = &run.coordinator_stop;
-        let d = diagnose_coordinator(stop, &tail);
+        let batch = diagnose_coordinator_stop(stop);
+        // A coordinator that ran its exit steps wrote this attempt's failure.txt (and removed an
+        // earlier attempt's): one that exited by itself, or whose engine the kernel killed for
+        // memory. One that never started, or whose machine went away (spot or not), did not, so
+        // any failure.txt there is another attempt's.
+        let report = if batch.as_ref().is_none_or(|d| d.cause == FailureCause::OutOfMemory) {
+            failure_report(state, &projects.for_run(run).bucket, rid).await
+        } else {
+            None
+        };
+        let log = || log_tail(state, None, run.coordinator_log_stream.as_deref());
+        // The engine's own last lines (failure.txt), without the coordinator's post-engine lines
+        // that end its log; the log when there is no file, or the file quotes no output. A file
+        // that names a step of the coordinator's own keeps that headline in view above them.
+        let (tail, output, label) = match report {
+            Some(report) => {
+                let label = report.label().map(str::to_string);
+                if report.lines.is_empty() {
+                    let output = log().await;
+                    (under_headline(Some(report.headline), output.clone()), output, label)
+                } else {
+                    let keep = ENGINE_REPORT_LINES - usize::from(label.is_some());
+                    let skip = report.lines.len().saturating_sub(keep);
+                    let output: Vec<String> = report.lines.into_iter().skip(skip).collect();
+                    let headline = label.is_some().then_some(report.headline);
+                    (under_headline(headline, output.clone()), output, label)
+                }
+            }
+            None => {
+                let output = log().await;
+                (output.clone(), output, None)
+            }
+        };
+        let d = match (batch, label) {
+            (Some(d), _) => d,
+            // Its output is the step's own trouble, not the workflow's inputs or options.
+            (None, Some(label)) => diagnose_setup_step(&label),
+            (None, None) => diagnose_engine(&output),
+        };
         items.push(FailureItem {
             exit_code: stop.exit_code,
             batch_job_id: None,
@@ -327,6 +416,19 @@ pub(crate) async fn failure_summary(
             reason: stop.status_reason.clone(),
             stage: None,
         });
+        // Batch has said nothing yet about how the coordinator stopped, shortly after the run
+        // ended: the engine reported the failure first, and its last lines may not be in yet. The
+        // window keeps a run whose stop facts never arrive (or predate them) from waiting forever,
+        // and an end time ahead of this clock (the producer's) never waits.
+        let now = biffix_core::clock::epoch_secs();
+        let pending = stop.exit_code.is_none()
+            && stop.status_reason.is_none()
+            && stop.termination_category.is_none()
+            && run
+                .run
+                .completed_at
+                .is_some_and(|at| (0.0..SETTLE_WINDOW_SECS).contains(&(now - at)));
+        return Ok(FailureSummary { failed_steps, items, support, pending });
     }
-    Ok(FailureSummary { failed_steps, items, support })
+    Ok(FailureSummary { failed_steps, items, support, pending: false })
 }

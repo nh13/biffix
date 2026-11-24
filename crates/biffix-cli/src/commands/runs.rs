@@ -11,17 +11,25 @@ use biffix_workflow::validate::{
     coerce_params, default_nextflow_outdir, validate_params, NEXTFLOW_OUTDIR_PARAM,
 };
 
-use biffix_api::{RunDetail, RunFilter, RunSubmitRequest, SubmittedRun};
+use biffix_api::{
+    FailureSummary, RunDetail, RunFilter, RunSubmitRequest, SubmittedRun,
+    FAILURE_SUMMARY_SETTLE_SECS,
+};
 use serde::Deserialize;
 
 use crate::api::ApiClient;
 use crate::error::{CliError, CliResult, TRANSIENT_BUDGET};
 use crate::params;
+use crate::render::terminal_safe;
 use crate::render::OutputMode;
 
 use super::Session;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Most re-asks of a pending failure summary while following (one per poll interval): enough to
+/// outlast the window the server may say `pending` for.
+const SETTLE_POLLS: u32 = FAILURE_SUMMARY_SETTLE_SECS.div_ceil(POLL_INTERVAL.as_secs()) as u32;
 
 /// The terminal outcome the CLI maps to a follow exit code, from the run's projected state.
 fn terminal_of(state: &str) -> Option<RunState> {
@@ -418,8 +426,14 @@ pub(crate) async fn list(session: &mut Session, state: Option<RunFilter>) -> Cli
 
 pub(crate) async fn show(session: &mut Session, run_id: &str) -> CliResult<()> {
     let client = session.authed_client().await?;
+    show_with(&client, run_id, session.output).await
+}
+
+/// `biffix runs show`: the run's detail, and why it failed when it did.
+async fn show_with(client: &ApiClient, run_id: &str, mode: OutputMode) -> CliResult<()> {
     let detail = client.get_run(run_id).await?;
-    render_detail(&detail, session.output);
+    let why = failure_of(client, &detail).await;
+    render_detail(&detail, why.as_ref(), Asked::Once, mode);
     Ok(())
 }
 
@@ -493,46 +507,216 @@ pub async fn follow(session: &mut Session, run_id: &str) -> CliResult<()> {
     follow_to_terminal(&client, run_id, session.output).await
 }
 
-fn render_detail(detail: &RunDetail, mode: OutputMode) {
-    let s = &detail.summary;
+/// How a failure summary was read, which says what a summary still `pending` tells the user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Asked {
+    /// Once (`runs show`): asking again shortly may say more.
+    Once,
+    /// Again while it was pending, until it settled or the follow stopped waiting.
+    UntilSettled,
+}
+
+fn render_detail(detail: &RunDetail, why: Option<&FailureSummary>, asked: Asked, mode: OutputMode) {
     match mode {
-        // The full `GET /runs/{id}` detail (params already secret-redacted server-side), not a
-        // hand-picked subset that silently drops fields as the API grows.
-        OutputMode::Json => crate::render::print_json(&serde_json::json!(detail)),
-        OutputMode::Human => {
-            println!("{}  {}", s.run_id, s.state);
-            for t in &detail.tasks {
-                let attempts = if t.attempts > 0 {
-                    format!(" (attempt {})", t.attempts)
-                } else {
-                    String::new()
-                };
-                println!("  {}  {}{attempts}", t.task_key.as_str(), t.state);
+        // The JSON carries `pending` itself.
+        OutputMode::Json => crate::render::print_json(&detail_json(detail, why)),
+        OutputMode::Human => print!("{}", detail_text(detail, why, asked)),
+    }
+}
+
+/// `GET /runs/{id}` as JSON: the full detail (params already secret-redacted server-side), not a
+/// hand-picked subset that silently drops fields as the API grows. The one key the CLI adds is
+/// `failure_summary` (`GET /runs/{id}/failure-summary`, in the API's own shape) for a failed run.
+fn detail_json(detail: &RunDetail, why: Option<&FailureSummary>) -> serde_json::Value {
+    let mut out = serde_json::json!(detail);
+    if let (Some(why), Some(map)) = (why, out.as_object_mut()) {
+        map.insert("failure_summary".into(), serde_json::json!(why));
+    }
+    out
+}
+
+/// The human rendering of a run's detail: its state, its tasks, and why it failed when it did.
+fn detail_text(detail: &RunDetail, why: Option<&FailureSummary>, asked: Asked) -> String {
+    let s = &detail.summary;
+    let mut out = terminal_safe(&format!("{}  {}", s.run_id, s.state), true) + "\n";
+    for t in &detail.tasks {
+        let attempts =
+            if t.attempts > 0 { format!(" (attempt {})", t.attempts) } else { String::new() };
+        let line =
+            terminal_safe(&format!("  {}  {}{attempts}", t.task_key.as_str(), t.state), true);
+        out.push_str(&line);
+        out.push('\n');
+    }
+    if let Some(why) = why {
+        out.push_str(&failure_text(why, s.run_id.as_str(), asked));
+    }
+    out
+}
+
+/// The human rendering of run `run_id`'s failure summary, as the run page words it (ends with a
+/// newline). One still `pending` says it may be incomplete, and what to do (as `asked` allows).
+fn failure_text(why: &FailureSummary, run_id: &str, asked: Asked) -> String {
+    let mut out = String::from("why it failed:\n");
+    for item in &why.items {
+        out.push_str(&format!("  {}\n", item_headline(item)));
+        out.push_str(&format!("    {}\n", terminal_safe(&item.advice, true)));
+        // AWS's reason is the evidence only when there is no log; before launch it is the message.
+        if let Some(reason) = &item.reason {
+            if item.log_tail.is_empty() && item.stage.is_none() {
+                out.push_str(&format!("    AWS says: {}\n", terminal_safe(reason, true)));
             }
+        }
+        for line in &item.log_tail {
+            out.push_str(&format!("    | {}\n", terminal_safe(line, true)));
+        }
+    }
+    let more = why.failed_steps - why.items.len() as i64;
+    if more > 0 {
+        let steps = if more == 1 { "step" } else { "steps" };
+        out.push_str(&format!("  {more} more failed {steps}\n"));
+    }
+    if let Some(c) = &why.support {
+        let url = c.url.as_deref().map(|u| format!(", {u}")).unwrap_or_default();
+        out.push_str(&terminal_safe(&format!("  ask: {} <{}>{url}", c.name, c.email), true));
+        out.push('\n');
+    }
+    if why.pending {
+        let note = match asked {
+            Asked::Once => format!(
+                "  this may be incomplete: the engine's last output may not be in yet. Run `biffix \
+                 runs show {run_id}` again shortly, or `biffix runs follow {run_id}`, which waits \
+                 for it."
+            ),
+            Asked::UntilSettled => "  this may be incomplete: the engine's last output was still \
+                                    not in when biffix stopped waiting."
+                .to_string(),
+        };
+        out.push_str(&terminal_safe(&note, true));
+        out.push('\n');
+    }
+    out
+}
+
+/// "<step>[ (<task key>)] failed: <message>[ · after N tries]" of one failure item.
+fn item_headline(item: &biffix_api::FailureItem) -> String {
+    let key = match &item.task_key {
+        Some(key) if key.as_str() != item.step => format!(" ({})", key.as_str()),
+        _ => String::new(),
+    };
+    let tries = if item.attempts > 1 {
+        format!(" · after {} tries", item.attempts)
+    } else {
+        String::new()
+    };
+    terminal_safe(&format!("{}{key} failed: {}{tries}", item.step, item.message), true)
+}
+
+/// "<step> failed: <message>" of the summary's first item, for the follow error line.
+fn failure_headline(why: &FailureSummary) -> Option<String> {
+    why.items
+        .first()
+        .map(|item| terminal_safe(&format!("{} failed: {}", item.step, item.message), true))
+}
+
+/// Why `detail`'s run failed; `None` for a run that did not fail, an empty summary, or a summary
+/// that could not be read (a warning on stderr: the run's own detail is still shown).
+async fn failure_of(client: &ApiClient, detail: &RunDetail) -> Option<FailureSummary> {
+    if terminal_of(&detail.summary.state) != Some(RunState::Failed) {
+        return None;
+    }
+    match client.get_failure_summary(detail.summary.run_id.as_str()).await {
+        Ok(why) if why.items.is_empty() => None,
+        Ok(why) => Some(why),
+        Err(e) => {
+            eprintln!("{}", summary_read_warning(detail.summary.run_id.as_str(), &e));
+            None
         }
     }
 }
 
+/// The stderr warning that `run_id`'s failure summary could not be read (`error`). The run ID
+/// and the error can carry server text, so the line is printed terminal-safe.
+fn summary_read_warning(run_id: &str, error: &dyn std::fmt::Display) -> String {
+    terminal_safe(&format!("[biffix] warning: could not read why {run_id} failed: {error}"), false)
+}
+
+/// As [`failure_of`], re-asked every `interval` while the server says it is pending (at most
+/// [`SETTLE_POLLS`] times); the last answer read is returned, and whether it waited (asked again
+/// at all). Says once on stderr (human mode) that it is waiting for the engine's last output.
+async fn settled_failure(
+    client: &ApiClient,
+    detail: &RunDetail,
+    mode: OutputMode,
+    interval: Duration,
+) -> (Option<FailureSummary>, bool) {
+    let mut why = failure_of(client, detail).await;
+    let mut waited = false;
+    for poll in 0..SETTLE_POLLS {
+        if !why.as_ref().is_some_and(|w| w.pending) {
+            break;
+        }
+        if poll == 0 && mode == OutputMode::Human {
+            eprintln!("[biffix] waiting for the engine's last output…");
+        }
+        tokio::time::sleep(interval).await;
+        waited = true;
+        match failure_of(client, detail).await {
+            Some(next) => why = Some(next),
+            // A re-ask that fails keeps the answer already read.
+            None => break,
+        }
+    }
+    (why, waited)
+}
+
 /// Poll until the run reaches a terminal state, then map that to the exit code (0/8/9). Transient
-/// errors are retried within a budget and never reported as a run failure.
+/// errors are retried within a budget and never reported as a run failure. A failed run's reason
+/// is shown, and named in the error.
 async fn follow_to_terminal(client: &ApiClient, run_id: &str, mode: OutputMode) -> CliResult<()> {
+    follow_with(client, run_id, mode, POLL_INTERVAL).await
+}
+
+/// [`follow_to_terminal`], polling every `interval`.
+async fn follow_with(
+    client: &ApiClient,
+    run_id: &str,
+    mode: OutputMode,
+    interval: Duration,
+) -> CliResult<()> {
     let mut transient = 0u32;
     let mut last_state = String::new();
     loop {
         match client.get_run(run_id).await {
             Ok(detail) => {
                 transient = 0;
-                if detail.summary.state != last_state {
-                    if mode == OutputMode::Human {
-                        eprintln!("[biffix] {} → {}", run_id, detail.summary.state);
-                    }
-                    last_state = detail.summary.state.clone();
-                }
+                say_state(run_id, &detail.summary.state, &mut last_state, mode);
                 if let Some(outcome) =
                     follow_outcome(run_id, &detail.summary.state, detail.summary.terminal)
                 {
-                    render_detail(&detail, mode);
-                    return outcome;
+                    // Asks nothing for a run that did not fail.
+                    let (why, waited) = settled_failure(client, &detail, mode, interval).await;
+                    // Show the run as it was when the summary settled, not before the wait (a
+                    // detail that cannot be read again is shown as it was read).
+                    let detail = match waited {
+                        true => client.get_run(run_id).await.unwrap_or(detail),
+                        false => detail,
+                    };
+                    say_state(run_id, &detail.summary.state, &mut last_state, mode);
+                    // End as that run did (a cancellation may have folded meanwhile), keeping the
+                    // ending first read should it no longer read as ended; say why it failed only
+                    // while it still did.
+                    let outcome =
+                        follow_outcome(run_id, &detail.summary.state, detail.summary.terminal)
+                            .unwrap_or(outcome);
+                    let why = why
+                        .filter(|_| terminal_of(&detail.summary.state) == Some(RunState::Failed));
+                    render_detail(&detail, why.as_ref(), Asked::UntilSettled, mode);
+                    return match why.as_ref().and_then(failure_headline) {
+                        Some(headline) => {
+                            outcome.map_err(|e| e.map_message(|m| format!("{m}: {headline}")))
+                        }
+                        None => outcome,
+                    };
                 }
             }
             Err(e) => {
@@ -541,8 +725,20 @@ async fn follow_to_terminal(client: &ApiClient, run_id: &str, mode: OutputMode) 
                 }
             }
         }
-        tokio::time::sleep(POLL_INTERVAL).await;
+        tokio::time::sleep(interval).await;
     }
+}
+
+/// Says on stderr (human mode) that the followed run is now in `state`, when that is not
+/// `last_state` (which it becomes). The state is the server's, so it is printed terminal-safe.
+fn say_state(run_id: &str, state: &str, last_state: &mut String, mode: OutputMode) {
+    if state == last_state {
+        return;
+    }
+    if mode == OutputMode::Human {
+        eprintln!("[biffix] {}", terminal_safe(&format!("{run_id} → {state}"), false));
+    }
+    *last_state = state.to_string();
 }
 
 /// A failed poll of `run_id` while following it, with `transient` such failures in a row before it:
@@ -572,6 +768,12 @@ fn poll_failed(run_id: &str, e: CliError, transient: &mut u32) -> Option<CliErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summary_read_warning_is_terminal_safe() {
+        let warning = summary_read_warning("run-\u{1b}[2J1", &"bad\u{7} gateway\r");
+        assert_eq!(warning, "[biffix] warning: could not read why run-[2J1 failed: bad gateway");
+    }
 
     #[test]
     fn single_job_is_refused_for_a_version_without_it_or_a_bad_size() {
@@ -776,5 +978,361 @@ mod tests {
         let mut transient = 0;
         let err = poll_failed("run-x", CliError::NotFound("unknown run".into()), &mut transient);
         assert!(matches!(err, Some(CliError::NotFound(m)) if m == "unknown run"));
+    }
+
+    fn failure(json: serde_json::Value) -> FailureSummary {
+        serde_json::from_value(json).unwrap()
+    }
+
+    /// One failure item: `step` failed with `message`, and the given extra fields.
+    fn item(step: &str, message: &str, extra: serde_json::Value) -> serde_json::Value {
+        let mut item = serde_json::json!({
+            "step": step, "cause": "unknown", "try_again": "resume", "message": message,
+            "advice": "Do something.", "attempts": 1, "log_tail": [],
+        });
+        item.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        item
+    }
+
+    #[test]
+    fn a_failure_reads_as_each_item_s_step_message_advice_and_log() {
+        // The engine's own failure: its log lines, and no "AWS says" beside a log.
+        let engine = failure(serde_json::json!({"failed_steps": 0, "items": [item(
+            "workflow engine",
+            "the workflow engine stopped with an error before any step failed",
+            serde_json::json!({
+                "advice": "The engine's log, below, says why.",
+                "reason": "Essential container in task exited",
+                "log_tail": ["ERROR ~ Validation failed!", "* --input: the file does not exist"],
+            }),
+        )]}));
+        assert_eq!(
+            failure_text(&engine, "run-x", Asked::Once),
+            "why it failed:\n  workflow engine failed: the workflow engine stopped with an error \
+             before any step failed\n    The engine's log, below, says why.\n    | ERROR ~ \
+             Validation failed!\n    | * --input: the file does not exist\n"
+        );
+        // A step with its task key and tries, and more failed steps than shown; who to ask.
+        let steps = failure(serde_json::json!({
+            "failed_steps": 4,
+            "items": [item("align", "it ran out of memory", serde_json::json!({
+                "task_key": "align:sample=B", "attempts": 3,
+            }))],
+            "support": {"name": "Core", "email": "core@lab.example.org"},
+        }));
+        assert_eq!(
+            failure_text(&steps, "run-x", Asked::Once),
+            "why it failed:\n  align (align:sample=B) failed: it ran out of memory · after 3 \
+             tries\n    Do something.\n  3 more failed steps\n  ask: Core <core@lab.example.org>\n"
+        );
+        // A task key that is its step's name is not repeated; one try is not counted.
+        let same = failure(serde_json::json!({"failed_steps": 1, "items": [item(
+            "world", "it failed", serde_json::json!({"task_key": "world"}),
+        )]}));
+        assert!(
+            failure_text(&same, "run-x", Asked::Once).contains("  world failed: it failed\n"),
+            "{}",
+            failure_text(&same, "run-x", Asked::Once)
+        );
+        // Before launch: the reason is the message, never repeated as "AWS says".
+        let before = failure(serde_json::json!({"failed_steps": 0, "items": [item(
+            "image preparation", "image x could not be imported",
+            serde_json::json!({"reason": "image x could not be imported", "stage": "image_preparation"}),
+        )]}));
+        assert_eq!(
+            failure_text(&before, "run-x", Asked::Once),
+            "why it failed:\n  image preparation failed: image x could not be imported\n    Do \
+             something.\n"
+        );
+        // Never started: no log, so AWS's reason is the evidence.
+        let never = failure(serde_json::json!({"failed_steps": 0, "items": [item(
+            "workflow engine", "it never ran",
+            serde_json::json!({"reason": "CannotPullContainerError: x not found"}),
+        )]}));
+        assert!(
+            failure_text(&never, "run-x", Asked::Once)
+                .contains("    AWS says: CannotPullContainerError: x not found\n"),
+            "{}",
+            failure_text(&never, "run-x", Asked::Once)
+        );
+        // A summary still settling says it may be incomplete, and what to do about it.
+        let mut pending = engine.clone();
+        pending.pending = true;
+        let once = failure_text(&pending, "run-x", Asked::Once);
+        assert!(
+            once.ends_with(
+                "  this may be incomplete: the engine's last output may not be in yet. Run `biffix \
+                 runs show run-x` again shortly, or `biffix runs follow run-x`, which waits for \
+                 it.\n"
+            ),
+            "{once}"
+        );
+        let waited = failure_text(&pending, "run-x", Asked::UntilSettled);
+        assert!(
+            waited.ends_with(
+                "  this may be incomplete: the engine's last output was still not in when biffix \
+                 stopped waiting.\n"
+            ),
+            "{waited}"
+        );
+        assert!(!failure_text(&engine, "run-x", Asked::Once).contains("incomplete"));
+        assert_eq!(
+            failure_headline(&engine).as_deref(),
+            Some(
+                "workflow engine failed: the workflow engine stopped with an error before any \
+                 step failed"
+            )
+        );
+        assert_eq!(
+            failure_headline(&failure(serde_json::json!({"failed_steps": 0, "items": []}))),
+            None
+        );
+    }
+
+    #[test]
+    fn a_log_line_cannot_drive_the_terminal() {
+        // Every server-supplied string the human rendering prints is filtered, not only logs.
+        const ESC: &str = "\u{1b}[2J\u{7}";
+        let mut run = run_json("failed");
+        run["run_id"] = serde_json::json!(format!("run-x{ESC}"));
+        run["tasks"] = serde_json::json!([
+            {"task_key": format!("align:sample={ESC}"), "state": format!("failed{ESC}"), "attempts": 1}
+        ]);
+        let detail: RunDetail = serde_json::from_value(run).unwrap();
+        let why = failure(serde_json::json!({
+            "failed_steps": 3,
+            "pending": true,
+            "items": [
+                // A step with a log: its step, task key, message, advice and log lines.
+                item(&format!("align{ESC}"), &format!("it broke{ESC}"), serde_json::json!({
+                    "task_key": format!("align:sample=B{ESC}"),
+                    "advice": format!("Do this{ESC}."),
+                    "log_tail": [format!("a\tlog line{ESC}")],
+                })),
+                // No log: AWS's reason is printed.
+                item("workflow engine", "it never ran", serde_json::json!({
+                    "reason": format!("CannotPullContainerError{ESC}"),
+                })),
+            ],
+            "support": {
+                "name": format!("Core{ESC}"), "email": format!("c@x.org{ESC}"),
+                "url": format!("https://x.org/{ESC}"),
+            },
+        }));
+        let text = detail_text(&detail, Some(&why), Asked::Once);
+        assert!(!text.chars().any(|c| c.is_control() && c != '\n' && c != '\t'), "{text:?}");
+        for shown in [
+            "run-x[2J  failed\n",
+            "  align:sample=[2J  failed[2J (attempt 1)\n",
+            "  align[2J (align:sample=B[2J) failed: it broke[2J\n",
+            "    Do this[2J.\n",
+            "    | a\tlog line[2J\n",
+            "    AWS says: CannotPullContainerError[2J\n",
+            "  ask: Core[2J <c@x.org[2J>, https://x.org/[2J\n",
+            "`biffix runs show run-x[2J`",
+        ] {
+            assert!(text.contains(shown), "{shown:?} in {text:?}");
+        }
+        assert_eq!(failure_headline(&why).as_deref(), Some("align[2J failed: it broke[2J"));
+    }
+
+    #[test]
+    fn following_waits_out_the_server_s_settle_window() {
+        let window = Duration::from_secs(biffix_api::FAILURE_SUMMARY_SETTLE_SECS);
+        assert!(POLL_INTERVAL * SETTLE_POLLS >= window);
+    }
+
+    /// A `GET /runs/{id}` answer for `run-x` in `state`.
+    fn run_json(state: &str) -> serde_json::Value {
+        serde_json::json!({
+            "run_id": "run-x", "state": state, "terminal": state != "running",
+            "tasks_observed": 0, "tasks_succeeded": 0, "tasks_running": 0,
+            "tasks_queued": 0, "tasks_failed": 0, "tasks_cached": 0, "outputs_total": 0,
+            "outputs_reused": 0, "input_uris": [], "tasks": [], "params": {},
+            "dag": {"nodes": [], "edges": []},
+        })
+    }
+
+    #[test]
+    fn a_failed_run_s_json_adds_its_failure_summary() {
+        let detail: RunDetail = serde_json::from_value(run_json("failed")).unwrap();
+        let plain = serde_json::to_value(&detail).unwrap();
+        assert_eq!(detail_json(&detail, None), plain);
+        let why = failure(
+            serde_json::json!({"failed_steps": 0, "items": [item("workflow engine", "x", serde_json::json!({}))]}),
+        );
+        let mut with = detail_json(&detail, Some(&why));
+        assert_eq!(with["failure_summary"], serde_json::to_value(&why).unwrap());
+        with.as_object_mut().unwrap().remove("failure_summary");
+        assert_eq!(with, plain, "every RunDetail key as it is");
+    }
+
+    /// What a stub API answers and counts.
+    #[derive(Default)]
+    struct Stub {
+        /// The run's state.
+        state: String,
+        /// The run's state from its second read on, when it changes (a fold landing late).
+        later_state: Option<String>,
+        /// Summary answers left that say `pending` (`u32::MAX`: always).
+        pending: std::sync::atomic::AtomicU32,
+        /// Answer `failure-summary` with a 500.
+        broken: bool,
+        /// Answer `failure-summary` with a 500 once it has answered this many times.
+        broken_after: Option<u32>,
+        summaries: std::sync::atomic::AtomicU32,
+        /// `GET /runs/{id}` requests.
+        runs: std::sync::atomic::AtomicU32,
+    }
+
+    /// A stub API for run `run-x`, and a client of it.
+    async fn stub_api(stub: Stub) -> (ApiClient, Arc<Stub>) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let stub = Arc::new(stub);
+        let app = axum::Router::new()
+            .route(
+                "/runs/{id}",
+                axum::routing::get(|axum::extract::State(s): axum::extract::State<Arc<Stub>>| async move {
+                    let read = s.runs.fetch_add(1, SeqCst);
+                    let state = match &s.later_state {
+                        Some(later) if read > 0 => later,
+                        _ => &s.state,
+                    };
+                    axum::Json(run_json(state))
+                }),
+            )
+            .route(
+                "/runs/{id}/failure-summary",
+                axum::routing::get(|axum::extract::State(s): axum::extract::State<Arc<Stub>>| async move {
+                    let asked = s.summaries.fetch_add(1, SeqCst);
+                    if s.broken || s.broken_after.is_some_and(|n| asked >= n) {
+                        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response();
+                    }
+                    let pending = s.pending.load(SeqCst) > 0;
+                    if pending && s.pending.load(SeqCst) != u32::MAX {
+                        s.pending.fetch_sub(1, SeqCst);
+                    }
+                    let mut v = serde_json::json!({"failed_steps": 0, "items": [item(
+                        "workflow engine", "the workflow engine stopped with an error before any step failed",
+                        serde_json::json!({"log_tail": ["ERROR ~ boom"]}),
+                    )]});
+                    if pending {
+                        v["pending"] = serde_json::json!(true);
+                    }
+                    axum::Json(v).into_response()
+                }),
+            )
+            .with_state(stub.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ApiClient::new(
+            reqwest::Client::new(),
+            &base,
+            crate::secret::Secret::new("tok".into()),
+            false,
+        );
+        (client, stub)
+    }
+
+    use axum::response::IntoResponse;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn show_asks_why_only_a_failed_run_failed() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (client, stub) = stub_api(Stub { state: "failed".into(), ..Default::default() }).await;
+        show_with(&client, "run-x", OutputMode::Json).await.unwrap();
+        assert_eq!(stub.summaries.load(SeqCst), 1);
+        let (client, stub) =
+            stub_api(Stub { state: "succeeded".into(), ..Default::default() }).await;
+        show_with(&client, "run-x", OutputMode::Human).await.unwrap();
+        assert_eq!(stub.summaries.load(SeqCst), 0);
+        // A summary that cannot be read still shows the run.
+        let (client, stub) =
+            stub_api(Stub { state: "failed".into(), broken: true, ..Default::default() }).await;
+        show_with(&client, "run-x", OutputMode::Human).await.unwrap();
+        // A 500 is not retried: asked once.
+        assert_eq!(stub.summaries.load(SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn following_a_failed_run_waits_for_its_summary_to_settle_and_names_why() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let interval = Duration::from_millis(10);
+        let stub = Stub { state: "failed".into(), pending: 2.into(), ..Default::default() };
+        let (client, stub) = stub_api(stub).await;
+        let err = follow_with(&client, "run-x", OutputMode::Json, interval).await.unwrap_err();
+        assert_eq!(stub.summaries.load(SeqCst), 3);
+        // It waited, so the run's detail is read again to show beside the settled summary.
+        assert_eq!(stub.runs.load(SeqCst), 2);
+        assert!(
+            matches!(&err, CliError::RunFailed(m)
+                if m.starts_with("run run-x failed: ") && m.contains("workflow engine failed:")),
+            "{err:?}"
+        );
+        assert_eq!(err.exit_code(), 8);
+        // A summary that never settles is asked a bounded number of times.
+        let stub = Stub { state: "failed".into(), pending: u32::MAX.into(), ..Default::default() };
+        let (client, stub) = stub_api(stub).await;
+        let err = follow_with(&client, "run-x", OutputMode::Json, interval).await.unwrap_err();
+        assert_eq!(stub.summaries.load(SeqCst), 1 + SETTLE_POLLS);
+        assert_eq!(err.exit_code(), 8);
+        // A summary that is settled at once is shown with the detail already read.
+        let (client, stub) = stub_api(Stub { state: "failed".into(), ..Default::default() }).await;
+        follow_with(&client, "run-x", OutputMode::Json, interval).await.unwrap_err();
+        assert_eq!((stub.summaries.load(SeqCst), stub.runs.load(SeqCst)), (1, 1));
+        // A re-ask that fails keeps the summary already read.
+        let stub = Stub {
+            state: "failed".into(),
+            pending: u32::MAX.into(),
+            broken_after: Some(1),
+            ..Default::default()
+        };
+        let (client, stub) = stub_api(stub).await;
+        let err = follow_with(&client, "run-x", OutputMode::Json, interval).await.unwrap_err();
+        assert_eq!(stub.summaries.load(SeqCst), 2);
+        assert!(
+            matches!(&err, CliError::RunFailed(m) if m.contains("workflow engine failed:")),
+            "{err:?}"
+        );
+        // Another ending asks nothing more.
+        let (client, stub) =
+            stub_api(Stub { state: "cancelled".into(), ..Default::default() }).await;
+        let err = follow_with(&client, "run-x", OutputMode::Json, interval).await.unwrap_err();
+        assert_eq!(err.exit_code(), 9);
+        assert_eq!(stub.summaries.load(SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn following_ends_as_the_run_read_after_its_summary_settled() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let interval = Duration::from_millis(10);
+        // A cancellation folds while the summary settles: the run ends cancelled, not failed, and
+        // is not said to have failed.
+        let stub = Stub {
+            state: "failed".into(),
+            later_state: Some("cancelled".into()),
+            pending: 1.into(),
+            ..Default::default()
+        };
+        let (client, stub) = stub_api(stub).await;
+        let err = follow_with(&client, "run-x", OutputMode::Json, interval).await.unwrap_err();
+        assert_eq!(stub.runs.load(SeqCst), 2);
+        assert!(
+            matches!(&err, CliError::RunCancelled(m) if m == "run run-x was cancelled"),
+            "{err:?}"
+        );
+        assert_eq!(err.exit_code(), 9);
+        // A re-read in flight again (not a state the API should give) keeps the ending first read.
+        let stub = Stub {
+            state: "failed".into(),
+            later_state: Some("running".into()),
+            pending: 1.into(),
+            ..Default::default()
+        };
+        let (client, _) = stub_api(stub).await;
+        let err = follow_with(&client, "run-x", OutputMode::Json, interval).await.unwrap_err();
+        assert_eq!(err.exit_code(), 8);
     }
 }

@@ -143,19 +143,13 @@ pub(super) async fn sheet_file_samples(
     if let Some(reason) = unreadable_in(projects, project, uri) {
         return skip(&reason);
     }
-    // The range is inclusive, so `cap - 1` reads at most `cap` bytes, as every reader of a capped
-    // object does. A larger object says so in its total size; one whose size S3 did not give that
-    // fills the cap may have been cut short, so it is refused too.
-    let read = cloud.get_object_range(uri, 0, MAX_SHEET_FILE_BYTES - 1);
-    let body = match tokio::time::timeout(SHEET_FILE_READ_TIMEOUT, read).await {
-        Ok(Ok(body)) => body,
-        Ok(Err(e)) => return skip(&format!("reading it failed: {e}")),
-        Err(_) => {
-            return skip(&format!(
-                "reading it took more than {}s",
-                SHEET_FILE_READ_TIMEOUT.as_secs()
-            ))
-        }
+    // A larger object says so in its total size; one whose size S3 did not give that fills the cap
+    // may have been cut short, so it is refused too.
+    let read =
+        crate::aws::objects::read_capped(cloud, uri, MAX_SHEET_FILE_BYTES, SHEET_FILE_READ_TIMEOUT);
+    let body = match read.await {
+        Ok(body) => body,
+        Err(e) => return skip(&e.to_string()),
     };
     let too_large = match body.total_size {
         Some(total) => total > MAX_SHEET_FILE_BYTES,

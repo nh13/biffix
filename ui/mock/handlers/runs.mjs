@@ -5,6 +5,7 @@ import { ATTEMPT_VIEWS, LAB_FAILURES, LAB_REPORTS } from '../fixtures/lab.mjs';
 import { OUTPUTS } from '../fixtures/outputs.mjs';
 import { REFERENCES } from '../fixtures/references.mjs';
 import {
+  ENGINE_FAILED,
   FAILED_BEFORE_LAUNCH,
   PAGING_RUNS,
   PAGING_WORKFLOW,
@@ -954,6 +955,27 @@ function failureSummary(c) {
           reason: beforeLaunch.reason,
           stage: beforeLaunch.stage ?? 'launch',
           try_again: 'rerun',
+        },
+      ],
+      ...support,
+    });
+  }
+  const engineFailed = ENGINE_FAILED.get(run.run_id);
+  if (engineFailed) {
+    // The workflow engine's own failure (no step failed), as `failure_summary` words it for this
+    // log (biffix-core's `diagnose_engine` reads it as an engine error; its test pins that).
+    return send(200, {
+      failed_steps: 0,
+      items: [
+        {
+          step: 'workflow engine',
+          cause: 'engine_error',
+          try_again: 'fix_options',
+          message: 'the workflow engine stopped with an error before any step failed',
+          advice: "The engine's log, below, says why: often a parameter or input it could not use.",
+          attempts: 1,
+          exit_code: engineFailed.exit_code,
+          log_tail: engineFailed.log_tail,
         },
       ],
       ...support,
