@@ -4471,7 +4471,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The last lines of its log (or the engine's), oldest first."
+            "description": "The last lines of its log, oldest first; or the engine's, from the run's `failure.txt` when\nit has one (else the end of the coordinator's log), under that file's first line when it\nnames a step other than the engine or quotes no output."
           },
           "message": {
             "type": "string",

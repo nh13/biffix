@@ -567,16 +567,16 @@ pub fn diagnose_engine(log_tail: &[String]) -> Diagnosis {
     }
 }
 
-/// Why a run failed when no step did, from Batch's account of the coordinator job's stop (`stop`:
-/// its exit code, reason and category) and the end of the engine's log. Recorded facts outrank the
-/// log, as in [`diagnose`]: a coordinator whose container never started (its image could not be
-/// pulled) has no log at all, and one Batch stopped for memory or lost with its machine says so in
-/// its reason. Anything else is read from the log by [`diagnose_engine`].
-pub fn diagnose_coordinator(stop: &FailedAttempt, log_tail: &[String]) -> Diagnosis {
+/// Why a run failed when no step did, when Batch's account of the coordinator job's stop (`stop`:
+/// its exit code, reason and category) alone settles it, as recorded facts outrank a log in
+/// [`diagnose`]: a container that never started (its image could not be pulled: there is no log
+/// at all), an out-of-memory kill, a spot reclaim, a lost host. `None` when the coordinator ran to
+/// its own exit: the engine's output then says why ([`diagnose_engine`]).
+pub fn diagnose_coordinator_stop(stop: &FailedAttempt) -> Option<Diagnosis> {
     let reason = stop.status_reason.as_deref().unwrap_or("").to_lowercase();
     let words = reason_words(&reason);
     if words.contains(&"cannotpullcontainererror") {
-        return Diagnosis {
+        return Some(Diagnosis {
             cause: FailureCause::CouldNotStart,
             message: "the workflow engine's software image could not be downloaded, so it never \
                       started"
@@ -585,34 +585,104 @@ pub fn diagnose_coordinator(stop: &FailedAttempt, log_tail: &[String]) -> Diagno
                      version uses may have been removed or may not be readable; register the \
                      workflow again (or ask its author to), then launch it again."
                 .into(),
-        };
+        });
     }
     if reason.contains("task failed to start") || never_started(&words) {
-        return Diagnosis {
+        return Some(Diagnosis {
             cause: FailureCause::CouldNotStart,
             message: "the workflow engine's container could not be started, so it never ran".into(),
             advice: "This is not a problem with your inputs. Launch it again; if it keeps \
                      happening, ask an admin, quoting the reason below."
                 .into(),
-        };
+        });
     }
     match category(stop) {
-        Some(TerminationCategory::Oom) => engine_out_of_memory(),
-        Some(TerminationCategory::Spot) => Diagnosis {
+        Some(TerminationCategory::Oom) => Some(engine_out_of_memory()),
+        Some(TerminationCategory::Spot) => Some(Diagnosis {
             cause: FailureCause::SpotReclaimed,
             message: "AWS took back the spot machine the workflow engine ran on".into(),
             advice: "This is not a problem with your inputs. Resume the run to pick up where it \
                      stopped."
                 .into(),
-        },
-        Some(TerminationCategory::HostTerminated) => Diagnosis {
+        }),
+        Some(TerminationCategory::HostTerminated) => Some(Diagnosis {
             cause: FailureCause::HostLost,
             message: "the machine the workflow engine ran on stopped unexpectedly".into(),
             advice: "This is not a problem with your inputs. Resume the run to pick up where it \
                      stopped."
                 .into(),
-        },
-        _ => diagnose_engine(log_tail),
+        }),
+        _ => None,
+    }
+}
+
+/// What a run's `failure.txt` says (written by the coordinator, `run_logs.py::failure_text`): its
+/// first line, and the output it quotes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailureReport {
+    /// The first line without its " The end of its output:" suffix, e.g.
+    /// "The engine exited with status 1."
+    pub headline: String,
+    /// The quoted output's lines, oldest first; empty when the file quotes none.
+    pub lines: Vec<String>,
+}
+
+/// The suffix `failure.txt`'s first line carries when output follows it.
+const FAILURE_REPORT_OUTPUT_SUFFIX: &str = " The end of its output:";
+
+/// The headline of a `failure.txt` the engine's own exit wrote: `The engine exited with status N.`
+/// Any other headline names a step of the coordinator's own (`<label> (exit status N).`).
+const FAILURE_REPORT_ENGINE_EXIT: &str = "The engine exited with status ";
+
+/// The suffix of a labelled step's headline, before its exit status.
+const FAILURE_REPORT_STEP_STATUS: &str = " (exit status ";
+
+impl FailureReport {
+    /// What failed when it was not the engine: a step of the coordinator's own that runs before
+    /// it (a single-job run's image conversion, say), named by the headline (`<label> (exit status
+    /// N).`, as `run_logs.py --failure-label` writes it), without its exit status. `None` for the
+    /// engine's own exit (`The engine exited with status N.`).
+    pub fn label(&self) -> Option<&str> {
+        if self.headline.starts_with(FAILURE_REPORT_ENGINE_EXIT) {
+            return None;
+        }
+        let label = match self.headline.rfind(FAILURE_REPORT_STEP_STATUS) {
+            Some(at) if self.headline.ends_with(").") => &self.headline[..at],
+            _ => self.headline.as_str(),
+        };
+        Some(label.trim_end_matches('.'))
+    }
+}
+
+/// Parse a `failure.txt`. `None` for blank text. Tolerant of other coordinator versions: the
+/// headline is the first non-blank line, the output is everything after the blank line that
+/// follows it (or after the headline when there is no blank line), with trailing blank lines
+/// dropped.
+pub fn parse_failure_report(text: &str) -> Option<FailureReport> {
+    // `lines` splits on `\n` and drops a `\r` before it.
+    let mut lines = text.lines().skip_while(|l| l.trim().is_empty());
+    let first = lines.next()?.trim_end();
+    let headline = first.strip_suffix(FAILURE_REPORT_OUTPUT_SUFFIX).unwrap_or(first).to_string();
+    let mut rest: Vec<String> = lines.map(str::to_string).collect();
+    if rest.first().is_some_and(|l| l.trim().is_empty()) {
+        rest.remove(0);
+    }
+    while rest.last().is_some_and(|l| l.trim().is_empty()) {
+        rest.pop();
+    }
+    Some(FailureReport { headline, lines: rest })
+}
+
+/// Why a run failed when a step of its coordinator's own failed before the engine started
+/// (`label`, from [`FailureReport::label`]). Its output names the step's own trouble, not the
+/// workflow's options or samples, so it is never read for those causes: the label is what failed.
+pub fn diagnose_setup_step(label: &str) -> Diagnosis {
+    Diagnosis {
+        cause: FailureCause::Unknown,
+        message: format!("the run's setup stopped before the engine started: {label}"),
+        advice: "This is not a problem with your samples or options; the log below says why. \
+                 Launch it again; if it keeps happening, ask an admin, quoting the log."
+            .into(),
     }
 }
 
@@ -1101,6 +1171,17 @@ At least one job did not complete successfully.";
             diagnose_engine(&log(&["ERROR ~ Unknown parameter: --genome"])).cause,
             FailureCause::EngineError
         );
+        // nf-schema's refusal of a parameter's value (the UI mock's `run_01HGWBengfail` shows it).
+        assert_eq!(
+            diagnose_engine(&log(&[
+                "ERROR ~ Validation of pipeline parameters failed!",
+                " -- Check '.nextflow.log' file for details",
+                "The following invalid input values have been detected:",
+                "* --max_cpus (lots): Value is [string] but should be [integer]",
+            ]))
+            .cause,
+            FailureCause::EngineError
+        );
         assert_eq!(
             diagnose_engine(&log(&["ERROR ~ Path `s3://b/sheet.csv` does not exist"])).cause,
             FailureCause::MissingInput
@@ -1342,42 +1423,108 @@ At least one job did not complete successfully.";
     }
 
     #[test]
-    fn a_coordinator_s_recorded_stop_outranks_its_log() {
-        let stop = |reason: &str, category: Option<&str>| FailedAttempt {
+    fn a_failure_report_is_its_headline_and_the_output_it_quotes() {
+        // As `run_logs.py::failure_text` writes it, with output and without.
+        let report = parse_failure_report(
+            "The engine exited with status 1. The end of its output:\n\nline a\nline b\n",
+        )
+        .unwrap();
+        assert_eq!(report.headline, "The engine exited with status 1.");
+        assert_eq!(report.lines, ["line a", "line b"]);
+        let report =
+            parse_failure_report("Converting the task images failed (exit status 1).\n").unwrap();
+        assert_eq!(report.headline, "Converting the task images failed (exit status 1).");
+        assert!(report.lines.is_empty());
+        // Blank text says nothing.
+        assert_eq!(parse_failure_report(""), None);
+        assert_eq!(parse_failure_report(" \n\n\t\n"), None);
+        // CRLF line ends, leading blank lines, and trailing blank lines dropped; blank lines
+        // within the output are kept.
+        let report = parse_failure_report(
+            "\r\nThe engine exited with status 2. The end of its output:\r\n\r\nx\r\n\r\ny\r\n\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(report.headline, "The engine exited with status 2.");
+        assert_eq!(report.lines, ["x", "", "y"]);
+        // Another coordinator's shape: no blank line after the headline.
+        let report = parse_failure_report("It broke.\nfirst\nsecond").unwrap();
+        assert_eq!(report.headline, "It broke.");
+        assert_eq!(report.lines, ["first", "second"]);
+    }
+
+    #[test]
+    fn a_failure_report_names_a_step_other_than_the_engine() {
+        let label = |text: &str| parse_failure_report(text).unwrap().label().map(str::to_string);
+        // The engine's own exit has no label, with output or without.
+        assert_eq!(label("The engine exited with status 1. The end of its output:\n\nx\n"), None);
+        assert_eq!(label("The engine exited with status 137.\n"), None);
+        // A labelled step (`run_logs.py --failure-label`), without its exit status.
+        assert_eq!(
+            label(
+                "Converting the task images failed (exit status 1). The end of its output:\n\nx\n"
+            )
+            .as_deref(),
+            Some("Converting the task images failed")
+        );
+        assert_eq!(
+            label("Writing the Snakefile that checks each rule's image failed (exit status 2).\n")
+                .as_deref(),
+            Some("Writing the Snakefile that checks each rule's image failed")
+        );
+        // Another coordinator's headline is a label as it is.
+        assert_eq!(label("It broke.\n").as_deref(), Some("It broke"));
+    }
+
+    #[test]
+    fn a_setup_step_s_failure_names_the_step_and_never_blames_the_inputs() {
+        let d = diagnose_setup_step("Converting the task images failed");
+        assert_eq!(d.cause, FailureCause::Unknown);
+        assert!(d.message.ends_with(": Converting the task images failed"), "{}", d.message);
+        assert_ne!(d.cause.try_again(), TryAgain::FixSamples);
+        assert_ne!(d.cause.try_again(), TryAgain::FixOptions);
+    }
+
+    #[test]
+    fn batch_s_account_of_a_coordinator_s_stop_settles_only_some_causes() {
+        let stop = |reason: Option<&str>, category: Option<&str>| FailedAttempt {
             exit_code: None,
             termination_category: category.map(str::to_string),
-            status_reason: Some(reason.into()),
+            status_reason: reason.map(str::to_string),
             spot_warned: false,
         };
+        let cause = |s: &FailedAttempt| diagnose_coordinator_stop(s).map(|d| d.cause);
         // Never started: no log at all, yet the reason says why.
-        let d = diagnose_coordinator(
-            &stop(
+        let pull = stop(
+            Some(
                 "Task failed to start: CannotPullContainerError: pull image manifest has been \
                  retried 1 time(s): 123.dkr.ecr.us-east-1.amazonaws.com/biffix-runtime:sm-9 not \
                  found",
-                None,
             ),
-            &[],
+            None,
         );
+        let d = diagnose_coordinator_stop(&pull).unwrap();
         assert_eq!(d.cause, FailureCause::CouldNotStart);
         assert!(d.message.contains("image"), "{}", d.message);
-        let d = diagnose_coordinator(
-            &stop("Task failed to start: CannotCreateContainerError: …", None),
-            &[],
-        );
-        assert_eq!(d.cause, FailureCause::CouldNotStart);
-        // A category recorded with the stop, or derived from its reason.
-        let killed = stop("OutOfMemoryError: Container killed due to memory usage", None);
-        assert_eq!(diagnose_coordinator(&killed, &[]).cause, FailureCause::OutOfMemory);
-        let lost = stop("Host EC2 (instance i-1) terminated.", Some("host_terminated"));
-        assert_eq!(diagnose_coordinator(&lost, &[]).cause, FailureCause::HostLost);
-        // Nothing recorded: the engine's log decides, as for `diagnose_engine`.
-        let plain = FailedAttempt { exit_code: Some(1), ..FailedAttempt::default() };
-        assert_eq!(diagnose_coordinator(&plain, &[]).cause, FailureCause::Unknown);
         assert_eq!(
-            diagnose_coordinator(&plain, &log(&["Error: bad parameter --foo"])).cause,
-            FailureCause::EngineError
+            cause(&stop(Some("Task failed to start: CannotCreateContainerError: …"), None)),
+            Some(FailureCause::CouldNotStart)
         );
+        assert_eq!(
+            cause(&stop(Some("OutOfMemoryError: Container killed due to memory usage"), None)),
+            Some(FailureCause::OutOfMemory)
+        );
+        assert_eq!(
+            cause(&stop(Some("Host EC2 (instance i-1) terminated."), Some("spot"))),
+            Some(FailureCause::SpotReclaimed)
+        );
+        assert_eq!(
+            cause(&stop(Some("Host EC2 (instance i-1) terminated."), Some("host_terminated"))),
+            Some(FailureCause::HostLost)
+        );
+        // The coordinator ran to its own exit: the engine's output says why.
+        let plain = FailedAttempt { exit_code: Some(1), ..FailedAttempt::default() };
+        assert_eq!(cause(&plain), None);
+        assert_eq!(cause(&FailedAttempt::default()), None);
     }
 
     #[test]

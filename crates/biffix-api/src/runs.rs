@@ -415,7 +415,9 @@ pub struct FailureItem {
     pub advice: String,
     /// Attempts the step made.
     pub attempts: i64,
-    /// The last lines of its log (or the engine's), oldest first.
+    /// The last lines of its log, oldest first; or the engine's, from the run's `failure.txt` when
+    /// it has one (else the end of the coordinator's log), under that file's first line when it
+    /// names a step other than the engine or quotes no output.
     pub log_tail: Vec<String>,
     /// AWS's own reason its last attempt stopped, when it gave one (e.g. why a container could not
     /// start — there is no log then); or, when the workflow engine failed a step whose job

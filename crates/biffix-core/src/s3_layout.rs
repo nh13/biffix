@@ -24,6 +24,14 @@ pub fn run_prefix(run_id: &str) -> String {
     format!("{RUNS_PREFIX}{run_id}/")
 }
 
+/// The key of a run's failure report, relative to the project bucket:
+/// `biffix/runs/<run_id>/logs/failure.txt`. The coordinator writes it when the engine (or a step of
+/// its own) fails: its run logs go under `<run prefix>logs/` (`lib/logs.sh`), the file is
+/// `run_logs.py`'s `FAILURE_NAME`.
+pub fn run_failure_report_key(run_id: &str) -> String {
+    format!("{}logs/failure.txt", run_prefix(run_id))
+}
+
 /// Split `s3://bucket/key` into its bucket and key (the key may be empty: `s3://b/` is the bucket's
 /// root). `None` for anything else: another scheme, no `/` after the bucket, or an empty bucket.
 pub fn split_s3_uri(uri: &str) -> Option<(&str, &str)> {
@@ -51,6 +59,7 @@ mod tests {
             assert!(prefix.ends_with('/'), "{prefix}");
         }
         assert_eq!(run_prefix("run-1"), "biffix/runs/run-1/");
+        assert_eq!(run_failure_report_key("run-1"), "biffix/runs/run-1/logs/failure.txt");
         assert!(SNAKEMAKE_CACHE_PREFIX.starts_with(CACHE_PREFIX));
     }
 

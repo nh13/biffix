@@ -452,3 +452,214 @@ async fn an_engine_failure_is_pending_until_batch_reports_the_stop() {
     assert_eq!(v["items"][0]["step"], "A");
     assert!(v.get("pending").is_none(), "{v}");
 }
+
+/// Where run `r1`'s coordinator writes its failure.txt: under the run's own prefix in its project's
+/// bucket (`b`, [`state_with_run_detail`]'s project).
+fn failure_txt_uri() -> String {
+    format!("s3://b/{}logs/failure.txt", biffix_core::s3_layout::run_prefix("r1"))
+}
+
+/// [`summary_state`] for a failed run `r1` with no failed step, whose coordinator logged
+/// `coordinator_log`, and whose failure.txt (when given) is `failure_txt`.
+fn engine_failure_state(
+    coordinator_log: &[&str],
+    failure_txt: Option<&str>,
+) -> (AppState, Arc<FakeCloud>) {
+    let mut detail = testing::run_detail("r1", "failed");
+    detail.coordinator_log_stream = Some("s-coord".into());
+    detail.coordinator_stop.exit_code = Some(1);
+    let cloud = Arc::new(FakeCloud::new());
+    cloud.logs.lock().unwrap().insert(
+        "s-coord".into(),
+        coordinator_log.iter().map(std::string::ToString::to_string).collect(),
+    );
+    if let Some(text) = failure_txt {
+        cloud.objects.lock().unwrap().insert(failure_txt_uri(), text.as_bytes().to_vec());
+    }
+    let mut state = state_with_run_detail(detail);
+    state.cloud = cloud.clone();
+    (state, cloud)
+}
+
+/// The coordinator's own lines after the engine exited, which fill the end of its log.
+const COORDINATOR_NOISE: &[&str] = &[
+    "biffix-coordinator: uploading events.jsonl",
+    "biffix-coordinator: uploaded 3 log file(s)",
+    "biffix-coordinator: replayed 10/10",
+];
+
+fn log_tail_of(v: &serde_json::Value) -> Vec<String> {
+    v["items"][0]["log_tail"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn an_engine_failure_is_explained_from_the_run_s_failure_txt() {
+    let output: Vec<String> = (0..60).map(|i| format!("engine line {i}")).collect();
+    let text = format!(
+        "The engine exited with status 1. The end of its output:\n\n{}\nERROR ~ boom\n",
+        output.join("\n")
+    );
+    let (state, cloud) = engine_failure_state(COORDINATOR_NOISE, Some(&text));
+    let (status, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let tail = log_tail_of(&v);
+    // The file's last 50 lines, not the coordinator's log.
+    assert_eq!(tail.len(), 50);
+    assert_eq!(tail[0], "engine line 11");
+    assert_eq!(tail[49], "ERROR ~ boom");
+    assert!(!tail.iter().any(|l| l.contains("biffix-coordinator")), "{tail:?}");
+    assert_eq!(v["items"][0]["cause"], "engine_error");
+    assert_eq!(v["items"][0]["exit_code"], 1);
+    assert_eq!(*cloud.ranges.lock().unwrap(), [failure_txt_uri()]);
+}
+
+#[tokio::test]
+async fn a_failure_txt_naming_a_missing_file_is_a_missing_input() {
+    let text = "The engine exited with status 1. The end of its output:\n\n\
+                ERROR ~ Path `s3://b/sheet.csv` does not exist\n";
+    let (state, _) = engine_failure_state(COORDINATOR_NOISE, Some(text));
+    let (_, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    assert_eq!(v["items"][0]["cause"], "missing_input");
+}
+
+#[tokio::test]
+async fn a_status_only_failure_txt_shows_its_headline_above_the_log() {
+    // The file quotes no output: the coordinator's log is the evidence, under the file's headline.
+    let text = "The engine exited with status 1.\n";
+    let (state, _) =
+        engine_failure_state(&["ERROR ~ Path `s3://b/x` does not exist", "exiting"], Some(text));
+    let (_, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    assert_eq!(
+        log_tail_of(&v),
+        ["The engine exited with status 1.", "ERROR ~ Path `s3://b/x` does not exist", "exiting"]
+    );
+    assert_eq!(v["items"][0]["cause"], "missing_input");
+}
+
+/// The headline `run_logs.py --failure-label` writes for a single-job run's image conversion.
+const LABELLED: &str = "Converting the task images failed (exit status 1).";
+
+#[tokio::test]
+async fn a_labelled_step_s_failure_txt_names_the_step_not_the_engine() {
+    // A step of the coordinator's own failed before the engine started: its headline stays in
+    // view, above the step's output, and that output is not read as the workflow's inputs.
+    let output: Vec<String> = (0..60).map(|i| format!("convert line {i}")).collect();
+    let text = format!(
+        "{LABELLED} The end of its output:\n\n{}\nFATAL: image.sif: no such file or directory\n",
+        output.join("\n")
+    );
+    let (state, _) = engine_failure_state(COORDINATOR_NOISE, Some(&text));
+    let (_, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    let tail = log_tail_of(&v);
+    assert_eq!(tail.len(), 50);
+    assert_eq!(tail[0], LABELLED);
+    assert_eq!(tail[1], "convert line 12");
+    assert_eq!(tail[49], "FATAL: image.sif: no such file or directory");
+    let item = &v["items"][0];
+    assert_ne!(item["cause"], "missing_input", "{item}");
+    assert_eq!(item["cause"], "unknown", "{item}");
+    assert!(
+        item["message"].as_str().unwrap().contains("Converting the task images failed"),
+        "{item}"
+    );
+}
+
+#[tokio::test]
+async fn a_status_only_labelled_failure_txt_names_the_step_above_the_log() {
+    let text = format!("{LABELLED}\n");
+    let (state, _) =
+        engine_failure_state(&["FATAL: image.sif: no such file or directory"], Some(&text));
+    let (_, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    assert_eq!(log_tail_of(&v), [LABELLED, "FATAL: image.sif: no such file or directory"]);
+    assert_eq!(v["items"][0]["cause"], "unknown");
+    assert!(
+        v["items"][0]["message"].as_str().unwrap().contains("Converting the task images failed"),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn without_a_failure_txt_the_engine_s_log_is_read_as_before() {
+    let (state, cloud) = engine_failure_state(&["ERROR ~ Path `s3://b/x` does not exist"], None);
+    let (_, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    assert_eq!(log_tail_of(&v), ["ERROR ~ Path `s3://b/x` does not exist"]);
+    assert_eq!(v["items"][0]["cause"], "missing_input");
+    assert_eq!(*cloud.ranges.lock().unwrap(), [failure_txt_uri()]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stalled_failure_txt_read_falls_back_to_the_log() {
+    let (state, cloud) = engine_failure_state(&["the coordinator's last line"], Some("never read"));
+    cloud.stall_ranges.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (status, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(log_tail_of(&v), ["the coordinator's last line"]);
+}
+
+#[tokio::test]
+async fn a_blank_failure_txt_falls_back_to_the_log() {
+    let (state, _) = engine_failure_state(&["the coordinator's last line"], Some("  \n\n"));
+    let (_, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    assert_eq!(log_tail_of(&v), ["the coordinator's last line"]);
+}
+
+#[tokio::test]
+async fn a_refused_failure_txt_read_falls_back_to_the_log() {
+    let (state, cloud) = engine_failure_state(&["the coordinator's last line"], Some("never read"));
+    cloud.fail_ranges.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (status, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(log_tail_of(&v), ["the coordinator's last line"]);
+    assert_eq!(*cloud.ranges.lock().unwrap(), [failure_txt_uri()]);
+}
+
+#[tokio::test]
+async fn a_project_without_a_bucket_reads_the_log_only() {
+    let (mut state, cloud) = engine_failure_state(&["the coordinator's last line"], None);
+    state.projects = Default::default();
+    let (status, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(log_tail_of(&v), ["the coordinator's last line"]);
+    assert!(cloud.ranges.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_out_of_memory_stop_still_shows_the_engine_s_failure_txt() {
+    // The kernel killed the engine, not the coordinator, which still wrote this attempt's
+    // failure.txt: Batch's account is the cause, the file the evidence.
+    let text =
+        "The engine exited with status 137. The end of its output:\n\nbuilding DAG\nKilled\n";
+    let (mut state, cloud) = engine_failure_state(COORDINATOR_NOISE, Some(text));
+    let mut detail = testing::run_detail("r1", "failed");
+    detail.coordinator_log_stream = Some("s-coord".into());
+    detail.coordinator_stop.exit_code = Some(137);
+    detail.coordinator_stop.status_reason =
+        Some("OutOfMemoryError: Container killed due to memory usage".into());
+    state.store = state_with_run_detail(detail).store;
+    let (_, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    assert_eq!(v["items"][0]["cause"], "out_of_memory");
+    assert_eq!(log_tail_of(&v), ["building DAG", "Killed"]);
+    assert_eq!(*cloud.ranges.lock().unwrap(), [failure_txt_uri()]);
+}
+
+#[tokio::test]
+async fn a_coordinator_batch_stopped_is_never_explained_from_failure_txt() {
+    // Batch lost the host: the coordinator never ran its exit steps, so a failure.txt there is
+    // another attempt's.
+    let stale = "The engine exited with status 1. The end of its output:\n\nan earlier attempt\n";
+    let (mut state, cloud) = engine_failure_state(&["the coordinator's last line"], Some(stale));
+    let mut detail = testing::run_detail("r1", "failed");
+    detail.coordinator_log_stream = Some("s-coord".into());
+    detail.coordinator_stop.status_reason = Some("Host EC2 (instance i-1) terminated.".into());
+    detail.coordinator_stop.termination_category = Some("host_terminated".into());
+    state.store = state_with_run_detail(detail).store;
+    let (_, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    assert_eq!(v["items"][0]["cause"], "host_lost");
+    assert_eq!(log_tail_of(&v), ["the coordinator's last line"]);
+    assert!(cloud.ranges.lock().unwrap().is_empty());
+}

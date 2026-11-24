@@ -1911,7 +1911,11 @@ export interface components {
        *     command did).
        */
       exit_code?: number | null;
-      /** @description The last lines of its log (or the engine's), oldest first. */
+      /**
+       * @description The last lines of its log, oldest first; or the engine's, from the run's `failure.txt` when
+       *     it has one (else the end of the coordinator's log), under that file's first line when it
+       *     names a step other than the engine or quotes no output.
+       */
       log_tail: string[];
       /** @description Completes "`<step>` failed: …". */
       message: string;
