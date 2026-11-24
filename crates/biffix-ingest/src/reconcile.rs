@@ -9,7 +9,7 @@
 
 use biffix_core::event::RunEvent;
 use biffix_core::eventbridge::describe::{
-    terminal_run_event, DescribedTerminalJob, TerminalStatus,
+    terminal_run_event, DescribedJobFacts, DescribedTerminalJob, TerminalStatus,
 };
 
 /// Maximum number of job IDs accepted by one AWS Batch `DescribeJobs` request.
@@ -37,11 +37,13 @@ pub fn reap_terminal_event(
         stopped_at_millis,
         exit_code: None,
         status_reason: Some(forgotten_reason(coordinator_job_id)),
-        log_stream: None,
-        instance_id: None,
-        queue: None,
-        is_coordinator: false,
-        requested: Default::default(),
+        facts: DescribedJobFacts {
+            log_stream: None,
+            instance_id: None,
+            queue: None,
+            is_coordinator: false,
+            requested: Default::default(),
+        },
     })
 }
 
@@ -152,11 +154,13 @@ mod tests {
             stopped_at_millis: 1_000,
             exit_code: None,
             status_reason: None,
-            log_stream: None,
-            instance_id: None,
-            queue: None,
-            is_coordinator: false,
-            requested: Default::default(),
+            facts: DescribedJobFacts {
+                log_stream: None,
+                instance_id: None,
+                queue: None,
+                is_coordinator: false,
+                requested: Default::default(),
+            },
         }
     }
 

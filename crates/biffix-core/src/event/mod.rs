@@ -50,7 +50,7 @@ pub use control_plane::{
     FAILURE_STAGE_IMAGE_PREPARATION, FAILURE_STAGE_LAUNCH,
 };
 pub use data::EventData;
-pub use kind::{Kind, COORDINATOR_TERMINAL_KINDS, TASK_TERMINAL_KINDS};
+pub use kind::{Kind, BATCH_JOB_START_KINDS, COORDINATOR_TERMINAL_KINDS, TASK_TERMINAL_KINDS};
 pub use payload::{Dag, DagEdge, DagNode, OutputRef, OutputRole, TaskVerdict, TerminationCategory};
 pub use samples::{ReusedSample, SampleHint, SampleSpec, StepScope};
 

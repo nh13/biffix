@@ -6,7 +6,7 @@
 use biffix_core::event::EventData;
 use biffix_core::event::RunEvent;
 use biffix_core::eventbridge::describe::{
-    terminal_run_event, DescribedTerminalJob, TerminalStatus,
+    terminal_run_event, DescribedJobFacts, DescribedTerminalJob, TerminalStatus,
 };
 use biffix_core::ids::RunId;
 use biffix_core::source::EventSource;
@@ -85,11 +85,13 @@ fn described(job_id: &str) -> DescribedTerminalJob {
         stopped_at_millis: 2_000,
         exit_code: Some(0),
         status_reason: None,
-        log_stream: None,
-        instance_id: None,
-        queue: None,
-        is_coordinator: false,
-        requested: Default::default(),
+        facts: DescribedJobFacts {
+            log_stream: None,
+            instance_id: None,
+            queue: None,
+            is_coordinator: false,
+            requested: Default::default(),
+        },
     }
 }
 
@@ -159,7 +161,10 @@ async fn stale_attempt_is_described_then_idempotently_folded_through_append_path
 
     // This is the typed fact the production adapter constructs from the real DescribeJobs result.
     let terminal = terminal_run_event(&DescribedTerminalJob {
-        log_stream: Some("batch/job-stale".into()),
+        facts: DescribedJobFacts {
+            log_stream: Some("batch/job-stale".into()),
+            ..Default::default()
+        },
         ..described("job-stale")
     });
     assert!(append(&pool, &terminal).await.unwrap());
@@ -404,8 +409,11 @@ async fn a_reconciled_terminal_attributes_the_attempts_host() {
     let pool = common::isolated_pool("reconciled_terminal_attributes_host").await;
     append_submitted(&pool, "job-h", 1.0).await;
     let terminal = terminal_run_event(&DescribedTerminalJob {
-        instance_id: Some("ci-7".into()),
-        queue: Some("q-spot".into()),
+        facts: DescribedJobFacts {
+            instance_id: Some("ci-7".into()),
+            queue: Some("q-spot".into()),
+            ..Default::default()
+        },
         ..described("job-h")
     });
     append(&pool, &terminal).await.unwrap();

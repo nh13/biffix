@@ -102,3 +102,8 @@ pub const TASK_TERMINAL_KINDS: [Kind; 2] = [Kind::TaskSucceeded, Kind::TaskFaile
 /// The coordinator (head-job) terminal kinds, for the same reason as [`TASK_TERMINAL_KINDS`].
 pub const COORDINATOR_TERMINAL_KINDS: [Kind; 2] =
     [Kind::CoordinatorSucceeded, Kind::CoordinatorFailed];
+
+/// The kinds of a Batch job's start fact, of either shape: the translator maps STARTING and
+/// RUNNING to `task_started`, or to `coordinator_running` for a job on a listed coordinator queue.
+/// Shared so the reconcile SQL and the reconcile tick read starts as the translator writes them.
+pub const BATCH_JOB_START_KINDS: [Kind; 2] = [Kind::TaskStarted, Kind::CoordinatorRunning];

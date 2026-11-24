@@ -129,7 +129,7 @@ pub(super) async fn reconcile(state: &State) -> Result<usize, Error> {
             let bound = job.job_id().is_some_and(|id| bound_coordinators.contains(id));
             described_terminal(job, &state.queue_context, bound, poll_millis)
         }) {
-            if terminal.is_coordinator {
+            if terminal.facts.is_coordinator {
                 terminal_coordinators.push(terminal.batch_job_id.clone());
             }
             events.push(terminal_run_event(&terminal));

@@ -8,7 +8,7 @@ use biffix_core::eventbridge::decode::{
 };
 #[cfg(feature = "aws")]
 use biffix_core::eventbridge::describe::{
-    terminal_time_millis, DescribedTerminalJob, TerminalStatus,
+    terminal_time_millis, DescribedJobFacts, DescribedTerminalJob, TerminalStatus,
 };
 
 /// A DescribeJobs result's terminal fact, as the EventBridge decoder maps the same job's live
@@ -44,13 +44,15 @@ pub fn described_terminal(
             job.status_reason(),
             container.and_then(|value| value.reason()),
         ),
-        log_stream: container.and_then(|value| value.log_stream_name()).map(str::to_owned),
-        instance_id: container
-            .and_then(|value| value.container_instance_arn())
-            .map(|arn| container_instance_id(arn).to_owned()),
-        queue: job.job_queue().map(|arn| queue_name(arn).to_owned()),
-        is_coordinator: bound_coordinator || queue_context.is_coordinator(queue_arn),
-        requested: container.map(requested_resources_from_container).unwrap_or_default(),
+        facts: DescribedJobFacts {
+            log_stream: container.and_then(|value| value.log_stream_name()).map(str::to_owned),
+            instance_id: container
+                .and_then(|value| value.container_instance_arn())
+                .map(|arn| container_instance_id(arn).to_owned()),
+            queue: job.job_queue().map(|arn| queue_name(arn).to_owned()),
+            is_coordinator: bound_coordinator || queue_context.is_coordinator(queue_arn),
+            requested: container.map(requested_resources_from_container).unwrap_or_default(),
+        },
     })
 }
 
@@ -131,16 +133,19 @@ mod tests {
                 status_reason: Some(
                     "Essential container in task exited: OutOfMemoryError: Container killed".into()
                 ),
-                log_stream: Some("batch/default/abc".into()),
-                instance_id: Some("ci-7".into()),
-                queue: Some("q-spot".into()),
-                is_coordinator: false,
-                requested: RequestedResources { vcpus: Some(2.0), memory_mib: Some(4096) },
+                facts: DescribedJobFacts {
+                    log_stream: Some("batch/default/abc".into()),
+                    instance_id: Some("ci-7".into()),
+                    queue: Some("q-spot".into()),
+                    is_coordinator: false,
+                    requested: RequestedResources { vcpus: Some(2.0), memory_mib: Some(4096) },
+                },
             })
         );
         let coordinator = |queue: &str, bound: bool| {
             described_terminal(&job(JobStatus::Succeeded, queue), &context, bound, 0)
                 .unwrap()
+                .facts
                 .is_coordinator
         };
         // A listed coordinator queue, or the control plane's binding on any queue.
