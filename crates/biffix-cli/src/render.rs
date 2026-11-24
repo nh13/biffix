@@ -45,6 +45,13 @@ impl OutputMode {
     }
 }
 
+/// Text from a server or a workflow as it may be printed to a terminal: control characters removed
+/// (an escape sequence in it must not drive the user's terminal: clear it, move the cursor, set
+/// its title), and tab too unless `keep_tab` (a log line's own columns).
+pub(crate) fn terminal_safe(text: &str, keep_tab: bool) -> String {
+    text.chars().filter(|c| (keep_tab && *c == '\t') || !c.is_control()).collect()
+}
+
 /// Print a value as pretty JSON to stdout.
 pub(crate) fn print_json<T: Serialize>(value: &T) {
     match serde_json::to_string_pretty(value) {
@@ -68,6 +75,13 @@ pub fn print_error(err: &CliError, mode: OutputMode) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_safe_text_drops_control_characters() {
+        assert_eq!(terminal_safe("\u{1b}[31mred\u{1b}[0m\tdone\r\u{7}", true), "[31mred[0m\tdone");
+        assert_eq!(terminal_safe("\u{1b}[31mred\u{1b}[0m\tdone\r\u{7}", false), "[31mred[0mdone");
+        assert_eq!(terminal_safe("échantillon → ok", true), "échantillon → ok");
+    }
 
     #[test]
     fn an_explicit_format_forces_its_mode() {

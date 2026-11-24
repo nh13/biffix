@@ -24,7 +24,7 @@ pub(crate) struct AuthCallback {
 /// The authorization server's `error` as it may be shown: control characters (a terminal escape
 /// sequence) dropped, and cut short.
 fn printable(error: &str) -> String {
-    error.chars().filter(|c| !c.is_control()).take(200).collect()
+    crate::render::terminal_safe(error, false).chars().take(200).collect()
 }
 
 impl AuthCallback {

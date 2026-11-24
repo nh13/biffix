@@ -135,7 +135,7 @@ pub(crate) enum RunsCommand {
         #[arg(long, value_name = "NAME", requires = "single_job")]
         single_job_queue_class: Option<String>,
         /// Follow the run to a terminal state (exit 0 on success, 8 failed, 9 cancelled, 1 a
-        /// terminal state this biffix does not know).
+        /// terminal state this biffix does not know); a failed run's reason is shown.
         #[arg(long)]
         follow: bool,
     },
@@ -146,13 +146,13 @@ pub(crate) enum RunsCommand {
         #[arg(long, value_enum)]
         state: Option<RunFilter>,
     },
-    /// Show one run with per-task state.
+    /// Show one run with per-task state, and why it failed when it did.
     Show {
         /// Run id.
         run: String,
     },
     /// Follow a run to a terminal state (exit 0 on success, 8 failed, 9 cancelled, 1 a terminal
-    /// state this biffix does not know).
+    /// state this biffix does not know); a failed run's reason is shown.
     Follow {
         /// Run id.
         run: String,
