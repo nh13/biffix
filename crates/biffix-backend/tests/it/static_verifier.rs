@@ -17,7 +17,7 @@ fn token(claims: serde_json::Value) -> String {
 }
 
 fn key() -> DecodingKey {
-    DecodingKey::from_secret(SECRET)
+    DecodingKey::from_secret(SECRET).expect("a non-empty HMAC secret is a valid key")
 }
 
 /// `t` verified as an HS256 token signed with [`SECRET`], issued by [`ISS`] for [`AUD`].
