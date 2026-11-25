@@ -64,8 +64,9 @@ pub fn batch_fact_predicate(alias: Option<&str>, kinds_param: &str) -> String {
     )
 }
 
-/// Which kind of Batch job a priced job is: `attempt_cost.role`, which the reconcile tick's pricer
-/// writes and the backend's cost reads compare.
+/// Which kind of Batch job a job is: `attempt_cost.role`, which the reconcile tick's pricer writes
+/// and the backend's cost reads compare, and `execution_projection.role`, which the fold writes.
+/// Changing a value changes both tables' meaning.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JobRole {
     /// A task attempt (a child job the engine submitted).
@@ -75,7 +76,7 @@ pub enum JobRole {
 }
 
 impl JobRole {
-    /// The `attempt_cost.role` value.
+    /// The `attempt_cost.role` and `execution_projection.role` value.
     pub fn as_str(self) -> &'static str {
         match self {
             JobRole::Task => "task",

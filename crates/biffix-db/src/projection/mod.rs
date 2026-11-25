@@ -1,8 +1,8 @@
 //! The projection: a deterministic fold of the event log into the tables the API reads
-//! (`run_projection`, `task_projection`, `attempt_projection`, `run_output`, `notifications`,
-//! `build_projection`, `spot_interruption`), using `biffix_core::reducer`, which guarantees
-//! `projection == fold`. A projection bug is fixed in the reducer and replayed
-//! ([`refold_runs`]), never by patching rows.
+//! (`run_projection`, `task_projection`, `attempt_projection`, `execution_projection`,
+//! `run_output`, `notifications`, `build_projection`, `spot_interruption`), using
+//! `biffix_core::reducer`, which guarantees `projection == fold`. A projection bug is fixed in the
+//! reducer and replayed ([`refold_runs`]), never by patching rows.
 //!
 //! [`crate::log`] advances it incrementally, in the transaction of every append.
 
@@ -108,11 +108,12 @@ pub struct RefoldPage {
 /// `after`, in run-id order, and persist them.
 ///
 /// For backfilling projection tables or columns added after runs were folded (e.g.
-/// `attempt_projection`): the incremental advance only refolds runs with new events, so older runs
-/// never gain the new rows. Paged so each call stays well inside a Lambda timeout, and it leaves
-/// the projection cursor alone — a refold is idempotent (`projection == fold`), so it never races
-/// or skips the live advance, which it serializes with via the same advisory lock. It is also the
-/// replay that applies a reducer fix: each refolded run's rows are made to match the fold exactly.
+/// `attempt_projection`, `execution_projection`): the incremental advance only refolds runs with
+/// new events, so older runs never gain the new rows. Paged so each call stays well inside a
+/// Lambda timeout, and it leaves the projection cursor alone — a refold is idempotent
+/// (`projection == fold`), so it never races or skips the live advance, which it serializes with
+/// via the same advisory lock. It is also the replay that applies a reducer fix: each refolded
+/// run's rows are made to match the fold exactly.
 /// The first page (`after == None`) also rebuilds the non-run-scoped projections from the whole
 /// log:
 /// `spot_interruption` and `build_projection` (so a `fold_builds` fix has a replay path too).
