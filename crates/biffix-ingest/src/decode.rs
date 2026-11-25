@@ -12,6 +12,10 @@ use biffix_core::eventbridge::describe::{
     prior_attempts_before, start_time_millis, terminal_time_millis, DescribedJobFacts,
     DescribedStartedJob, DescribedTerminalJob, TerminalStatus,
 };
+#[cfg(feature = "aws")]
+use biffix_core::eventbridge::execution::{BatchJobSnapshot, ExecutionFacts};
+#[cfg(feature = "aws")]
+use biffix_core::wire::aws_batch::BatchStatus;
 
 /// A DescribeJobs result's terminal fact, as the EventBridge decoder maps the same job's live
 /// terminal, or `None` while the job is still active (or has no id). The job is a coordinator when
@@ -97,6 +101,53 @@ fn described_facts(
         is_coordinator: bound_coordinator || queue_context.is_coordinator(queue_arn),
         requested: container.map(requested_resources_from_container).unwrap_or_default(),
     }
+}
+
+/// A DescribeJobs result as the snapshot `execution_events` builds its execution events from:
+/// the same snapshot `batch_snapshot` reads from the same job's EventBridge `detail`, so a
+/// reconciled execution and a live one are the same event. `None` when `job` has no id or no
+/// status.
+///
+/// Like `batch_snapshot`, it stores what AWS sent (an empty ARN or queue, a zero time, a queue's
+/// ARN rather than its name) and leaves what that means to the builder.
+#[cfg(feature = "aws")]
+pub fn described_snapshot(job: &aws_sdk_batch::types::JobDetail) -> Option<BatchJobSnapshot> {
+    let owned = |value: Option<&str>| value.map(str::to_owned);
+    let current =
+        job.container().map_or_else(ExecutionFacts::default, |container| ExecutionFacts {
+            task_arn: owned(container.task_arn()),
+            container_instance_arn: owned(container.container_instance_arn()),
+            log_stream: owned(container.log_stream_name()),
+            exit_code: container.exit_code(),
+            container_reason: owned(container.reason()),
+            ..ExecutionFacts::default()
+        });
+    // Each `attempts[]` entry is one execution, with its own container block.
+    let attempts = job.attempts().iter().map(|entry| {
+        let container = entry.container();
+        ExecutionFacts {
+            task_arn: owned(container.and_then(|value| value.task_arn())),
+            container_instance_arn: owned(
+                container.and_then(|value| value.container_instance_arn()),
+            ),
+            log_stream: owned(container.and_then(|value| value.log_stream_name())),
+            exit_code: container.and_then(aws_sdk_batch::types::AttemptContainerDetail::exit_code),
+            container_reason: owned(container.and_then(|value| value.reason())),
+            status_reason: owned(entry.status_reason()),
+            started_at_millis: entry.started_at(),
+            stopped_at_millis: entry.stopped_at(),
+        }
+    });
+    Some(BatchJobSnapshot {
+        batch_job_id: job.job_id()?.to_owned(),
+        status: BatchStatus::from_wire(job.status()?.as_str()),
+        queue: owned(job.job_queue()),
+        started_at_millis: job.started_at(),
+        stopped_at_millis: job.stopped_at(),
+        status_reason: owned(job.status_reason()),
+        current,
+        attempts: attempts.collect(),
+    })
 }
 
 /// [`requested_resources`] of a DescribeJobs `container` (the reconciler's view of the same block
@@ -332,5 +383,215 @@ mod tests {
             requested_resources_from_container(&ContainerDetail::builder().build()),
             RequestedResources::default()
         );
+    }
+
+    /// The retried job (`biffix_core::testing`) in `status`, built both ways from the same
+    /// values: as the EventBridge `detail` JSON `retried_job_detail` gives, and as the SDK's
+    /// `JobDetail` DescribeJobs returns. A RUNNING job is execution 2 still running: `attempts[]`
+    /// lists only the lost execution, `container` is execution 2 with no exit code yet, and there
+    /// is no job-level stop.
+    #[cfg(feature = "aws")]
+    fn retried(
+        status: &str,
+        lost_s: i64,
+        gap_s: i64,
+        run_s: i64,
+    ) -> (serde_json::Value, aws_sdk_batch::types::JobDetail) {
+        use aws_sdk_batch::types::{
+            AttemptContainerDetail, AttemptDetail, ContainerDetail, JobDetail, JobStatus,
+        };
+        use biffix_core::testing::{
+            execution_container_instance_arn, execution_log_stream, execution_task_arn,
+            retried_job_detail, RETRIED_EXITED_REASON, RETRIED_JOB_ID, RETRIED_LOST_REASON,
+            RETRIED_QUEUE_ARN,
+        };
+        let running = status == "RUNNING";
+        let lost_at = 3_000 + lost_s * 1_000;
+        let restarted_at = lost_at + gap_s * 1_000;
+        let stopped_at = restarted_at + run_s * 1_000;
+
+        let mut detail = retried_job_detail(status, lost_s, gap_s, run_s);
+        if running {
+            let object = detail.as_object_mut().unwrap();
+            object.remove("stoppedAt");
+            object["attempts"].as_array_mut().unwrap().truncate(1);
+            object["container"].as_object_mut().unwrap().remove("exitCode");
+        }
+
+        let attempt_container = |n: u32, exit_code: Option<i32>| {
+            AttemptContainerDetail::builder()
+                .task_arn(execution_task_arn(n))
+                .container_instance_arn(execution_container_instance_arn(n))
+                .log_stream_name(execution_log_stream(n))
+                .set_exit_code(exit_code)
+                .build()
+        };
+        let lost = AttemptDetail::builder()
+            .started_at(3_000)
+            .stopped_at(lost_at)
+            .status_reason(RETRIED_LOST_REASON)
+            .container(attempt_container(1, None))
+            .build();
+        let finished = AttemptDetail::builder()
+            .started_at(restarted_at)
+            .stopped_at(stopped_at)
+            .status_reason(RETRIED_EXITED_REASON)
+            .container(attempt_container(2, Some(0)))
+            .build();
+        let job = JobDetail::builder()
+            .job_id(RETRIED_JOB_ID)
+            .job_queue(RETRIED_QUEUE_ARN)
+            .status(JobStatus::from(status))
+            .status_reason(RETRIED_EXITED_REASON)
+            .started_at(restarted_at)
+            .container(
+                ContainerDetail::builder()
+                    .task_arn(execution_task_arn(2))
+                    .container_instance_arn(execution_container_instance_arn(2))
+                    .log_stream_name(execution_log_stream(2))
+                    .set_exit_code((!running).then_some(0))
+                    .build(),
+            )
+            .attempts(lost);
+        let job = if running { job } else { job.stopped_at(stopped_at).attempts(finished) };
+        (detail, job.build())
+    }
+
+    #[cfg(feature = "aws")]
+    #[test]
+    fn a_described_job_and_its_live_event_read_into_one_snapshot() {
+        use biffix_core::event::Kind;
+        use biffix_core::eventbridge::decode::batch_snapshot;
+        use biffix_core::eventbridge::execution::execution_events;
+        use biffix_core::testing::{retried_job_snapshot, RETRIED_CASES};
+        for (lost_s, gap_s, run_s) in RETRIED_CASES {
+            let (detail, job) = retried("SUCCEEDED", lost_s, gap_s, run_s);
+            let snapshot = described_snapshot(&job);
+            assert!(snapshot.is_some(), "case {lost_s}/{gap_s}/{run_s}");
+            assert_eq!(snapshot, batch_snapshot(&detail), "case {lost_s}/{gap_s}/{run_s}");
+            let events = execution_events(snapshot.as_ref().unwrap());
+            let kinds: Vec<_> = events.iter().map(|event| event.data.kind()).collect();
+            assert_eq!(kinds, [Kind::BatchExecutionEnded, Kind::BatchExecutionEnded]);
+        }
+        // The first case is the retried case `biffix_core::testing` spells out.
+        let (lost_s, gap_s, run_s) = RETRIED_CASES[0];
+        let (_, job) = retried("SUCCEEDED", lost_s, gap_s, run_s);
+        assert_eq!(described_snapshot(&job), Some(retried_job_snapshot()));
+    }
+
+    #[cfg(feature = "aws")]
+    #[test]
+    fn a_running_retry_reads_the_same_from_both_producers() {
+        use biffix_core::eventbridge::decode::batch_snapshot;
+        use biffix_core::eventbridge::execution::execution_events;
+        use biffix_core::testing::{execution_task_arn, RETRIED_CASES};
+        let (lost_s, gap_s, run_s) = RETRIED_CASES[0];
+        let (detail, job) = retried("RUNNING", lost_s, gap_s, run_s);
+        let snapshot = described_snapshot(&job);
+        assert!(snapshot.is_some());
+        assert_eq!(snapshot, batch_snapshot(&detail));
+        let keys: Vec<_> = execution_events(snapshot.as_ref().unwrap())
+            .into_iter()
+            .map(|event| event.dedup_key)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                format!("aws-batch-exec:{}:ended", execution_task_arn(1)),
+                format!("aws-batch-exec:{}:started", execution_task_arn(2)),
+            ]
+        );
+    }
+
+    /// The fields the retried pair leaves at their usual values read the same both ways too: a
+    /// container `reason` on one execution, a status this code does not know, and an empty queue.
+    #[cfg(feature = "aws")]
+    #[test]
+    fn an_unknown_status_an_empty_queue_and_a_container_reason_read_the_same_both_ways() {
+        use aws_sdk_batch::types::{
+            AttemptContainerDetail, AttemptDetail, ContainerDetail, JobDetail, JobStatus,
+        };
+        use biffix_core::eventbridge::decode::batch_snapshot;
+        use biffix_core::testing::{
+            execution_container_instance_arn, execution_log_stream, execution_task_arn,
+            RETRIED_EXITED_REASON, RETRIED_JOB_ID, RETRIED_LOST_REASON,
+        };
+        use biffix_core::wire::aws_batch::BatchStatus;
+        const REASON: &str = "CannotInspectContainerError: Could not transition to inspecting";
+        let detail = serde_json::json!({
+            "jobId": RETRIED_JOB_ID,
+            "jobQueue": "",
+            "status": "FUTURE_STATE",
+            "statusReason": RETRIED_EXITED_REASON,
+            "startedAt": 831_000,
+            "stoppedAt": 2_217_000,
+            "container": {
+                "taskArn": execution_task_arn(2),
+                "containerInstanceArn": execution_container_instance_arn(2),
+                "logStreamName": execution_log_stream(2),
+                "exitCode": 0,
+            },
+            "attempts": [{
+                "startedAt": 3_000,
+                "stoppedAt": 684_000,
+                "statusReason": RETRIED_LOST_REASON,
+                "container": {
+                    "taskArn": execution_task_arn(1),
+                    "containerInstanceArn": execution_container_instance_arn(1),
+                    "logStreamName": execution_log_stream(1),
+                    "reason": REASON,
+                },
+            }],
+        });
+        let job = JobDetail::builder()
+            .job_id(RETRIED_JOB_ID)
+            .job_queue("")
+            .status(JobStatus::from("FUTURE_STATE"))
+            .status_reason(RETRIED_EXITED_REASON)
+            .started_at(831_000)
+            .stopped_at(2_217_000)
+            .container(
+                ContainerDetail::builder()
+                    .task_arn(execution_task_arn(2))
+                    .container_instance_arn(execution_container_instance_arn(2))
+                    .log_stream_name(execution_log_stream(2))
+                    .exit_code(0)
+                    .build(),
+            )
+            .attempts(
+                AttemptDetail::builder()
+                    .started_at(3_000)
+                    .stopped_at(684_000)
+                    .status_reason(RETRIED_LOST_REASON)
+                    .container(
+                        AttemptContainerDetail::builder()
+                            .task_arn(execution_task_arn(1))
+                            .container_instance_arn(execution_container_instance_arn(1))
+                            .log_stream_name(execution_log_stream(1))
+                            .reason(REASON)
+                            .build(),
+                    )
+                    .build(),
+            )
+            .build();
+        let snapshot = described_snapshot(&job);
+        assert_eq!(snapshot, batch_snapshot(&detail));
+        // The pair exercises what it claims to: each reader kept the three values as AWS sent them.
+        let snapshot = snapshot.unwrap();
+        assert_eq!(snapshot.status, BatchStatus::Unknown("FUTURE_STATE".into()));
+        assert!(!snapshot.status.is_terminal());
+        assert_eq!(snapshot.queue.as_deref(), Some(""));
+        assert_eq!(snapshot.attempts[0].container_reason.as_deref(), Some(REASON));
+    }
+
+    #[cfg(feature = "aws")]
+    #[test]
+    fn a_job_without_an_id_or_a_status_has_no_snapshot() {
+        use aws_sdk_batch::types::{JobDetail, JobStatus};
+        assert_eq!(
+            described_snapshot(&JobDetail::builder().status(JobStatus::Succeeded).build()),
+            None
+        );
+        assert_eq!(described_snapshot(&JobDetail::builder().job_id("j").build()), None);
     }
 }
