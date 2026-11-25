@@ -46,7 +46,7 @@ pub(super) fn request_images(
         if let biffix_workflow::images::ImageSource::Build(spec) = &d.source {
             let suspect = secret_like_build_args(&spec.options.build_args);
             if !suspect.is_empty() {
-                eprintln!(
+                teprintln!(
                     "[biffix] warning: image `{}`: build args {} look like credentials. Build args \
                      are not secret: they are stored on the version, shown in the UI and API, \
                      passed to the build as environment variables and kept in the image's \
@@ -205,7 +205,7 @@ pub(super) async fn stage_builds(
             })
             .await?;
         client.put_presigned(&upload, std::mem::take(&mut b.context.bytes)).await?;
-        eprintln!(
+        teprintln!(
             "[biffix] image `{}`: staged its build context ({} for {})",
             b.name,
             source::context_label(&b.spec.context),

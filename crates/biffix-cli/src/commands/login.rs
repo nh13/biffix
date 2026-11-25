@@ -70,7 +70,7 @@ pub(crate) async fn login(session: &mut Session, no_browser: bool) -> CliResult<
                     // No browser, or timed out waiting for the redirect: fall back to paste, REUSING the bound
                     // redirect_uri so a code from either URL still exchanges correctly.
                     Err(CliError::Unavailable(msg)) => {
-                        eprintln!(
+                        teprintln!(
                             "[biffix] browser sign-in did not complete ({msg}); falling back to \
                              paste — use the URL below"
                         );
@@ -82,7 +82,7 @@ pub(crate) async fn login(session: &mut Session, no_browser: bool) -> CliResult<
             // All registered ports busy: fall back to paste. A malformed-URI/other error (also
             // `bind_from_pool`'s Unclassified) propagates rather than silently degrading.
             Err(CliError::Unavailable(msg)) => {
-                eprintln!(
+                teprintln!(
                     "[biffix] could not bind a loopback listener ({msg}); falling back to paste"
                 );
                 no_browser_flow(&oauth, &pkce, None)?
@@ -121,7 +121,7 @@ pub(crate) async fn login(session: &mut Session, no_browser: bool) -> CliResult<
         OutputMode::Json => crate::render::print_json(&serde_json::json!({
             "status": "logged_in", "identity": who, "profile": session.profile_name,
         })),
-        OutputMode::Human => println!("logged in as {who} @ {}", session.profile_name),
+        OutputMode::Human => tprintln!("logged in as {who} @ {}", session.profile_name),
     }
     Ok(())
 }
@@ -146,7 +146,7 @@ async fn browser_flow(
     if !browser::open_browser(&url) {
         return Err(CliError::Unavailable("could not open a browser".into()));
     }
-    eprintln!("[biffix] opening your browser to sign in…");
+    teprintln!("[biffix] opening your browser to sign in…");
     loopback.wait_for_code(pkce.state.expose(), browser::DEFAULT_TIMEOUT).await
 }
 
@@ -175,11 +175,11 @@ fn no_browser_flow(
     } else {
         "the full redirect URL"
     };
-    eprintln!(
+    teprintln!(
         "Open this URL in a browser, sign in, then paste {what} below.\n\
          (The page it lands on may fail to load; its address is what to copy.)\n\n  {url}\n"
     );
-    eprint!("redirect URL{}: ", if interactive { " or code" } else { "" });
+    teprint!("redirect URL{}: ", if interactive { " or code" } else { "" });
     std::io::stderr().flush().ok();
     let mut line = String::new();
     std::io::stdin()
@@ -211,7 +211,7 @@ pub(crate) fn logout(args: &GlobalArgs) -> CliResult<()> {
         OutputMode::Json => crate::render::print_json(&serde_json::json!({
             "status": "logged_out", "profile": profile,
         })),
-        OutputMode::Human => println!("logged out of {profile}"),
+        OutputMode::Human => tprintln!("logged out of {profile}"),
     }
     Ok(())
 }
@@ -238,7 +238,7 @@ pub(crate) async fn whoami(session: &mut Session) -> CliResult<()> {
         OutputMode::Json => crate::render::print_json(&serde_json::json!({
             "identity": identity, "subject": creds.subject, "profile": session.profile_name,
         })),
-        OutputMode::Human => println!("{identity} @ {} (authenticated)", session.profile_name),
+        OutputMode::Human => tprintln!("{identity} @ {} (authenticated)", session.profile_name),
     }
     Ok(())
 }

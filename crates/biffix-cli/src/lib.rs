@@ -6,6 +6,10 @@
 
 #![forbid(unsafe_code)]
 
+// First, so its `tprint!` family of macros is in scope in every module after it.
+#[macro_use]
+pub mod render;
+
 pub mod api;
 pub mod auth;
 pub mod cli;
@@ -15,7 +19,6 @@ pub mod error;
 pub(crate) mod fsutil;
 pub(crate) mod local;
 pub mod params;
-pub mod render;
 pub mod secret;
 #[cfg(test)]
 pub(crate) mod test_git;

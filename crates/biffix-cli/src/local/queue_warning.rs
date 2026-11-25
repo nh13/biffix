@@ -21,7 +21,7 @@ pub(crate) fn warn_queue_assignment(scan: &ResourceScan, queues: &QueueAssignmen
         return;
     }
     for warning in warnings(scan.rule_names.as_ref(), scan.rule_groups.as_ref(), queues) {
-        eprintln!("[biffix] {warning}");
+        teprintln!("[biffix] {warning}");
     }
 }
 

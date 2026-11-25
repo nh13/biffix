@@ -69,7 +69,7 @@ pub(crate) fn inspect(opts: InspectOpts) -> CliResult<()> {
     });
     let plugins = plugins_found(detection, &manifest.plugins, opts.write);
     if let Some(e) = &plugins.error {
-        eprintln!(
+        teprintln!(
             "[biffix] warning: could not read the pipeline's Nextflow plugins; biffix.yaml \
              `plugins:` is left as it is: {e}"
         );
@@ -83,7 +83,7 @@ pub(crate) fn inspect(opts: InspectOpts) -> CliResult<()> {
         match crate::local::entrypoint::resolve_entrypoint(None, false, &manifest, engine, &files) {
             Ok(entrypoint) => {
                 if let Some(note) = &entrypoint.note {
-                    eprintln!("[biffix] note: {note}");
+                    teprintln!("[biffix] note: {note}");
                 }
                 let scan = crate::local::memory_warning::scan_workflow(
                     root,
@@ -93,7 +93,7 @@ pub(crate) fn inspect(opts: InspectOpts) -> CliResult<()> {
                 );
                 crate::local::memory_warning::warn_rules_without_memory(&scan);
             }
-            Err(e) => eprintln!("[biffix] warning: {e}"),
+            Err(e) => teprintln!("[biffix] warning: {e}"),
         }
     }
     // The launch form `register` would freeze: params it shows with nothing to explain them are
@@ -101,7 +101,7 @@ pub(crate) fn inspect(opts: InspectOpts) -> CliResult<()> {
     let manifest_path = root.join("biffix.yaml");
     match crate::local::form::derive_form_schema(root, &manifest_path, &manifest, engine, None) {
         Ok(form) => crate::local::form::warn_undocumented_params(&form),
-        Err(e) => eprintln!("[biffix] warning: cannot read the launch form: {e}"),
+        Err(e) => teprintln!("[biffix] warning: cannot read the launch form: {e}"),
     }
     let written = opts.write && !added.is_empty();
     if written || plugins.written {
@@ -124,14 +124,14 @@ pub(crate) fn inspect(opts: InspectOpts) -> CliResult<()> {
         crate::fsutil::write_atomic(&path, updated.as_bytes(), false)
             .map_err(|e| CliError::InvalidInput(format!("cannot write {}: {e}", path.display())))?;
         if written {
-            eprintln!(
+            teprintln!(
                 "[biffix] biffix.yaml: added {} image{}; review and commit it",
                 added.len(),
                 if added.len() == 1 { "" } else { "s" }
             );
         }
         if let Some(p) = to_set {
-            eprintln!(
+            teprintln!(
                 "[biffix] biffix.yaml: set `plugins:` to [{}] (was [{}]); review and commit it",
                 p.join(", "),
                 manifest.plugins.join(", ")
@@ -187,14 +187,14 @@ fn report_plugins(plugins: &[String], listed: &[String], changed: bool, write: b
     if n == 0 && listed.is_empty() {
         return;
     }
-    eprintln!(
+    teprintln!(
         "[biffix] the pipeline declares {n} Nextflow plugin{} for its runtime{}{}",
         if n == 1 { "" } else { "s" },
         if n == 0 { "" } else { ": " },
         plugins.join(", ")
     );
     if changed && !write {
-        eprintln!(
+        teprintln!(
             "[biffix] biffix.yaml `plugins:` lists [{}]; run with --write to set it",
             listed.join(", ")
         );
@@ -246,30 +246,35 @@ fn snakemake_scan(root: &Path) -> CliResult<ImageScan> {
 /// What was found, what is new, and what the author must declare by hand.
 fn report(scan: &ImageScan, added: &[NewImage], write: bool) {
     let found = scan.references().len();
-    eprintln!(
+    teprintln!(
         "[biffix] found {found} image{}; {} not yet in biffix.yaml",
         if found == 1 { "" } else { "s" },
         added.len()
     );
     for image in added {
         let verb = if write { "adding" } else { "new" };
-        eprintln!("  {verb} {}: {} ({})", image.name, image.reference, image.location);
+        teprintln!("  {verb} {}: {} ({})", image.name, image.reference, image.location);
     }
     if !write && !added.is_empty() {
-        eprintln!("[biffix] run with --write to add them to biffix.yaml");
+        teprintln!("[biffix] run with --write to add them to biffix.yaml");
     }
     for e in scan.unresolved() {
         match e.kind {
-            ScanKind::IgnoredKey => eprintln!(
+            ScanKind::IgnoredKey => teprintln!(
                 "[biffix] warning: {}: `{}` is not read by the AWS Batch executor (the task runs \
                  the default image); use `aws_batch_container_image`",
-                e.location, e.key
+                e.location,
+                e.key
             ),
-            _ => eprintln!(
-                "[biffix] declare by hand: {}: `{} {}` is not a plain image reference; add every \
-                 image it can produce to `images:` in biffix.yaml",
-                e.location, e.key, e.value
-            ),
+            _ => {
+                teprintln!(
+                    "[biffix] declare by hand: {}: `{} {}` is not a plain image reference; add \
+                     every image it can produce to `images:` in biffix.yaml",
+                    e.location,
+                    e.key,
+                    e.value
+                );
+            }
         }
     }
 }

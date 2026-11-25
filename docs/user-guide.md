@@ -55,6 +55,8 @@ without one, and paste the redirect URL back). Credentials are cached per **prof
 with `--profile <name>` or `BIFFIX_PROFILE`; the first profile you log in to becomes the default.
 
 Every command takes `--output human|json` (by default, human on a terminal and JSON when piped).
+Human output and diagnostics strip terminal control characters, keeping line breaks and tabs.
+JSON escapes control characters without changing the decoded keys or values.
 `biffix engines` lists the engine releases the deployment supports.
 
 ## Authoring a workflow

@@ -60,7 +60,7 @@ pub(super) async fn wait_for_runtime(
                     }
                     RuntimeWait::Pending(state) => {
                         if state != last {
-                            eprintln!("[biffix] waiting: {state}…");
+                            teprintln!("[biffix] waiting: {state}…");
                             last = state;
                         }
                     }

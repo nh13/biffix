@@ -1,0 +1,8 @@
+# Print through the `tprint!` family (`src/render.rs`): it removes control characters, which the
+# server's or a workflow's text could otherwise use to drive the user's terminal.
+disallowed-macros = [
+  { path = "std::print", reason = "use tprint! (render.rs), which prints terminal-safe text" },
+  { path = "std::println", reason = "use tprintln! (render.rs), which prints terminal-safe text" },
+  { path = "std::eprint", reason = "use teprint! (render.rs), which prints terminal-safe text" },
+  { path = "std::eprintln", reason = "use teprintln! (render.rs), which prints terminal-safe text" },
+]

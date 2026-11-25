@@ -186,7 +186,7 @@ pub async fn submit(session: &mut Session, opts: SubmitOpts) -> CliResult<()> {
     };
     let from_file = params::load_file(opts.params_file.as_deref().map(std::path::Path::new))?;
     for name in params::text_given_untyped(&from_file, &form.fields) {
-        eprintln!(
+        teprintln!(
             "[biffix] warning: the params file gives `{name}` as a number or boolean, but it takes \
              text; it is sent as the value YAML read (`1.10` reads as 1.1), so quote it to keep \
              the text"
@@ -231,8 +231,8 @@ pub async fn submit(session: &mut Session, opts: SubmitOpts) -> CliResult<()> {
         OutputMode::Json if !opts.follow => {
             crate::render::print_json(&submitted_json(&resp, resumed_from));
         }
-        OutputMode::Human if !opts.follow => println!("{}", submitted_line(&resp, resumed_from)),
-        _ => eprintln!("[biffix] {} — following…", submitted_line(&resp, resumed_from)),
+        OutputMode::Human if !opts.follow => tprintln!("{}", submitted_line(&resp, resumed_from)),
+        _ => teprintln!("[biffix] {} — following…", submitted_line(&resp, resumed_from)),
     }
 
     if opts.follow {
@@ -333,11 +333,11 @@ async fn inherited_experiment(
     let open = client.list_experiments(project).await?;
     match open.experiments.iter().find(|e| e.id == experiment_id) {
         Some(e) => {
-            eprintln!("[biffix] inheriting experiment from {prior_id}: {} ({})", e.id, e.name);
+            teprintln!("[biffix] inheriting experiment from {prior_id}: {} ({})", e.id, e.name);
             Ok(Some(e.id.clone()))
         }
         None => {
-            eprintln!(
+            teprintln!(
                 "[biffix] not inherited: {prior_id}'s experiment {experiment_id} is archived or \
                  not in project {project}; launching outside any experiment (pass --experiment \
                  to choose one)"
@@ -371,26 +371,26 @@ async fn inherit_from(
     let prior = client.get_run(prior_id).await?;
     let images = inherited_images(&prior);
     if report_images && !images.is_empty() {
-        eprintln!("[biffix] inheriting submit-time images from {prior_id}: {}", images.join(", "));
+        teprintln!("[biffix] inheriting submit-time images from {prior_id}: {}", images.join(", "));
     }
     let inherited = params::inherit(&prior.params, &form.fields);
     let names = |keys: &mut dyn Iterator<Item = &String>| {
         keys.map(String::as_str).collect::<Vec<_>>().join(", ")
     };
     if !inherited.params.is_empty() {
-        eprintln!(
+        teprintln!(
             "[biffix] inheriting params from {prior_id}: {}",
             names(&mut inherited.params.keys())
         );
     }
     if !inherited.skipped_secrets.is_empty() {
-        eprintln!(
+        teprintln!(
             "[biffix] not inherited (secret; pass again with --param/--params): {}",
             names(&mut inherited.skipped_secrets.iter())
         );
     }
     if !inherited.skipped_undeclared.is_empty() {
-        eprintln!(
+        teprintln!(
             "[biffix] not inherited (not a param of this version): {}",
             names(&mut inherited.skipped_undeclared.iter())
         );
@@ -410,14 +410,14 @@ pub(crate) async fn list(session: &mut Session, state: Option<RunFilter>) -> Cli
         OutputMode::Json => crate::render::print_json(&serde_json::json!(runs)),
         OutputMode::Human => {
             if runs.is_empty() {
-                println!("no runs");
+                tprintln!("no runs");
             }
             for r in &runs {
                 let progress = match (r.completed, r.total) {
                     (Some(c), Some(t)) => format!(" {c}/{t}"),
                     _ => String::new(),
                 };
-                println!("{}  {}{progress}", r.run_id, r.state);
+                tprintln!("{}  {}{progress}", r.run_id, r.state);
             }
         }
     }
@@ -444,7 +444,7 @@ pub async fn cancel(session: &mut Session, run_id: &str) -> CliResult<()> {
         OutputMode::Json => crate::render::print_json(&serde_json::json!({
             "run_id": run_id, "status": "cancel_requested",
         })),
-        OutputMode::Human => println!("cancel requested for {run_id}"),
+        OutputMode::Human => tprintln!("cancel requested for {run_id}"),
     }
     Ok(())
 }
@@ -471,8 +471,8 @@ pub async fn set_experiment(
     match session.output {
         OutputMode::Json => crate::render::print_json(&serde_json::json!(run)),
         OutputMode::Human => match &run.experiment_id {
-            Some(id) => println!("run {run_id} is in experiment {id}"),
-            None => println!("run {run_id} is in no experiment"),
+            Some(id) => tprintln!("run {run_id} is in experiment {id}"),
+            None => tprintln!("run {run_id} is in no experiment"),
         },
     }
     Ok(())
@@ -493,8 +493,8 @@ pub async fn rename(session: &mut Session, run_id: &str, name: Option<&str>) -> 
     match session.output {
         OutputMode::Json => crate::render::print_json(&serde_json::json!(run)),
         OutputMode::Human => match &run.run_name {
-            Some(name) => println!("run {run_id} is named {name}"),
-            None => println!(
+            Some(name) => tprintln!("run {run_id} is named {name}"),
+            None => tprintln!(
                 "run {run_id} has no name (the UI names it by its pipeline, date and samples)"
             ),
         },
@@ -520,7 +520,7 @@ fn render_detail(detail: &RunDetail, why: Option<&FailureSummary>, asked: Asked,
     match mode {
         // The JSON carries `pending` itself.
         OutputMode::Json => crate::render::print_json(&detail_json(detail, why)),
-        OutputMode::Human => print!("{}", detail_text(detail, why, asked)),
+        OutputMode::Human => tprint!("{}", detail_text(detail, why, asked)),
     }
 }
 
@@ -628,7 +628,7 @@ async fn failure_of(client: &ApiClient, detail: &RunDetail) -> Option<FailureSum
         Ok(why) if why.items.is_empty() => None,
         Ok(why) => Some(why),
         Err(e) => {
-            eprintln!("{}", summary_read_warning(detail.summary.run_id.as_str(), &e));
+            teprintln!("{}", summary_read_warning(detail.summary.run_id.as_str(), &e));
             None
         }
     }
@@ -656,7 +656,7 @@ async fn settled_failure(
             break;
         }
         if poll == 0 && mode == OutputMode::Human {
-            eprintln!("[biffix] waiting for the engine's last output…");
+            teprintln!("[biffix] waiting for the engine's last output…");
         }
         tokio::time::sleep(interval).await;
         waited = true;
@@ -736,7 +736,7 @@ fn say_state(run_id: &str, state: &str, last_state: &mut String, mode: OutputMod
         return;
     }
     if mode == OutputMode::Human {
-        eprintln!("[biffix] {}", terminal_safe(&format!("{run_id} → {state}"), false));
+        teprintln!("[biffix] {}", terminal_safe(&format!("{run_id} → {state}"), false));
     }
     *last_state = state.to_string();
 }
@@ -752,7 +752,7 @@ fn poll_failed(run_id: &str, e: CliError, transient: &mut u32) -> Option<CliErro
     }
     if *transient < TRANSIENT_BUDGET {
         if *transient == 0 {
-            eprintln!("[biffix] {run_id}: {e}; retrying");
+            teprintln!("[biffix] {run_id}: {e}; retrying");
         }
         *transient += 1;
         return None;

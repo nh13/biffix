@@ -136,7 +136,7 @@ fn shipped(root: &Path, rel: &str, files: Option<&SourceFiles>) -> CliResult<()>
 /// [`warn_undocumented_params`]. Advisory only: it never fails the command.
 pub(crate) fn warn_form(form: &FormSchema) {
     for w in &form.warnings {
-        eprintln!("[biffix] schema warning: {w}");
+        teprintln!("[biffix] schema warning: {w}");
     }
     warn_undocumented_params(form);
 }
@@ -145,7 +145,7 @@ pub(crate) fn warn_form(form: &FormSchema) {
 /// ([`help_lint`]), if any. Advisory only: it never fails the command.
 pub(crate) fn warn_undocumented_params(form: &FormSchema) {
     if let Some(lint) = help_lint(form) {
-        eprintln!("[biffix] warning: {lint}");
+        teprintln!("[biffix] warning: {lint}");
     }
 }
 
@@ -268,7 +268,7 @@ pub(crate) fn read_about(
     let mut text = read_shipped(root, rel, files)
         .map_err(|e| CliError::InvalidInput(format!("biffix.yaml `about: {rel}`: {e}")))?;
     if text.len() > MAX_ABOUT_BYTES {
-        eprintln!(
+        teprintln!(
             "[biffix] warning: `about: {rel}` is larger than {} KiB; keeping only the start",
             MAX_ABOUT_BYTES / 1024
         );

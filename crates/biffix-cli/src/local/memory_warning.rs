@@ -33,7 +33,7 @@ pub(crate) fn scan_workflow(
 /// Snakemake's default memory.
 pub(crate) fn warn_rules_without_memory(scan: &ResourceScan) {
     if let Some(warning) = warning_text(scan) {
-        eprintln!("[biffix] {warning}");
+        teprintln!("[biffix] {warning}");
     }
 }
 

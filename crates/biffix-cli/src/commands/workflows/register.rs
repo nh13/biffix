@@ -105,13 +105,13 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
     check_source_identity(root, &git, opts.source_mode, opts.allow_dirty)?;
     if opts.source_mode == SourceMode::Git {
         if let Some(host) = &git.origin_credentials_removed {
-            eprintln!(
+            teprintln!(
                 "[biffix] warning: the origin URL carries credentials for {host}; recording it \
                  without them (a version's source is visible to every viewer)"
             );
         }
         if source::head_on_a_remote_branch(root) == Some(false) {
-            eprintln!(
+            teprintln!(
                 "[biffix] warning: {} is on no remote-tracking branch (as of your last fetch); \
                  runs clone the origin and check it out, so push it first",
                 git.sha
@@ -162,7 +162,7 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
         &files,
     )?;
     if let Some(note) = &entrypoint.note {
-        eprintln!("[biffix] note: {note}");
+        teprintln!("[biffix] note: {note}");
     }
     let builds = match &tree {
         Some(tree) => prepare_builds(root, tree, builds)?,
@@ -173,7 +173,7 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
         && !named_images.contains_key("default")
         && !builds.iter().any(|b| b.name == "default")
     {
-        eprintln!(
+        teprintln!(
             "[biffix] warning: this version has no default image, so every process must declare \
              its own `container` or its tasks will fail to run"
         );
@@ -354,7 +354,7 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
         .strip_prefix(source_id.as_str())
         .is_some_and(|build| build.is_empty() || build.starts_with(':'))
     {
-        eprintln!(
+        teprintln!(
             "[biffix] warning: the server froze {id}, a version of a different source than the \
              client computed ({source_id}); the CLI's version-id derivation may be out of sync \
              with the server"
@@ -363,7 +363,7 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
     // Said before waiting, so a failed or abandoned wait never loses the id.
     let runtime = match opts.wait {
         Some(timeout) => {
-            eprintln!("[biffix] registered {id}; waiting until it can run…");
+            teprintln!("[biffix] registered {id}; waiting until it can run…");
             wait_for_runtime(&client, &id, timeout).await?.runtime
         }
         None => None,
@@ -381,9 +381,9 @@ pub async fn register(session: &mut Session, opts: RegisterOpts) -> CliResult<()
             } else {
                 format!(" (image {})", view.image_digest)
             };
-            println!("registered {} {id}{image}{dirty}", view.name);
+            tprintln!("registered {} {id}{image}{dirty}", view.name);
             if let Some(r) = &runtime {
-                println!("ready to run (engine runtime {})", truncate_chars(&r.key, 12));
+                tprintln!("ready to run (engine runtime {})", truncate_chars(&r.key, 12));
             }
         }
     }
@@ -481,16 +481,16 @@ async fn staged_sha256(
             });
         let Some(recorded) = recorded else { continue };
         if recorded == ours {
-            eprintln!("[biffix] the source is already staged; using it");
+            teprintln!("[biffix] the source is already staged; using it");
         } else {
-            eprintln!(
+            teprintln!(
                 "[biffix] the source is already staged (by {id}) as a different archive of the \
                  same files; using it, with its sha256"
             );
         }
         return Ok(recorded.to_string());
     }
-    eprintln!(
+    teprintln!(
         "[biffix] warning: the source is already staged, but no registered version records its \
          sha256, so it cannot be checked against this tarball; if another biffix version staged \
          it, runs of this version will refuse it"

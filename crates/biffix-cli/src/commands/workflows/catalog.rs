@@ -18,11 +18,11 @@ pub async fn list(session: &mut Session, released: Option<bool>) -> CliResult<()
         OutputMode::Json => crate::render::print_json(&workflows),
         OutputMode::Human => {
             if workflows.is_empty() {
-                println!("no registered workflows");
+                tprintln!("no registered workflows");
             }
             for w in &workflows {
                 let kind = release_word(&w.release);
-                println!("{}  {}  {} {}  {kind}", w.id, w.name, w.engine, w.engine_version);
+                tprintln!("{}  {}  {} {}  {kind}", w.id, w.name, w.engine, w.engine_version);
             }
         }
     }
@@ -37,7 +37,7 @@ pub async fn release(session: &mut Session, id: &str, released: bool) -> CliResu
     let release = client.set_workflow_released(id, released).await?;
     match session.output {
         OutputMode::Json => crate::render::print_json(&release),
-        OutputMode::Human => println!("{}", release_line(&release)),
+        OutputMode::Human => tprintln!("{}", release_line(&release)),
     }
     Ok(())
 }
@@ -90,12 +90,15 @@ pub(crate) async fn engines(session: &mut Session) -> CliResult<()> {
         OutputMode::Human => {
             for e in &engines {
                 match e.releases.last() {
-                    None => println!(
+                    None => tprintln!(
                         "{}  >={}, <{}  (pin an exact release, e.g. engine_version: \"{}\")",
-                        e.engine, e.min_version, e.below_version, e.min_version
+                        e.engine,
+                        e.min_version,
+                        e.below_version,
+                        e.min_version
                     ),
                     // Only these releases can build (their downloads are pinned).
-                    Some(latest) => println!(
+                    Some(latest) => tprintln!(
                         "{}  one of {}  (e.g. engine_version: \"{latest}\")",
                         e.engine,
                         e.releases.join(", "),
@@ -116,7 +119,7 @@ pub async fn show(session: &mut Session, id: &str) -> CliResult<()> {
         OutputMode::Json => crate::render::print_json(&detail),
         OutputMode::Human => {
             for line in show_lines(&detail) {
-                println!("{line}");
+                tprintln!("{line}");
             }
         }
     }

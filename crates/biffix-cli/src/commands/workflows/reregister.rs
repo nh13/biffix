@@ -134,7 +134,7 @@ async fn reregister_one(
             let new = view.id.as_str().to_string();
             let state = match wait {
                 Some(timeout) => {
-                    eprintln!("[biffix] {id} → {new}");
+                    teprintln!("[biffix] {id} → {new}");
                     match wait_for_runtime(client, &new, timeout).await {
                         Ok(_) => Some("ready".to_string()),
                         Err(e) if all && !matches!(e, CliError::AuthRequired(_)) => {
@@ -211,7 +211,7 @@ pub async fn reregister(session: &mut Session, opts: ReregisterOpts) -> CliResul
         reregister_each(&client, &targets, &req, opts.wait, opts.all, |id, result| {
             if output == OutputMode::Human {
                 let name = names.get(id).copied().unwrap_or("");
-                print!("{}", reregistered_line(name, result));
+                tprint!("{}", reregistered_line(name, result));
             }
         })
         .await;

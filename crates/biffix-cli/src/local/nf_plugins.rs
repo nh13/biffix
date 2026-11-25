@@ -336,7 +336,7 @@ fn check_declared_with(
         // What it declares cannot run offline whatever `plugins:` lists.
         Err(NextflowError::Invalid(e)) => Err(e),
         Err(NextflowError::Failed(e)) => {
-            eprintln!(
+            teprintln!(
                 "[biffix] warning: could not read the pipeline's Nextflow plugins to check \
                  biffix.yaml `plugins:` against them: {e}"
             );
@@ -367,7 +367,7 @@ fn check_declared_with(
                 })
                 .collect();
             if !missing.is_empty() {
-                eprintln!(
+                teprintln!(
                     "[biffix] warning: nextflow.config declares Nextflow plugins biffix.yaml \
                      `plugins:` does not list: {} (biffix.yaml lists [{}]); runs would fail \
                      (biffix runs Nextflow offline). `nextflow` is not on your PATH, so only \
@@ -425,7 +425,7 @@ async fn download_sha256(
             Err(Failure::Fatal(e)) => return Err(e),
             Err(Failure::Retry(e)) if attempt == d.attempts => return Err(e),
             Err(Failure::Retry(e)) => {
-                eprintln!("[biffix] {e}; retrying");
+                teprintln!("[biffix] {e}; retrying");
                 tokio::time::sleep(wait).await;
                 wait = wait.saturating_mul(2);
             }
@@ -514,7 +514,7 @@ async fn pin_with(
     for (id, version) in plugins {
         let sha256 =
             download_sha256(http, &url_of(id, version), &format!("{id}@{version}"), d).await?;
-        eprintln!("[biffix] Nextflow plugin {id}@{version} (sha256 {sha256})");
+        teprintln!("[biffix] Nextflow plugin {id}@{version} (sha256 {sha256})");
         out.push(NextflowPluginRequest { id: id.clone(), version: version.clone(), sha256 });
     }
     Ok(out)

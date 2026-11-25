@@ -89,7 +89,7 @@ pub async fn rebuild(session: &mut Session, opts: RebuildOpts) -> CliResult<()> 
         match client.rebuild_runtime(id).await {
             Ok(r) => {
                 if human {
-                    println!("{}", runtime_line(&r));
+                    tprintln!("{}", runtime_line(&r));
                 }
                 runtime = Some(r);
                 started.push("the runtime".to_string());
@@ -104,7 +104,7 @@ pub async fn rebuild(session: &mut Session, opts: RebuildOpts) -> CliResult<()> 
         match client.rebuild_image(id, name).await {
             Ok(i) => {
                 if human {
-                    println!("{}", image_line(&i));
+                    tprintln!("{}", image_line(&i));
                 }
                 images.push(i);
                 started.push(format!("image {name}"));
@@ -121,7 +121,7 @@ pub async fn rebuild(session: &mut Session, opts: RebuildOpts) -> CliResult<()> 
     // The states after the wait, when there was one: the rebuild's answers are as of its start.
     let ready = match opts.wait {
         Some(timeout) => {
-            eprintln!("[biffix] waiting until {id} can run…");
+            teprintln!("[biffix] waiting until {id} can run…");
             let after = wait_for_runtime(&client, id, timeout).await?;
             runtime = runtime.and(after.runtime);
             images =
@@ -135,7 +135,7 @@ pub async fn rebuild(session: &mut Session, opts: RebuildOpts) -> CliResult<()> 
         OutputMode::Json => crate::render::print_json(&serde_json::json!({
             "id": id, "runtime": runtime, "images": images, "ready": ready,
         })),
-        OutputMode::Human if ready.is_some() => println!("{id} is ready to run"),
+        OutputMode::Human if ready.is_some() => tprintln!("{id} is ready to run"),
         OutputMode::Human => {}
     }
     Ok(())
