@@ -15,8 +15,12 @@ pub fn now() -> u64 {
 
 /// `claims` signed with `secret` under `algorithm` (an HMAC one: `secret` is the raw key).
 pub fn signed_token(claims: &Value, algorithm: Algorithm, secret: &[u8]) -> String {
-    jsonwebtoken::encode(&Header::new(algorithm), claims, &EncodingKey::from_secret(secret))
-        .unwrap()
+    jsonwebtoken::encode(
+        &Header::new(algorithm),
+        claims,
+        &EncodingKey::from_secret(secret).expect("a non-empty HMAC secret is a valid key"),
+    )
+    .unwrap()
 }
 
 /// `claims` signed HS256 with `secret`: what a [`static_auth`] context over `secret` verifies.
@@ -45,7 +49,7 @@ pub fn static_auth(
 ) -> AuthContext {
     AuthContext {
         verifier: crate::auth::JwtVerifier::static_key(
-            DecodingKey::from_secret(secret),
+            DecodingKey::from_secret(secret).expect("a non-empty HMAC secret is a valid key"),
             Algorithm::HS256,
         ),
         issuer: issuer.into(),

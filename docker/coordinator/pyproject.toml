@@ -15,15 +15,15 @@ dev = [
     # locally and in CI. Dependabot bumps the four together (.github/dependabot.yml).
     "mypy==2.4.1",
     "pytest==9.2.0",
-    "ruff==0.17.4",
+    "ruff==0.17.5",
     "validate-pyproject[all]==0.27",
     # Types for the helpers' boto3 S3 calls (the image installs boto3 itself; see the Dockerfile).
-    "boto3-stubs[ecr,s3]==1.43.127",
+    "boto3-stubs[ecr,s3]==1.44.4",
     # A real Snakemake, with the plugins a run names on its command line, for the tests that check
     # the command line a run builds and run a single-job run's workflows through its wrapper
     # Snakefile and the biffix executor. The runtime installs the version a workflow pins; this is
     # the newest release biffix tests.
-    "snakemake==9.27.1",
+    "snakemake==9.27.2",
     "snakemake-storage-plugin-s3==0.3.6",
     "snakemake-logger-plugin-biffix",
     "snakemake-executor-plugin-biffix",

@@ -43,7 +43,7 @@ fn state_with_store(store: MemStore) -> (AppState, Arc<MemEventSink>, Arc<FakeCl
     m.insert("admins".to_string(), Role::Admin);
     let auth = AuthContext {
         verifier: biffix_backend::auth::JwtVerifier::static_key(
-            DecodingKey::from_secret(SECRET),
+            DecodingKey::from_secret(SECRET).expect("a non-empty HMAC secret is a valid key"),
             Algorithm::HS256,
         ),
         issuer: ISS.into(),
@@ -75,7 +75,12 @@ fn token(group: &str) -> String {
         "sub": "u", "cognito:groups": [group], "iss": ISS, "aud": AUD,
         "exp": biffix_core::clock::epoch_secs_u64() + 3600
     });
-    encode(&Header::new(Algorithm::HS256), &claims, &EncodingKey::from_secret(SECRET)).unwrap()
+    encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(SECRET).expect("a non-empty HMAC secret is a valid key"),
+    )
+    .unwrap()
 }
 
 fn register_body() -> Value {

@@ -213,7 +213,12 @@ async fn rejects_a_non_rs256_or_kid_less_or_tampered_token() {
 
     let mut hs = Header::new(Algorithm::HS256);
     hs.kid = Some("k1".into());
-    let hmac = encode(&hs, &claims, &EncodingKey::from_secret(b"secret")).unwrap();
+    let hmac = encode(
+        &hs,
+        &claims,
+        &EncodingKey::from_secret(b"secret").expect("a non-empty HMAC secret is a valid key"),
+    )
+    .unwrap();
     assert_eq!(v.verify(&hmac, &issuer, &audiences()).await, Err(AuthError::InvalidToken));
 
     let no_kid = encode(&Header::new(Algorithm::RS256), &claims, &k1.encoding).unwrap();

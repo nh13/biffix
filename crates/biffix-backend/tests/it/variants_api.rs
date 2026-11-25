@@ -45,7 +45,7 @@ fn harness() -> Harness {
     ]));
     let auth = AuthContext {
         verifier: biffix_backend::auth::JwtVerifier::static_key(
-            DecodingKey::from_secret(SECRET),
+            DecodingKey::from_secret(SECRET).expect("a non-empty HMAC secret is a valid key"),
             Algorithm::HS256,
         ),
         issuer: ISS.into(),
@@ -77,7 +77,12 @@ fn harness() -> Harness {
 fn token(group: &str) -> String {
     let exp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 3600;
     let claims = json!({"sub": "u", "cognito:groups": [group], "iss": ISS, "aud": AUD, "exp": exp});
-    encode(&Header::new(Algorithm::HS256), &claims, &EncodingKey::from_secret(SECRET)).unwrap()
+    encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(SECRET).expect("a non-empty HMAC secret is a valid key"),
+    )
+    .unwrap()
 }
 
 fn request(method: &str, uri: &str, group: &str, body: Option<&Value>) -> Request<Body> {
