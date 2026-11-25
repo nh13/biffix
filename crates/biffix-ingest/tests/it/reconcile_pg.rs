@@ -568,9 +568,10 @@ fn described_start(job_id: &str) -> DescribedStartedJob {
     }
 }
 
-/// Each candidate's job id and the dedup keys of the starts the log holds for it.
+/// Each candidate's job id and the dedup keys of the starts and execution events the log holds
+/// for it.
 fn starts(candidates: Vec<StaleAttempt>) -> Vec<(String, Vec<String>)> {
-    candidates.into_iter().map(|c| (c.batch_job_id, c.start_keys)).collect()
+    candidates.into_iter().map(|c| (c.batch_job_id, c.known_fact_keys)).collect()
 }
 
 /// `(job, keys)`, owned, for comparing with [`starts`].
@@ -653,6 +654,39 @@ async fn a_stale_candidate_carries_the_keys_of_the_starts_the_log_holds() {
     );
 }
 
+/// A candidate of either path carries the keys of the execution events the log holds beside its
+/// starts', so the backstop enqueues a described execution once rather than on every rotation.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness"]
+async fn a_candidate_carries_the_execution_keys_the_log_holds() {
+    let pool = common::isolated_pool("a_candidate_carries_the_execution_keys_the_log_holds").await;
+    append_submitted(&pool, "job-k", 1.0).await;
+    let started = EventData::TaskStarted { started_at: None, log_stream: None };
+    let start = testing::event(1.2, EventSource::AwsBatch, "aws-batch:job-k:RUNNING", started);
+    append(&pool, &start.with_job("job-k")).await.unwrap();
+    append(&pool, &testing::execution_started("job-k", "t1", 1.3)).await.unwrap();
+    // An engine's own event about the job is not one of Batch's facts.
+    append(
+        &pool,
+        &event(
+            "job-k",
+            1.4,
+            "engine:job-k:started",
+            EventSource::Snakemake,
+            EventData::TaskStarted { started_at: None, log_stream: None },
+        ),
+    )
+    .await
+    .unwrap();
+
+    let held = [keyed("job-k", &["aws-batch-exec:t1:started", "aws-batch:job-k:RUNNING"])];
+    assert_eq!(starts(stale_attempts(&pool, window(2_000_000, 100, 0)).await.unwrap()), held);
+    let live = live_children_of_run(&pool, "run-reconcile", None, 100).await.unwrap();
+    let children: Vec<(String, Vec<String>)> =
+        live.into_iter().map(|c| (c.batch_job_id, c.known_fact_keys)).collect();
+    assert_eq!(children, held);
+}
+
 /// The reaper filters a described child's start by the starts the log holds, as the stale path
 /// does: each live child carries the dedup keys of its AWS Batch starts of either shape, and an
 /// engine's own start is not one.
@@ -700,7 +734,7 @@ async fn a_live_child_carries_the_keys_of_the_starts_the_log_holds() {
 
     let live = live_children_of_run(&pool, "run-reconcile", None, 100).await.unwrap();
     let children: Vec<(String, Vec<String>)> =
-        live.into_iter().map(|c| (c.batch_job_id, c.start_keys)).collect();
+        live.into_iter().map(|c| (c.batch_job_id, c.known_fact_keys)).collect();
     assert_eq!(
         children,
         [
@@ -713,7 +747,7 @@ async fn a_live_child_carries_the_keys_of_the_starts_the_log_holds() {
     let paged = live_children_of_run(&pool, "run-reconcile", Some("job-a"), 1).await.unwrap();
     assert_eq!(
         paged,
-        [LiveChild { batch_job_id: "job-b".into(), start_keys: vec!["aws:job-b:1.2".into()] }]
+        [LiveChild { batch_job_id: "job-b".into(), known_fact_keys: vec!["aws:job-b:1.2".into()] }]
     );
 }
 

@@ -262,6 +262,14 @@ fn execution_kinds_are_neither_terminal_nor_start_kinds() {
 }
 
 #[test]
+fn the_pre_terminal_kinds_are_the_start_and_execution_kinds() {
+    assert_eq!(
+        BATCH_JOB_PRE_TERMINAL_KINDS.to_vec(),
+        [BATCH_JOB_START_KINDS, BATCH_EXECUTION_KINDS].concat()
+    );
+}
+
+#[test]
 fn an_execution_end_serializes_only_what_aws_reported() {
     let ended = EventData::BatchExecutionEnded {
         execution_id: "arn:t/1".into(),

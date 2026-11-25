@@ -53,8 +53,8 @@ pub use control_plane::{
 };
 pub use data::EventData;
 pub use kind::{
-    Kind, BATCH_EXECUTION_KINDS, BATCH_JOB_START_KINDS, COORDINATOR_TERMINAL_KINDS,
-    TASK_TERMINAL_KINDS,
+    Kind, BATCH_EXECUTION_KINDS, BATCH_JOB_PRE_TERMINAL_KINDS, BATCH_JOB_START_KINDS,
+    COORDINATOR_TERMINAL_KINDS, TASK_TERMINAL_KINDS,
 };
 pub use payload::{Dag, DagEdge, DagNode, OutputRef, OutputRole, TaskVerdict, TerminationCategory};
 pub use samples::{ReusedSample, SampleHint, SampleSpec, StepScope};

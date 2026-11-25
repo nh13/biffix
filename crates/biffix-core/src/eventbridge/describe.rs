@@ -158,10 +158,13 @@ pub fn start_time_millis<I: IntoIterator<Item = Option<i64>>>(
 /// length counts it. No exact-millisecond match is needed.
 ///
 /// This assumes `started_at_millis` (the job-level `startedAt`, from [`start_time_millis`]) is the
-/// newest attempt's start, as the live RUNNING's `startedAt` is: Batch overwrites it on each retry.
-/// That is not verified against AWS. Were it the first attempt's, a finished retry's earlier
-/// attempts would all start at or after it and count none. Recording every attempt of a retried
-/// job properly is #75.
+/// newest execution's start, as the live RUNNING's `startedAt` is: Batch overwrites it each time
+/// it runs the job again. That was observed in DescribeJobs on three spot-reclaimed jobs once
+/// they had finished (issue #75); while a retry is RUNNING it may still briefly be the lost
+/// execution's, which [`super::execution`]'s rule 3 guards against. Were it an earlier
+/// execution's, the start would count fewer attempts before it and take that execution's dedup
+/// key, a duplicate of a start the log may already hold. Every execution is recorded in its own
+/// right by [`super::execution`].
 pub fn prior_attempts_before<I: IntoIterator<Item = (Option<i64>, Option<i64>)>>(
     started_at_millis: i64,
     attempts: I,
