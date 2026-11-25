@@ -4445,7 +4445,7 @@
           "attempts": {
             "type": "integer",
             "format": "int64",
-            "description": "Attempts the step made."
+            "description": "Attempts the step made (engine tries; AWS Batch running one again on a new host is not\nanother)."
           },
           "batch_job_id": {
             "type": [
@@ -4472,6 +4472,11 @@
               "type": "string"
             },
             "description": "The last lines of its log, oldest first; or the engine's, from the run's `failure.txt` when\nit has one (else the end of the coordinator's log), under that file's first line when it\nnames a step other than the engine or quotes no output."
+          },
+          "lost_executions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Executions of the step's attempts that lost their host (a spot reclaim or a lost host), in\nall its attempts. Omitted at 0."
           },
           "message": {
             "type": "string",
@@ -6327,6 +6332,13 @@
                 ],
                 "description": "Who asked to cancel the run (their label), when it was cancelled on request and a label is\nknown: never an opaque user id."
               },
+              "coordinator_executions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/JobExecution"
+                },
+                "description": "Each time AWS Batch ran the coordinator's job on a host, in order. More than one when Batch\nran it again after losing a host. Omitted when none is recorded."
+              },
               "coordinator_host": {
                 "oneOf": [
                   {
@@ -6380,6 +6392,17 @@
                   "null"
                 ],
                 "description": "Samplesheets biffix wrote for this run from rows given at submit, by param:\n`{uri, etag, rows: [{column: value}]}`. Absent when none were."
+              },
+              "interruptions": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/RunInterruptions",
+                    "description": "The run's executions that lost their host, over every attempt of every task and the\ncoordinator. Absent when none did (or none is recorded)."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "launched_at_micros": {
                 "type": [
@@ -6547,6 +6570,32 @@
           "succeeded",
           "failed"
         ]
+      },
+      "RunInterruptions": {
+        "type": "object",
+        "description": "The run's executions that lost their host (`RunDetail.interruptions`): each AWS Batch ran again\non a new host.",
+        "required": [
+          "lost_executions",
+          "spot_reclaims",
+          "lost_seconds"
+        ],
+        "properties": {
+          "lost_executions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Executions that lost their host, every task's and the coordinator's."
+          },
+          "lost_seconds": {
+            "type": "number",
+            "format": "double",
+            "description": "The time those executions ran before they were lost, in seconds (0 for one whose start AWS\ndid not report)."
+          },
+          "spot_reclaims": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many of them were spot reclaims (`JobExecution.interruption`); the rest lost their\nhost otherwise."
+          }
+        }
       },
       "RunOutput": {
         "type": "object",
@@ -7782,7 +7831,7 @@
               "null"
             ],
             "format": "double",
-            "description": "Estimated cost of every priced attempt of this task (USD), retries and spot-lost attempts\nincluded; absent until one is priced."
+            "description": "Estimated cost of every priced attempt of this task (USD), retries and executions lost\nwith their host included; absent until one is priced."
           },
           "deps": {
             "type": "array",
@@ -7790,6 +7839,11 @@
               "type": "string"
             },
             "description": "Task keys of the tasks in this run that this one depends on (produced its inputs). Its\ninverse is `feeds`, which only `POST /runs/{id}/tasks/query` fills: a reader of\n`GET /runs/{id}`'s whole task list derives it from the list."
+          },
+          "executions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many times AWS Batch ran the display attempt's job on a host (the length of its\n`TaskAttempt.executions`), and how many of those lost their host (their\n`JobExecution.interruption` is set). Each omitted at 0: a run recorded before executions\nwere has none."
           },
           "exit_code": {
             "type": [
@@ -7850,6 +7904,17 @@
               "null"
             ]
           },
+          "lost_executions": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lost_seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
           "requested_memory_mib": {
             "type": [
               "integer",
@@ -7866,6 +7931,14 @@
             "format": "double",
             "description": "The vCPUs the display attempt's Batch job requested (not its host's capacity — see `host`); absent when\nBatch reported no requirement."
           },
+          "run_seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The display attempt's split of its span, in seconds (`TaskAttempt.run_seconds`,\n`lost_seconds`, `wait_seconds`); omitted without execution facts."
+          },
           "spot_warned_at": {
             "type": [
               "number",
@@ -7880,7 +7953,7 @@
               "null"
             ],
             "format": "double",
-            "description": "Attempt start / finish as epoch seconds."
+            "description": "The display attempt's start / finish as epoch seconds: its whole span, including time on a\nlost host and the wait for a new one (see `run_seconds`, `lost_seconds`, `wait_seconds`)."
           },
           "state": {
             "type": "string"
@@ -7900,6 +7973,13 @@
               "null"
             ],
             "description": "Why the workflow engine failed this task although its AWS Batch job did not fail (e.g. it\ndid not write its declared outputs); absent otherwise."
+          },
+          "wait_seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
           }
         }
       },

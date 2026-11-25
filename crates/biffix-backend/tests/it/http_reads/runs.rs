@@ -594,3 +594,69 @@ async fn a_request_carrying_a_nul_is_a_400_never_a_retryable_503() {
     let (status, v) = post_json(app, "/runs/r1/tasks/query", serde_json::json!({"q": "ab"})).await;
     assert_eq!(status, StatusCode::OK, "{v}");
 }
+
+/// An execution, as the store reads it: lost with its host (`interruption`) or not, on a host of
+/// `queue` with no lifecycle recorded.
+fn execution_view(
+    id: &str,
+    ordinal: i64,
+    interruption: Option<&str>,
+    seconds: (f64, f64),
+) -> biffix_api::JobExecution {
+    serde_json::from_value(serde_json::json!({
+        "execution_id": id, "ordinal": ordinal, "ended": true,
+        "final_execution": interruption.is_none(), "interruption": interruption,
+        "started_at": seconds.0, "stopped_at": seconds.1,
+        "host": {"queue": "biffix-coordinator"},
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_run_s_detail_lists_its_coordinator_s_executions_and_sums_what_it_lost() {
+    let store = MemStore::new();
+    let mut detail = testing::run_detail("r1", "running");
+    detail.coordinator_job_id = Some("coord".into());
+    store.insert(detail);
+    // The coordinator lost a spot host after 60 s and runs again; a task lost a host after 30 s.
+    store.insert_coordinator_executions(
+        "r1",
+        vec![
+            execution_view("c1", 1, Some("spot_reclaimed"), (0.0, 60.0)),
+            execution_view("c2", 2, None, (90.0, 200.0)),
+        ],
+    );
+    let mut attempt = attempt_view("job-A", 1, "running", "stream-A");
+    attempt.executions = vec![execution_view("x1", 1, Some("host_lost"), (10.0, 40.0))];
+    store.insert_attempts("r1", "align", vec![attempt]);
+    let mut state = TestState::new().with_store(Arc::new(store)).build();
+    state.deploy.queue_capacities =
+        [("biffix-coordinator".to_string(), "on_demand".to_string())].into();
+    let (status, v) = get_json(api::router(state), "/runs/r1").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let ids: Vec<&str> = v["coordinator_executions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["execution_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["c1", "c2"]);
+    // Each execution's host gets its queue's capacity, as every other host does.
+    assert_eq!(v["coordinator_executions"][0]["host"]["capacity_source"], "queue");
+    assert_eq!(
+        v["interruptions"],
+        serde_json::json!({"lost_executions": 2, "spot_reclaims": 1, "lost_seconds": 90.0})
+    );
+}
+
+#[tokio::test]
+async fn a_run_that_lost_no_executions_has_no_interruptions() {
+    let (status, v) = get_json(
+        api::router(state_with_run_detail(testing::run_detail("r1", "running"))),
+        "/runs/r1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert!(v.get("interruptions").is_none(), "{v}");
+    assert!(v.get("coordinator_executions").is_none(), "{v}");
+}

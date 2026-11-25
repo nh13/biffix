@@ -1,8 +1,9 @@
 //! How the API words an attempt's executions (each time AWS Batch ran its job on a host): why an
-//! execution ended early ([`interruption`]) and whether Batch is still finding a host to run the
-//! attempt again on ([`awaiting_host`]). Pure, so the readers that fill them share one rule.
+//! execution ended early ([`interruption`]), whether Batch is still finding a host to run the
+//! attempt again on ([`awaiting_host`]), and what a run lost to them ([`run_interruptions`]).
+//! Pure, so the readers that fill them share one rule.
 
-use biffix_api::JobExecution;
+use biffix_api::{JobExecution, RunInterruptions};
 use biffix_core::event::TerminationCategory;
 use biffix_core::failure::FailureCause;
 use biffix_core::state::{AttemptState, TaskState};
@@ -48,9 +49,55 @@ pub(crate) fn awaiting_host(
         && executions.last().is_some_and(|x| x.interruption.is_some())
 }
 
+/// The run's interruptions (`RunDetail.interruptions`) from its executions that lost their host:
+/// `None` when there are none. The time lost is each one's run time (stop − start, never below
+/// 0), summed in whole microseconds as the attempts' `lost_seconds` are; one with no recorded
+/// start adds none.
+pub(crate) fn run_interruptions(lost: &[JobExecution]) -> Option<RunInterruptions> {
+    (!lost.is_empty()).then(|| RunInterruptions {
+        lost_executions: lost.len() as i64,
+        spot_reclaims: lost
+            .iter()
+            .filter(|x| x.interruption.as_deref() == Some(SPOT_RECLAIMED))
+            .count() as i64,
+        lost_seconds: lost
+            .iter()
+            .filter_map(|x| Some((micros(x.stopped_at?) - micros(x.started_at?)).max(0)))
+            .sum::<i64>() as f64
+            / 1e6,
+    })
+}
+
+/// Epoch seconds read back from the API's micros as whole microseconds.
+fn micros(seconds: f64) -> i64 {
+    (seconds * 1e6).round() as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_runs_interruptions_count_its_lost_executions_and_the_time_they_ran() {
+        assert_eq!(run_interruptions(&[]), None);
+        let lost = |interruption: &str, started_at: Option<f64>, stopped_at: f64| JobExecution {
+            interruption: Some(interruption.into()),
+            started_at,
+            stopped_at: Some(stopped_at),
+            ..execution(true)
+        };
+        let got = run_interruptions(&[
+            lost(SPOT_RECLAIMED, Some(10.0), 70.0),
+            lost(SPOT_RECLAIMED, None, 5.0),
+            lost(HOST_LOST, Some(100.0), 160.5),
+            // Clock skew: a stop before its start adds nothing.
+            lost(HOST_LOST, Some(9.0), 8.0),
+        ]);
+        assert_eq!(
+            got,
+            Some(RunInterruptions { lost_executions: 4, spot_reclaims: 2, lost_seconds: 120.5 })
+        );
+    }
 
     #[test]
     fn only_a_lost_host_is_an_interruption_and_any_spot_evidence_makes_it_a_reclaim() {

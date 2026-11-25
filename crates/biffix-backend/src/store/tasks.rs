@@ -1,7 +1,7 @@
 //! [`TaskReads`]: a run's tasks and their Batch attempts.
 
 use async_trait::async_trait;
-use biffix_api::{Task, TaskAttempt};
+use biffix_api::{JobExecution, Task, TaskAttempt};
 use biffix_core::ids::{RunId, TaskKey};
 
 use super::runs::RunReads;
@@ -44,4 +44,21 @@ pub trait TaskReads: RunReads {
         run_id: &RunId,
         task_key: &TaskKey,
     ) -> Result<Vec<TaskAttempt>, StoreError>;
+
+    /// The run's executions its detail describes: the coordinator job's (`coordinator_job`), in
+    /// order, and every execution of the run that lost its host (the coordinator's included).
+    async fn run_executions(
+        &self,
+        run_id: &RunId,
+        coordinator_job: Option<&str>,
+    ) -> Result<RunExecutions, StoreError>;
+}
+
+/// [`TaskReads::run_executions`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RunExecutions {
+    /// The coordinator job's executions, in order.
+    pub coordinator: Vec<JobExecution>,
+    /// Every execution of the run that lost its host (its `interruption` is set).
+    pub lost: Vec<JobExecution>,
 }

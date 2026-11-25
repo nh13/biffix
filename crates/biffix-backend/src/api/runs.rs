@@ -418,6 +418,7 @@ pub(super) fn routes() -> axum::Router<AppState> {
         TaskAttemptList,
         TaskAttempt,
         biffix_api::JobExecution,
+        biffix_api::RunInterruptions,
         Host,
         biffix_api::JobCost,
         biffix_api::RunCost,

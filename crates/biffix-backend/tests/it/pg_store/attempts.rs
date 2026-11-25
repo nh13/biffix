@@ -244,3 +244,131 @@ async fn attempts_nest_their_executions_with_their_own_host_warning_and_cost() {
         (Some(650e-6), Some(200e-6), Some(150e-6))
     );
 }
+
+#[tokio::test]
+#[ignore = "requires --features pg + the Postgres harness"]
+async fn tasks_and_runs_read_their_executions_lost_with_a_host() {
+    let pool = seeded_pool("tasks_and_runs_read_lost_executions").await;
+    exec_all(
+        &pool,
+        &[
+            "UPDATE run_projection SET coordinator_job_id = 'coord' WHERE run_id = 'r1'",
+            "INSERT INTO host_registry (container_instance_id, ec2_instance_id, cluster_arn, \
+             lifecycle, detail_version, raw_detail, first_seen_at) VALUES \
+             ('ci-1', 'i-1', 'c', 'spot', 1, '{}'::jsonb, 1), \
+             ('ci-2', 'i-2', 'c', 'on-demand', 1, '{}'::jsonb, 1)",
+            "INSERT INTO attempt_projection (run_id, batch_job_id, task_key, attempt, state, \
+             run_micros, lost_micros, wait_micros) VALUES \
+             ('r1', 'job-0', 'align:sample=A', 1, 'failed', NULL, NULL, NULL), \
+             ('r1', 'job-1', 'align:sample=A', 2, 'succeeded', 500, 200, 100)",
+            "UPDATE task_projection SET batch_job_id = 'job-1' \
+             WHERE run_id = 'r1' AND task_key = 'align:sample=A'",
+            // The task's display job lost a spot host (by the registry) and then finished; its
+            // earlier attempt's only execution was reclaimed too, which the task row's counts (the
+            // display attempt's) leave out but the run's include. The current
+            // coordinator job lost its host (spot, by AWS's reason) and runs again; an earlier
+            // coordinator job lost an on-demand host.
+            "INSERT INTO execution_projection (run_id, execution_id, batch_job_id, role, task_key, \
+             ordinal, is_final, ended, instance_id, started_at, stopped_at, \
+             termination_category) VALUES \
+             ('r1', 'e1', 'job-1', 'task', 'align:sample=A', 1, false, true, 'ci-1', 100, 300, \
+              'host_terminated'), \
+             ('r1', 'e2', 'job-1', 'task', 'align:sample=A', 2, true, true, 'ci-2', 400, 700, NULL), \
+             ('r1', 'e0', 'job-0', 'task', 'align:sample=A', 1, true, true, 'ci-2', 20, 30, 'spot'), \
+             ('r1', 'c2', 'coord', 'coordinator', NULL, 2, true, false, 'ci-2', 90, NULL, NULL), \
+             ('r1', 'c1', 'coord', 'coordinator', NULL, 1, false, true, 'ci-2', 0, 50, 'spot'), \
+             ('r1', 'c0', 'coord-0', 'coordinator', NULL, 1, true, true, 'ci-2', 10, 40, \
+              'host_terminated')",
+        ],
+    )
+    .await;
+    let store = PgStore::new(pool);
+    let detail = store.get_run(&RunId::new("r1")).await.unwrap();
+    let task = detail.tasks.iter().find(|t| t.task_key.as_str() == "align:sample=A").unwrap();
+    assert_eq!((task.executions, task.lost_executions), (2, 1));
+    assert_eq!(
+        (task.run_seconds, task.lost_seconds, task.wait_seconds),
+        (Some(500e-6), Some(200e-6), Some(100e-6))
+    );
+
+    let got = store.run_executions(&RunId::new("r1"), Some("coord")).await.unwrap();
+    let ids = |xs: &[biffix_api::JobExecution]| {
+        let mut ids: Vec<String> = xs.iter().map(|x| x.execution_id.clone()).collect();
+        ids.sort();
+        ids
+    };
+    // The current coordinator job's, in order; every lost one, whichever job it was of.
+    let coordinator: Vec<&str> = got.coordinator.iter().map(|x| x.execution_id.as_str()).collect();
+    assert_eq!(coordinator, vec!["c1", "c2"]);
+    assert_eq!(ids(&got.lost), vec!["c0", "c1", "e0", "e1"]);
+    let interruption = |id: &str| {
+        got.lost.iter().find(|x| x.execution_id == id).unwrap().interruption.clone().unwrap()
+    };
+    assert_eq!(
+        (interruption("e1"), interruption("c1"), interruption("c0")),
+        ("spot_reclaimed".into(), "spot_reclaimed".into(), "host_lost".into())
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires --features pg + the Postgres harness"]
+async fn an_execution_s_spot_warning_falls_back_to_batch_s_reason_and_a_missing_start() {
+    let pool = seeded_pool("execution_spot_warning_fallbacks").await;
+    exec_all(
+        &pool,
+        &[
+            "INSERT INTO host_registry (container_instance_id, ec2_instance_id, cluster_arn, \
+             detail_version, raw_detail, first_seen_at) VALUES ('ci-4', 'i-4', 'c', 1, '{}'::jsonb, 1)",
+            "INSERT INTO attempt_projection (run_id, batch_job_id, task_key, attempt, state) \
+             VALUES ('r1', 'job-1', 't', 1, 'running')",
+            // xa: its host is not in the registry, but Batch's reason names it. xb: AWS reported
+            // no start. xc: neither a start nor a stop, so no warning can be placed in it.
+            "INSERT INTO execution_projection (run_id, execution_id, batch_job_id, role, task_key, \
+             ordinal, is_final, ended, instance_id, started_at, stopped_at, status_reason) VALUES \
+             ('r1', 'xa', 'job-1', 'task', 't', 1, false, true, 'ci-x', 100, 200, \
+              'Host EC2 (instance i-3) terminated.'), \
+             ('r1', 'xb', 'job-1', 'task', 't', 2, false, true, 'ci-4', NULL, 400, NULL), \
+             ('r1', 'xc', 'job-1', 'task', 't', 3, true, false, 'ci-4', NULL, NULL, NULL)",
+            "INSERT INTO spot_interruption (ec2_instance_id, warned_at) VALUES ('i-3', 150), ('i-4', 350)",
+        ],
+    )
+    .await;
+    let store = PgStore::new(pool);
+    let attempts = store.get_attempts(&RunId::new("r1"), &TaskKey::new("t")).await.unwrap();
+    let warned: Vec<Option<f64>> =
+        attempts[0].executions.iter().map(|x| x.spot_warned_at).collect();
+    assert_eq!(warned, vec![Some(150e-6), Some(350e-6), None]);
+}
+
+#[tokio::test]
+#[ignore = "requires --features pg + the Postgres harness"]
+async fn an_attempt_with_no_start_takes_a_warning_before_its_end_and_a_task_without_one_none() {
+    let pool = seeded_pool("attempt_spot_warning_without_start").await;
+    exec_all(
+        &pool,
+        &[
+            "INSERT INTO host_registry (container_instance_id, ec2_instance_id, cluster_arn, \
+             detail_version, raw_detail, first_seen_at) VALUES ('ci-5', 'i-5', 'c', 1, '{}'::jsonb, 1)",
+            // Lost while its container was starting: AWS reported its end but no start.
+            "INSERT INTO attempt_projection (run_id, batch_job_id, task_key, attempt, state, \
+             instance_id, started_at, finished_at) VALUES \
+             ('r1', 'job-1', 'align:sample=A', 1, 'failed', 'ci-5', NULL, 500)",
+            "UPDATE task_projection SET batch_job_id = 'job-1', instance_id = 'ci-5' \
+             WHERE run_id = 'r1' AND task_key = 'align:sample=A'",
+            // A task on the same host whose attempt row is gone: no span to place a warning in.
+            "INSERT INTO task_projection (run_id, task_key, state, attempts, batch_job_id, \
+             instance_id) VALUES ('r1', 'orphan', 'failed', 1, 'job-gone', 'ci-5')",
+            "INSERT INTO spot_interruption (ec2_instance_id, warned_at) VALUES ('i-5', 450)",
+        ],
+    )
+    .await;
+    let store = PgStore::new(pool);
+    let attempts =
+        store.get_attempts(&RunId::new("r1"), &TaskKey::new("align:sample=A")).await.unwrap();
+    assert_eq!(attempts[0].spot_warned_at, Some(450e-6));
+    let detail = store.get_run(&RunId::new("r1")).await.unwrap();
+    let warned = |key: &str| {
+        detail.tasks.iter().find(|t| t.task_key.as_str() == key).unwrap().spot_warned_at
+    };
+    assert_eq!((warned("align:sample=A"), warned("orphan")), (Some(450e-6), None));
+}

@@ -212,7 +212,7 @@ impl TaskReads for PgStore {
             "SELECT a.batch_job_id, a.attempt, a.state, a.exit_code, a.termination_category, \
              a.status_reason, a.log_stream, a.queue, a.instance_id, a.started_at, a.finished_at, \
              a.requested_vcpus, a.requested_memory_mib, a.run_micros, a.lost_micros, \
-             a.wait_micros, {HOST_COLUMNS}, {SPOT_WARNED_AT}, \
+             a.wait_micros, {HOST_COLUMNS}, {} AS spot_warned_at, \
              c.hours AS cost_hours, c.price_source AS cost_price_source, \
              c.compute_usd AS cost_compute_usd, \
              c.ebs_usd AS cost_ebs_usd \
@@ -220,7 +220,8 @@ impl TaskReads for PgStore {
              LEFT JOIN host_registry h ON h.container_instance_id = a.instance_id \
              LEFT JOIN LATERAL ({ATTEMPT_COST}) c ON TRUE \
              WHERE a.run_id = $1 AND a.task_key = $2 \
-             ORDER BY a.attempt NULLS LAST, a.batch_job_id COLLATE \"C\""
+             ORDER BY a.attempt NULLS LAST, a.batch_job_id COLLATE \"C\"",
+            spot_warned_sql("a", "finished_at")
         )))
         .bind(run_id.as_str())
         .bind(task_key.as_str())
@@ -279,7 +280,45 @@ impl TaskReads for PgStore {
             })
             .collect())
     }
+
+    async fn run_executions(
+        &self,
+        run_id: &RunId,
+        coordinator_job: Option<&str>,
+    ) -> Result<crate::store::tasks::RunExecutions, StoreError> {
+        // One query for the coordinator job's executions and every execution of the run that lost
+        // its host, in job then ordinal order (so a sum over them is the same from one read to
+        // the next).
+        let coordinator = biffix_db::rules::JobRole::Coordinator.as_str();
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "SELECT x.role, {} FROM {EXECUTION_FROM} \
+             WHERE x.run_id = $1 \
+               AND ((x.role = $2 AND x.batch_job_id = $3) OR {}) \
+             ORDER BY x.batch_job_id COLLATE \"C\", x.ordinal, x.execution_id COLLATE \"C\"",
+            *EXECUTION_COLUMNS,
+            host_lost_sql("x")
+        )))
+        .bind(run_id.as_str())
+        .bind(coordinator)
+        .bind(coordinator_job)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = crate::store::tasks::RunExecutions::default();
+        for r in &rows {
+            let x = execution_from_row(r);
+            let job: String = r.get("batch_job_id");
+            if x.interruption.is_some() {
+                out.lost.push(x.clone());
+            }
+            if r.get::<String, _>("role") == coordinator && Some(job.as_str()) == coordinator_job {
+                out.coordinator.push(x);
+            }
+        }
+        Ok(out)
+    }
 }
+
+// ── Row mapping and the SQL fragments the task reads share ─────────────────────────────────
 
 /// A [`JobCost`] from a row's `cost_hours`, `cost_compute_usd` and `cost_ebs_usd`.
 fn job_cost(r: &sqlx::postgres::PgRow, price_per_hour: f64, price_source: String) -> JobCost {
@@ -297,7 +336,7 @@ fn job_cost(r: &sqlx::postgres::PgRow, price_per_hour: f64, price_source: String
 
 /// The columns of an execution row (with its host and cost), for [`execution_from_row`], over
 /// [`EXECUTION_FROM`].
-pub(super) static EXECUTION_COLUMNS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+static EXECUTION_COLUMNS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!(
         "x.batch_job_id, x.execution_id, x.ordinal, x.ended, x.is_final, x.exit_code, \
              x.termination_category, x.status_reason, x.log_stream, x.instance_id, x.queue, \
@@ -306,24 +345,26 @@ pub(super) static EXECUTION_COLUMNS: std::sync::LazyLock<String> = std::sync::La
              c.hours AS cost_hours, c.price_per_hour AS cost_price_per_hour, \
              c.price_source AS cost_price_source, c.compute_usd AS cost_compute_usd, \
              c.ebs_usd AS cost_ebs_usd",
-        execution_spot_warned("x", "h")
+        spot_warned_sql("x", "stopped_at")
     )
 });
 
 /// The execution rows (aliased `x`) with their host (`h`) and their own cost line (`c`), for
 /// [`EXECUTION_COLUMNS`]; a query appends its `WHERE`.
-pub(super) const EXECUTION_FROM: &str = "execution_projection x \
+const EXECUTION_FROM: &str = "execution_projection x \
      LEFT JOIN host_registry h ON h.container_instance_id = x.instance_id \
      LEFT JOIN execution_cost c ON c.run_id = x.run_id AND c.execution_id = x.execution_id";
 
 /// A [`JobExecution`] from a row of [`EXECUTION_COLUMNS`].
-pub(super) fn execution_from_row(r: &sqlx::postgres::PgRow) -> JobExecution {
+fn execution_from_row(r: &sqlx::postgres::PgRow) -> JobExecution {
     let spot_warned_at = micros_to_secs(r.get("spot_warned_at"));
     let host = host_from_row(r, r.get("queue"));
     let termination_category: Option<String> = r.get("termination_category");
+    // The registry's lifecycle, not `Host.capacity`, which the handler may fill from the queue.
+    let lifecycle: Option<String> = r.get("h_lifecycle");
     let interruption = crate::runs::executions::interruption(
         termination_category.as_deref(),
-        host.as_ref().and_then(|h| h.capacity.as_deref()),
+        lifecycle.as_deref(),
         spot_warned_at.is_some(),
     );
     JobExecution {
@@ -347,23 +388,6 @@ pub(super) fn execution_from_row(r: &sqlx::postgres::PgRow) -> JobExecution {
     }
 }
 
-/// The earliest EC2 spot interruption warning for the execution aliased `x` (on the host aliased
-/// `h`, from a `LEFT JOIN host_registry`) that arrived while it ran: an epoch-micros expression.
-/// The EC2 id comes from the host registry, else from the id Batch names in the execution's
-/// status_reason. With no recorded start, any warning before its stop counts: a host reclaimed
-/// while the container was starting.
-pub(super) fn execution_spot_warned(x: &str, h: &str) -> String {
-    format!(
-        "(SELECT MIN(s.warned_at) FROM spot_interruption s \
-         WHERE s.ec2_instance_id = COALESCE({h}.ec2_instance_id, \
-                                           substring({x}.status_reason from 'instance (i-[0-9a-f]+)')) \
-           AND ({x}.started_at IS NULL OR s.warned_at >= {x}.started_at) \
-           AND ({x}.stopped_at IS NULL OR s.warned_at <= {x}.stopped_at))"
-    )
-}
-
-// ── Row mapping and the SQL fragments the task reads share ─────────────────────────────────
-
 /// The cost of the attempt aliased `a`, for a `LEFT JOIN LATERAL`: its job's cost lines
 /// (`cost_line`: one per execution, or its one legacy line), summed in execution id order, as
 /// `hours`, `compute_usd`, `ebs_usd` and `price_source` (the lines' common one, else `mixed`;
@@ -384,32 +408,62 @@ pub(super) const HOST_COLUMNS: &str = "h.ec2_instance_id AS h_ec2_instance_id, \
      h.cpu_architecture AS h_cpu_architecture, h.registered_vcpus AS h_registered_vcpus, \
      h.registered_memory_mib AS h_registered_memory_mib, h.lifecycle AS h_lifecycle";
 
-/// The earliest EC2 spot interruption warning for the attempt aliased `a` (on the host aliased `h`)
-/// that arrived while it ran, as `spot_warned_at` (epoch micros), for a query that `LEFT JOIN`s
-/// `host_registry h`. The EC2 id comes from the host registry, else from the id Batch names in the
-/// attempt's status_reason ("Host EC2 (instance i-…) terminated."), which also covers attempts
-/// whose host predates the registry.
-const SPOT_WARNED_AT: &str = "(SELECT MIN(s.warned_at) FROM spot_interruption s \
-     WHERE s.ec2_instance_id = COALESCE(h.ec2_instance_id, \
-                                        substring(a.status_reason from 'instance (i-[0-9a-f]+)')) \
-       AND s.warned_at >= a.started_at \
-       AND (a.finished_at IS NULL OR s.warned_at <= a.finished_at)) AS spot_warned_at";
+/// The earliest EC2 spot interruption warning for the attempt or execution aliased `row` (on the
+/// host aliased `h`, from a `LEFT JOIN host_registry h`) that arrived while it ran, from its
+/// `started_at` to its `stop` column: an epoch-micros expression, one rule for attempts and
+/// executions. The EC2 id comes from the host registry, else from the id Batch names in the
+/// row's status_reason ("Host EC2 (instance i-…) terminated."), which also covers hosts that
+/// predate the registry. With no recorded start, any warning before the stop counts (a host
+/// reclaimed while the container was starting); with neither, none does.
+fn spot_warned_sql(row: &str, stop: &str) -> String {
+    format!(
+        "(SELECT MIN(s.warned_at) FROM spot_interruption s \
+         WHERE s.ec2_instance_id = COALESCE(h.ec2_instance_id, \
+                                           substring({row}.status_reason \
+                                                     from 'instance (i-[0-9a-f]+)')) \
+           AND ({row}.started_at IS NOT NULL OR {row}.{stop} IS NOT NULL) \
+           AND ({row}.started_at IS NULL OR s.warned_at >= {row}.started_at) \
+           AND ({row}.{stop} IS NULL OR s.warned_at <= {row}.{stop}))"
+    )
+}
 
-/// The columns of a task row (with its host, [`HOST_COLUMNS`], and its [`SPOT_WARNED_AT`]), for
-/// [`task_from_row`]; built once. A query appends its `WHERE`.
+/// The columns of a task row (with its host, [`HOST_COLUMNS`], its [`spot_warned_sql`], and its
+/// display attempt's execution counts and span split), for [`task_from_row`]; built once. A query
+/// appends its `WHERE`.
 static TASK_SELECT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!(
         "SELECT t.task_key, t.state, t.attempts, t.exit_code, t.batch_job_id, \
          t.log_stream, t.termination_category, t.instance_id, t.started_at, t.finished_at, \
          t.cached, t.\"group\", t.deps, t.image, t.verdict_reason, a.queue, a.requested_vcpus, \
-         a.requested_memory_mib, {HOST_COLUMNS}, \
-         {SPOT_WARNED_AT} \
+         a.requested_memory_mib, a.run_micros, a.lost_micros, a.wait_micros, \
+         xn.executions, xn.lost_executions, {HOST_COLUMNS}, \
+         {} AS spot_warned_at \
          FROM task_projection t \
          LEFT JOIN host_registry h ON h.container_instance_id = t.instance_id \
          LEFT JOIN attempt_projection a \
-           ON a.run_id = t.run_id AND a.batch_job_id = t.batch_job_id"
+           ON a.run_id = t.run_id AND a.batch_job_id = t.batch_job_id \
+         LEFT JOIN LATERAL (SELECT count(*) AS executions, \
+             count(*) FILTER (WHERE {}) AS lost_executions \
+           FROM execution_projection x \
+           WHERE x.run_id = t.run_id AND x.batch_job_id = t.batch_job_id \
+             AND x.role = '{}') xn ON TRUE",
+        spot_warned_sql("a", "finished_at"),
+        host_lost_sql("x"),
+        biffix_db::rules::JobRole::Task.as_str()
     )
 });
+
+/// Whether the execution aliased `x` lost its host: its termination category is one of
+/// [`TerminationCategory::HOST_LOST`] (code constants, not input).
+///
+/// [`TerminationCategory::HOST_LOST`]: biffix_core::event::TerminationCategory::HOST_LOST
+pub(super) fn host_lost_sql(x: &str) -> String {
+    let categories: Vec<String> = biffix_core::event::TerminationCategory::HOST_LOST
+        .iter()
+        .map(|c| format!("'{}'", c.as_str()))
+        .collect();
+    format!("{x}.termination_category IN ({})", categories.join(", "))
+}
 
 /// How [`PgStore::select_tasks`] orders a run's tasks.
 const TASK_SELECT_ORDER: &str = "ORDER BY t.task_key COLLATE \"C\"";
@@ -426,6 +480,11 @@ fn task_from_row(r: &sqlx::postgres::PgRow) -> Task {
         instance_id: r.get("instance_id"),
         started_at: micros_to_secs(r.get("started_at")),
         finished_at: micros_to_secs(r.get("finished_at")),
+        executions: r.get::<Option<i64>, _>("executions").unwrap_or(0),
+        lost_executions: r.get::<Option<i64>, _>("lost_executions").unwrap_or(0),
+        run_seconds: micros_to_secs(r.get("run_micros")),
+        lost_seconds: micros_to_secs(r.get("lost_micros")),
+        wait_seconds: micros_to_secs(r.get("wait_micros")),
         cached: r.get("cached"),
         group: r.get("group"),
         deps: r.get("deps"),

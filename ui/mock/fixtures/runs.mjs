@@ -1,7 +1,15 @@
 // The deploy's runs: what `GET /runs` lists and `GET /runs/{run_id}` details, a launch adds to and
 // a cancel or rename changes.
 import { h, now } from '../lib/clock.mjs';
-import { DONE_SAMPLES, MQC_SAMPLES, NOREF_SAMPLES, OOM_SAMPLES, labRun, labTask } from './lab.mjs';
+import {
+  DONE_SAMPLES,
+  MQC_SAMPLES,
+  NOREF_SAMPLES,
+  OOM_SAMPLES,
+  RECLAIMED_TASK,
+  labRun,
+  labTask,
+} from './lab.mjs';
 
 // A run's task counters, as the projection keeps them: counted from its tasks (cached is a subset
 // of succeeded), so the progress and chips agree with the Jobs view.
@@ -591,10 +599,14 @@ RUNS.push(
     },
     tasks: [
       ...DONE_SAMPLES.flatMap((s, i) =>
-        ['FASTQC', 'STAR_ALIGN', 'SALMON_QUANT'].map((step, j) => labTask(step, s, i * 3 + j + 1)),
+        ['FASTQC', 'STAR_ALIGN', 'SALMON_QUANT'].map((step, j) =>
+          labTask(step, s, i * 3 + j + 1, 'succeeded', i === 0 && j === 1 ? RECLAIMED_TASK : {}),
+        ),
       ),
       labTask('MULTIQC', null, 13),
     ],
+    // Its first alignment's spot host was reclaimed after 11 min (fixtures/lab.mjs).
+    interruptions: { lost_executions: 1, spot_reclaims: 1, lost_seconds: 11 * 60 },
   }),
   labRun('run_01HGWEoom', OOM_SAMPLES, {
     run_name: 'rnaseq · batch-11',

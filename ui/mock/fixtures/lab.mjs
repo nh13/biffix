@@ -137,17 +137,27 @@ export const LAB_REPORTS = {
 // alignment ran once as far as the engine knows, but AWS Batch ran it twice: its spot host was
 // reclaimed after 11 min, and it ran again on another host 2 min later for 23 min.
 const RECLAIMED_AT = now - 99 * h;
+// The task row of that alignment (its display attempt's counts and split; ATTEMPT_VIEWS has it).
+export const RECLAIMED_TASK = {
+  started_at: now - 99 * h,
+  finished_at: now - 99 * h + 36 * 60,
+  executions: 2,
+  lost_executions: 1,
+  run_seconds: 34 * 60,
+  lost_seconds: 11 * 60,
+  wait_seconds: 2 * 60,
+};
 export const ATTEMPT_VIEWS = new Map([
   [
     'run_01HGWDdone\u0000STAR_ALIGN (Normal_1) #2',
     [
       {
-        started_at: RECLAIMED_AT,
-        finished_at: RECLAIMED_AT + 36 * 60,
+        started_at: RECLAIMED_TASK.started_at,
+        finished_at: RECLAIMED_TASK.finished_at,
         exit_code: 0,
-        run_seconds: 34 * 60,
-        lost_seconds: 11 * 60,
-        wait_seconds: 2 * 60,
+        run_seconds: RECLAIMED_TASK.run_seconds,
+        lost_seconds: RECLAIMED_TASK.lost_seconds,
+        wait_seconds: RECLAIMED_TASK.wait_seconds,
         host: { instance_type: 'c6a.4xlarge', capacity: 'spot', capacity_source: 'instance' },
         executions: [
           {
