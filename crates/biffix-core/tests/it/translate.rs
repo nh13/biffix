@@ -823,6 +823,20 @@ fn an_unknown_engine_kind_is_stored_not_rejected() {
 }
 
 #[test]
+fn an_engine_cannot_post_a_batch_execution_kind() {
+    use translate::EngineEventError;
+    // An execution is an AWS fact: an engine posting one is refused, not stored under its name.
+    for tag in ["batch_execution_started", "batch_execution_ended"] {
+        let forged = serde_json::json!({"kind": tag, "ts": 1.0, "run_id": "r1",
+            "execution_id": "arn:t/1", "started_at": 1.0, "stopped_at": 2.0});
+        match translate::from_engine_value(EventSource::Snakemake, forged) {
+            Err(EngineEventError::NotAnEngineKind(k)) => assert_eq!(k, tag),
+            other => panic!("{tag}: want NotAnEngineKind, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn a_known_engine_kind_is_parsed_strictly() {
     use translate::EngineEventError;
     let ok = serde_json::json!({"schema_version": 1, "ts": 1.0, "run_id": "r1",

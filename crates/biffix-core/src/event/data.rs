@@ -258,6 +258,46 @@ pub enum EventData {
         logs_url: Option<String>,
     },
 
+    // ── batch executions ──
+    // One AWS run of a Batch job on a host (one ECS task). A job Batch retries itself has several
+    // under one `batch_job_id` (the envelope's join key); `run_id`, `task_key` and `attempt` are
+    // unset, so the fold attributes an execution through its job. Facts AWS reported, never
+    // synthesized: an absent field means AWS gave none.
+    /// An execution's container started.
+    BatchExecutionStarted {
+        /// The execution's identity: its ECS task ARN, verbatim.
+        execution_id: String,
+        /// When AWS says this execution started (`startedAt`); also the event's `ts`.
+        started_at: Timestamp,
+        /// The execution's CloudWatch log stream, when AWS named one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        log_stream: Option<String>,
+    },
+    /// An execution stopped. Not a terminal of its task or coordinator: Batch may run the job
+    /// again, and the job's own terminal says how it ended.
+    BatchExecutionEnded {
+        /// The execution's identity: its ECS task ARN, verbatim.
+        execution_id: String,
+        /// When AWS says this execution started; `None` when AWS gave this execution no start (its
+        /// container never started, or the sighting carried no start), so unknown, not zero.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at: Option<Timestamp>,
+        /// When AWS says this execution stopped (`stoppedAt`); also the event's `ts`.
+        stopped_at: Timestamp,
+        /// The container's exit code; `None` when AWS reported none (never a `-1` stand-in).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        /// Batch's account of why the execution stopped (its status reason and container reason).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status_reason: Option<String>,
+        /// The stop reason as a category (a lost host, an out-of-memory kill, …), when one fits.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        termination_category: Option<TerminationCategory>,
+        /// The execution's CloudWatch log stream, when AWS named one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        log_stream: Option<String>,
+    },
+
     /// An unknown kind — preserved verbatim, stored + audited but not folded. The translators
     /// write it as `{"kind": <tag>, "raw": <the wire event>}` ([`EventData::unknown`]), so the
     /// stored kind is never empty and the wire event's own `ts`/`schema_version`/… cannot collide
@@ -345,6 +385,8 @@ impl EventData {
             EventData::BuildStarted { .. } => Kind::BuildStarted,
             EventData::BuildSucceeded { .. } => Kind::BuildSucceeded,
             EventData::BuildFailed { .. } => Kind::BuildFailed,
+            EventData::BatchExecutionStarted { .. } => Kind::BatchExecutionStarted,
+            EventData::BatchExecutionEnded { .. } => Kind::BatchExecutionEnded,
             EventData::Unknown(v) => {
                 let k = v.get("kind").and_then(|k| k.as_str()).unwrap_or("").to_string();
                 Kind::Unknown(k)

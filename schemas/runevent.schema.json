@@ -844,6 +844,105 @@
       ]
     },
     {
+      "description": "An execution's container started.",
+      "type": "object",
+      "properties": {
+        "execution_id": {
+          "description": "The execution's identity: its ECS task ARN, verbatim.",
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "batch_execution_started"
+        },
+        "log_stream": {
+          "description": "The execution's CloudWatch log stream, when AWS named one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "started_at": {
+          "description": "When AWS says this execution started (`startedAt`); also the event's `ts`.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "kind",
+        "execution_id",
+        "started_at"
+      ]
+    },
+    {
+      "description": "An execution stopped. Not a terminal of its task or coordinator: Batch may run the job\nagain, and the job's own terminal says how it ended.",
+      "type": "object",
+      "properties": {
+        "execution_id": {
+          "description": "The execution's identity: its ECS task ARN, verbatim.",
+          "type": "string"
+        },
+        "exit_code": {
+          "description": "The container's exit code; `None` when AWS reported none (never a `-1` stand-in).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "kind": {
+          "type": "string",
+          "const": "batch_execution_ended"
+        },
+        "log_stream": {
+          "description": "The execution's CloudWatch log stream, when AWS named one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "started_at": {
+          "description": "When AWS says this execution started; `None` when AWS gave this execution no start (its\ncontainer never started, or the sighting carried no start), so unknown, not zero.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "status_reason": {
+          "description": "Batch's account of why the execution stopped (its status reason and container reason).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stopped_at": {
+          "description": "When AWS says this execution stopped (`stoppedAt`); also the event's `ts`.",
+          "type": "number",
+          "format": "double"
+        },
+        "termination_category": {
+          "description": "The stop reason as a category (a lost host, an out-of-memory kill, …), when one fits.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "examples": [
+            "spot",
+            "oom",
+            "host_terminated",
+            "app_error",
+            "missing_output"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "execution_id",
+        "stopped_at"
+      ]
+    },
+    {
       "description": "An unknown kind — preserved verbatim, stored + audited but not folded. The translators\nwrite it as `{\"kind\": <tag>, \"raw\": <the wire event>}` ([`EventData::unknown`]), so the\nstored kind is never empty and the wire event's own `ts`/`schema_version`/… cannot collide\nwith the RunEvent envelope's. Being serde's untagged fallback, it also captures a *known*\nkind with a malformed payload (see the module doc and\n[`EventData::is_degraded_known_kind`]).",
       "type": "object",
       "properties": {
@@ -881,7 +980,9 @@
               "build_requested",
               "build_started",
               "build_succeeded",
-              "build_failed"
+              "build_failed",
+              "batch_execution_started",
+              "batch_execution_ended"
             ]
           }
         }

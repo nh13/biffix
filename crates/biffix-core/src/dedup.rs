@@ -39,6 +39,23 @@ pub fn aws_batch(job: &BatchJobId, status: &BatchStatus, prior_attempts: u32) ->
     }
 }
 
+/// One AWS Batch execution's start: `aws-batch-exec:{task_arn}:started`.
+///
+/// An execution (one ECS task) is identified by its task ARN alone, verbatim: not a timestamp,
+/// a log stream or its index in the job's `attempts`, so the live and reconciled sightings of one
+/// execution share a key. The ARN contains `:`, but the prefix and the closed final token
+/// (`started`/`ended`) are fixed, so the key reads back unambiguously; the `aws-batch-exec:`
+/// prefix cannot meet a job's `aws-batch:{job}:…` key ([`aws_batch`]).
+pub fn aws_batch_execution_started(task_arn: &str) -> String {
+    format!("aws-batch-exec:{task_arn}:started")
+}
+
+/// One AWS Batch execution's end: `aws-batch-exec:{task_arn}:ended`. Keyed as
+/// [`aws_batch_execution_started`] is, for the same reasons.
+pub fn aws_batch_execution_ended(task_arn: &str) -> String {
+    format!("aws-batch-exec:{task_arn}:ended")
+}
+
 /// CodeBuild: `aws-codebuild:{build_arn}:{status}`. Like [`aws_batch`], timestamp-independent: a
 /// build passes through each status once, so the pair identifies the fact.
 pub fn aws_codebuild(build_arn: &str, status: &str) -> String {
