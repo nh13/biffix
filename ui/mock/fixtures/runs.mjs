@@ -588,8 +588,11 @@ RUNS.push(
       compute_usd: 12.9,
       ebs_usd: 0.9,
       coordinator_usd: 0.3,
-      winning_usd: 13.8,
+      // Its first alignment's reclaimed execution (fixtures/lab.mjs) is lost, not winning.
+      winning_usd: 13.74,
       priced_jobs: 13,
+      priced_executions: 2,
+      lost_usd: 0.06,
       pending_jobs: 0,
       price_sources: ['on_demand', 'spot_history'],
       by_instance_type: [

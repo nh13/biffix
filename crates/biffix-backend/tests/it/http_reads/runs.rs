@@ -23,6 +23,8 @@ fn run_cost(estimated_usd: f64, priced_jobs: i64, pending_jobs: i64) -> biffix_a
         coordinator_usd: 0.0,
         winning_usd: estimated_usd,
         priced_jobs,
+        priced_executions: 0,
+        lost_usd: 0.0,
         pending_jobs,
         price_sources: vec![],
         by_instance_type: vec![],

@@ -18,6 +18,14 @@ pub struct CostRow {
     /// attempt row is gone (a replay that re-keyed or dropped it): that job still counts in the
     /// run's gross cost, but in neither its coordinator nor its winning cost.
     pub task_key: Option<String>,
+    /// The execution the line prices (`cost_line.execution_id`); `None` for a legacy job-level
+    /// line.
+    pub execution_id: Option<String>,
+    /// The line is its job's last execution's, or a legacy line (the whole job): what the run
+    /// would have cost had AWS Batch not run the job again.
+    pub final_execution: bool,
+    /// The line prices an execution that lost its host (a spot reclaim or a lost host).
+    pub host_lost: bool,
     pub instance_type: String,
     pub lifecycle: Option<String>,
     pub hours: f64,
@@ -55,10 +63,12 @@ impl ListCost {
 }
 
 /// Roll a run's cost lines up into its [`biffix_api::RunCost`]. `final_attempts` are the job ids of
-/// each task's display (final) attempt — the winning cost counts only those (every line of each)
-/// plus the coordinator; `pending_jobs` counts the run's jobs not priced yet that still can be.
-/// `priced_jobs`, and each instance type group's `jobs`, count distinct jobs: a job that ran on two
-/// types is in both groups. `None` when nothing is priced or pending.
+/// each task's display (final) attempt — the winning cost counts only those and the coordinator,
+/// each by its final execution's line (or its legacy line) unless that execution lost its host;
+/// `pending_jobs` counts the run's jobs not priced yet that still can be. `priced_jobs`, and each
+/// instance type group's `jobs`, count distinct jobs: a job that ran on two types is in both
+/// groups; `priced_executions` counts execution lines, and `lost_usd` sums those of executions that
+/// lost their host. `None` when nothing is priced or pending.
 pub(crate) fn run_cost(
     rows: &[CostRow],
     final_attempts: &std::collections::BTreeSet<String>,
@@ -72,16 +82,25 @@ pub(crate) fn run_cost(
         Default::default();
     let mut jobs = std::collections::BTreeSet::new();
     let mut sources = std::collections::BTreeSet::new();
-    let (mut compute, mut ebs, mut coordinator, mut winning) = (0.0, 0.0, 0.0, 0.0);
+    let (mut compute, mut ebs, mut coordinator, mut winning, mut lost) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    let mut executions = 0;
     for row in rows {
         compute += row.compute_usd;
         ebs += row.ebs_usd;
         if row.coordinator {
             coordinator += row.usd();
-            winning += row.usd();
-        } else if final_attempts.contains(&row.batch_job_id) {
+        }
+        // A last execution that lost its host is lost, not what the run would have cost.
+        if row.final_execution
+            && !row.host_lost
+            && (row.coordinator || final_attempts.contains(&row.batch_job_id))
+        {
             winning += row.usd();
         }
+        if row.host_lost {
+            lost += row.usd();
+        }
+        executions += i64::from(row.execution_id.is_some());
         sources.insert(row.price_source.clone());
         jobs.insert(row.batch_job_id.as_str());
         let entry = by_type.entry((row.instance_type.clone(), row.lifecycle.clone())).or_default();
@@ -96,6 +115,8 @@ pub(crate) fn run_cost(
         coordinator_usd: coordinator,
         winning_usd: winning,
         priced_jobs: jobs.len() as i64,
+        priced_executions: executions,
+        lost_usd: lost,
         pending_jobs,
         price_sources: sources.into_iter().collect(),
         by_instance_type: by_type
@@ -168,6 +189,9 @@ mod cost_tests {
             batch_job_id: job.into(),
             coordinator: false,
             task_key: task.map(String::from),
+            execution_id: None,
+            final_execution: true,
+            host_lost: false,
             instance_type: itype.into(),
             lifecycle: Some("spot".into()),
             hours: 1.0,
@@ -192,22 +216,60 @@ mod cost_tests {
     fn a_job_with_several_lines_counts_once_in_jobs_and_in_each_type_group() {
         // Job a1 ran three times (Batch re-ran it after spot reclaims): on a c6a.4xlarge, then
         // twice on a c7i.4xlarge. One line per execution, one job.
+        let execution = |id: &str, itype, usd, last| CostRow {
+            execution_id: Some(id.into()),
+            final_execution: last,
+            host_lost: !last,
+            ..row("a1", Some("align"), itype, usd)
+        };
         let rows = vec![
-            row("a1", Some("align"), "c6a.4xlarge", 1.0),
-            row("a1", Some("align"), "c7i.4xlarge", 2.0),
-            row("a1", Some("align"), "c7i.4xlarge", 0.5),
+            execution("x1", "c6a.4xlarge", 1.0, false),
+            execution("x2", "c7i.4xlarge", 2.0, false),
+            execution("x3", "c7i.4xlarge", 0.5, true),
         ];
         let finals = ["a1".to_string()].into_iter().collect();
         let cost = run_cost(&rows, &finals, 0).unwrap();
-        assert_eq!(cost.priced_jobs, 1);
-        // Every line of the final attempt's job.
-        assert!((cost.winning_usd - 3.5).abs() < 1e-9);
+        assert_eq!((cost.priced_jobs, cost.priced_executions), (1, 3));
+        // The final attempt's last execution; the two before it were lost with their host.
+        assert_eq!((cost.winning_usd, cost.lost_usd), (0.5, 3.0));
+        assert_eq!(cost.estimated_usd, cost.winning_usd + cost.lost_usd);
         let groups: Vec<_> = cost
             .by_instance_type
             .iter()
             .map(|g| (g.instance_type.as_str(), g.jobs, g.hours))
             .collect();
         assert_eq!(groups, [("c6a.4xlarge", 1, 1.0), ("c7i.4xlarge", 1, 2.0)]);
+    }
+
+    #[test]
+    fn a_lost_execution_is_never_winning_even_when_it_was_the_last() {
+        let execution = |job: &str, id: &str, last, lost, usd| CostRow {
+            execution_id: Some(id.into()),
+            final_execution: last,
+            host_lost: lost,
+            ..row(job, Some("align"), "c6a.4xlarge", usd)
+        };
+        let rows = vec![
+            // The coordinator lost a host, then ran to the end.
+            CostRow {
+                execution_id: Some("c1".into()),
+                final_execution: false,
+                host_lost: true,
+                ..coordinator("coord", "m6i.large", 0.25)
+            },
+            CostRow { execution_id: Some("c2".into()), ..coordinator("coord", "m6i.large", 0.5) },
+            // a1's last execution lost its host (Batch is finding another, or gave up).
+            execution("a1", "x1", true, true, 1.0),
+            // b1 is not a final attempt; its line whose execution row a refold removed is
+            // neither final nor lost.
+            execution("b1", "y1", false, false, 2.0),
+        ];
+        let finals = ["a1".to_string()].into_iter().collect();
+        let cost = run_cost(&rows, &finals, 0).unwrap();
+        assert_eq!(cost.coordinator_usd, 0.75);
+        assert_eq!((cost.winning_usd, cost.lost_usd), (0.5, 1.25));
+        assert_eq!(cost.priced_executions, 4);
+        assert!(cost.winning_usd + cost.lost_usd <= cost.estimated_usd);
     }
 
     #[test]
@@ -220,6 +282,8 @@ mod cost_tests {
         ];
         let finals = ["a2".to_string(), "m1".to_string()].into_iter().collect();
         let cost = run_cost(&rows, &finals, 1).unwrap();
+        // Legacy lines only: no executions, nothing lost with a host.
+        assert_eq!((cost.priced_executions, cost.lost_usd), (0, 0.0));
         assert!((cost.estimated_usd - 4.5).abs() < 1e-9);
         assert!((cost.compute_usd + cost.ebs_usd - 4.5).abs() < 1e-9);
         assert!((cost.winning_usd - 3.5).abs() < 1e-9);

@@ -249,13 +249,17 @@ const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
  * `cost` is one the backend's `store::run_cost` can produce: present only with a priced or pending
  * job; the estimate is compute + root volume, every share of it no more than it, and its breakdown
  * by instance type adds up to it (a job Batch ran on two types is in both groups, so the groups'
- * jobs are at least the priced jobs); nothing priced means nothing estimated.
+ * jobs are at least the priced jobs); the cost lost with a host is outside the winning cost and
+ * needs a priced execution; nothing priced means nothing estimated.
  */
 function expectPossibleCost(cost: RunCost, id: string) {
   const { estimated_usd: usd, by_instance_type: types } = cost;
   expect(cost.priced_jobs > 0 || cost.pending_jobs > 0, id).toBe(true);
   expect(near(usd, cost.compute_usd + cost.ebs_usd), `${id}: estimate is compute + ebs`).toBe(true);
   expect(cost.coordinator_usd <= usd + 1e-9 && cost.winning_usd <= usd + 1e-9, id).toBe(true);
+  // What was lost with a host is never part of the winning cost.
+  expect(cost.winning_usd + (cost.lost_usd ?? 0) <= usd + 1e-9, `${id}: winning + lost`).toBe(true);
+  if (!cost.priced_executions) expect(cost.lost_usd ?? 0, `${id}: lost without executions`).toBe(0);
   expect(
     types.reduce((n, t) => n + t.jobs, 0),
     `${id}: breakdown jobs`,

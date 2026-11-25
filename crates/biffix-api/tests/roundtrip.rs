@@ -548,6 +548,8 @@ fn run_list_and_detail_round_trip_minimal() {
             coordinator_usd: 0.5,
             winning_usd: 1.0,
             priced_jobs: 3,
+            priced_executions: 0,
+            lost_usd: 0.0,
             pending_jobs: 1,
             price_sources: vec!["on_demand".into(), "spot_history".into()],
             by_instance_type: vec![CostByInstanceType {
@@ -1159,4 +1161,28 @@ fn minimal_responses_round_trip() {
         updated_at_micros: 0,
         created_by: None,
     });
+}
+
+#[test]
+fn an_older_server_s_cost_without_execution_fields_reads_as_none_priced_or_lost() {
+    let cost = RunCost {
+        estimated_usd: 1.5,
+        compute_usd: 1.25,
+        ebs_usd: 0.25,
+        coordinator_usd: 0.5,
+        winning_usd: 1.0,
+        priced_jobs: 3,
+        priced_executions: 2,
+        lost_usd: 0.25,
+        pending_jobs: 1,
+        price_sources: vec!["spot_history".into()],
+        by_instance_type: vec![],
+    };
+    rt(cost.clone());
+    let mut old = serde_json::to_value(&cost).unwrap();
+    for key in ["priced_executions", "lost_usd"] {
+        assert!(old.as_object_mut().unwrap().remove(key).is_some(), "{key} is sent");
+    }
+    let read: RunCost = serde_json::from_value(old).unwrap();
+    assert_eq!(read, RunCost { priced_executions: 0, lost_usd: 0.0, ..cost });
 }

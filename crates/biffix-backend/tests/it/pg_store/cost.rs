@@ -740,3 +740,41 @@ async fn a_task_cost_without_its_attempt_is_not_the_coordinator_s() {
     assert!(close(cost.coordinator_usd, 0.1), "{cost:?}");
     assert!(close(cost.winning_usd, 0.1), "{cost:?}");
 }
+
+#[tokio::test]
+#[ignore = "requires --features pg + the Postgres harness"]
+async fn a_runs_cost_counts_executions_priced_and_cost_lost_with_a_host() {
+    // align's final attempt a2 ran twice (lost on a reclaimed host, then finished), priced per
+    // execution; its first attempt a1 has only a legacy line; the coordinator's too.
+    let pool = seeded_pool("run_cost_counts_executions_and_lost").await;
+    exec_all(
+        &pool,
+        &[
+            "UPDATE run_projection SET coordinator_job_id = 'coord' WHERE run_id = 'r1'",
+            "UPDATE task_projection SET batch_job_id = 'a2' WHERE run_id = 'r1'",
+            "INSERT INTO attempt_projection (run_id, batch_job_id, task_key, attempt, state) VALUES \
+               ('r1','a1','align:sample=A',1,'failed'), ('r1','a2','align:sample=A',2,'succeeded')",
+            "INSERT INTO execution_projection (run_id, execution_id, batch_job_id, role, task_key, \
+               ordinal, is_final, ended, termination_category) VALUES \
+               ('r1','x1','a2','task','align:sample=A',1,false,true,'spot'), \
+               ('r1','x2','a2','task','align:sample=A',2,true,true,NULL)",
+            "INSERT INTO attempt_cost (run_id, batch_job_id, role, instance_type, lifecycle, hours, \
+               price_per_hour, price_source, compute_usd, ebs_usd) VALUES \
+               ('r1','a1','task','c6a.4xlarge','spot',1,0.25,'spot_history',0.25,0.0625), \
+               ('r1','coord','coordinator','m6i.large','on_demand',1,0.125,'on_demand',0.125,0)",
+            "INSERT INTO execution_cost (run_id, execution_id, batch_job_id, role, instance_type, \
+               lifecycle, hours, price_per_hour, price_source, compute_usd, ebs_usd, instance_id, \
+               started_at, stopped_at) VALUES \
+               ('r1','x1','a2','task','c6a.4xlarge','spot',1,0.5,'spot_history',0.5,0.25,'ci-1',0,1), \
+               ('r1','x2','a2','task','c6a.4xlarge','spot',1,1,'spot_history',1,0.5,'ci-1',2,3)",
+        ],
+    )
+    .await;
+    let store = PgStore::new(pool);
+    let cost = store.get_run(&RunId::new("r1")).await.unwrap().cost.unwrap();
+    assert_eq!((cost.priced_jobs, cost.priced_executions), (3, 2), "{cost:?}");
+    // x1 was lost with its host; the winning cost is a2's last execution plus the coordinator.
+    assert_eq!(cost.lost_usd, 0.75);
+    assert_eq!(cost.winning_usd, 1.5 + 0.125);
+    assert_eq!(cost.estimated_usd, 0.3125 + 0.125 + 0.75 + 1.5);
+}

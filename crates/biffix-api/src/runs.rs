@@ -623,17 +623,35 @@ pub struct JobCost {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RunCost {
-    /// Every priced job — all task attempts (retries and spot-lost ones too) and the coordinator.
+    /// Every priced job — all task attempts (engine retries too), each execution AWS Batch ran
+    /// (including ones lost with their host), and the coordinator.
     pub estimated_usd: f64,
     pub compute_usd: f64,
     pub ebs_usd: f64,
     /// The coordinator's share of `estimated_usd`.
     pub coordinator_usd: f64,
-    /// Only each task's final attempt, plus the coordinator: what the run would have cost without
-    /// retries.
+    /// Only each task's final attempt, plus the coordinator, each by its last execution (or, for a
+    /// job priced before executions were, the whole job), unless that execution lost its host
+    /// (then the job adds nothing; it is in `lost_usd`): what the run would have cost without
+    /// retries, the engine's or AWS Batch's.
     pub winning_usd: f64,
+    /// Jobs with a cost line. A job AWS Batch ran more than once counts once, and counts here
+    /// while some of its executions are still pending, so it can be in both counts.
     pub priced_jobs: i64,
-    /// Jobs not priced yet (still running, or priced on the next reconcile tick).
+    /// Execution lines priced (each time AWS Batch ran a job on a host, priced on that host). A
+    /// job priced before executions were has one line for the whole job, not counted here. An
+    /// execution AWS reported only the end of has no run time, so it is neither priced nor
+    /// pending.
+    #[serde(default)]
+    pub priced_executions: i64,
+    /// The part of `estimated_usd` spent on executions that lost their host (a spot reclaim or a
+    /// lost host): work AWS Batch ran again, or, for a job whose last execution lost its host
+    /// (Batch has yet to run it again, or gave up), work that was lost. Never part of
+    /// `winning_usd`.
+    #[serde(default)]
+    pub lost_usd: f64,
+    /// Jobs not priced yet, in whole or in part (still running, or priced on the next reconcile
+    /// tick).
     pub pending_jobs: i64,
     /// The distinct price sources behind the estimate (see [`JobCost::price_source`]).
     pub price_sources: Vec<String>,
@@ -656,6 +674,7 @@ pub struct CostByInstanceType {
     pub instance_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<String>,
+    /// Distinct jobs with a line in this group: a job AWS Batch ran on two types is in both.
     pub jobs: i64,
     pub hours: f64,
     pub usd: f64,

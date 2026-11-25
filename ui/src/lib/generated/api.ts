@@ -1590,7 +1590,10 @@ export interface components {
       /** Format: double */
       hours: number;
       instance_type: string;
-      /** Format: int64 */
+      /**
+       * Format: int64
+       * @description Distinct jobs with a line in this group: a job AWS Batch ran on two types is in both.
+       */
       jobs: number;
       lifecycle?: string | null;
       /** Format: double */
@@ -2772,22 +2775,46 @@ export interface components {
       ebs_usd: number;
       /**
        * Format: double
-       * @description Every priced job — all task attempts (retries and spot-lost ones too) and the coordinator.
+       * @description Every priced job — all task attempts (engine retries too), each execution AWS Batch ran
+       *     (including ones lost with their host), and the coordinator.
        */
       estimated_usd: number;
       /**
+       * Format: double
+       * @description The part of `estimated_usd` spent on executions that lost their host (a spot reclaim or a
+       *     lost host): work AWS Batch ran again, or, for a job whose last execution lost its host
+       *     (Batch has yet to run it again, or gave up), work that was lost. Never part of
+       *     `winning_usd`.
+       */
+      lost_usd?: number;
+      /**
        * Format: int64
-       * @description Jobs not priced yet (still running, or priced on the next reconcile tick).
+       * @description Jobs not priced yet, in whole or in part (still running, or priced on the next reconcile
+       *     tick).
        */
       pending_jobs: number;
       /** @description The distinct price sources behind the estimate (see [`JobCost::price_source`]). */
       price_sources: string[];
-      /** Format: int64 */
+      /**
+       * Format: int64
+       * @description Execution lines priced (each time AWS Batch ran a job on a host, priced on that host). A
+       *     job priced before executions were has one line for the whole job, not counted here. An
+       *     execution AWS reported only the end of has no run time, so it is neither priced nor
+       *     pending.
+       */
+      priced_executions?: number;
+      /**
+       * Format: int64
+       * @description Jobs with a cost line. A job AWS Batch ran more than once counts once, and counts here
+       *     while some of its executions are still pending, so it can be in both counts.
+       */
       priced_jobs: number;
       /**
        * Format: double
-       * @description Only each task's final attempt, plus the coordinator: what the run would have cost without
-       *     retries.
+       * @description Only each task's final attempt, plus the coordinator, each by its last execution (or, for a
+       *     job priced before executions were, the whole job), unless that execution lost its host
+       *     (then the job adds nothing; it is in `lost_usd`): what the run would have cost without
+       *     retries, the engine's or AWS Batch's.
        */
       winning_usd: number;
     };
