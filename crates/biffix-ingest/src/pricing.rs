@@ -3,7 +3,8 @@
 //! without AWS; the reconcile Lambda gathers the inputs (host facts, spot price history, the
 //! queue's volume spec, and its region's list prices: the checked-in table for
 //! [`PRICE_TABLE_REGION`], the AWS Pricing API's price list elsewhere, read through
-//! [`on_demand_hourly`] and [`gp3_prices`]) and stores the result in `attempt_cost`.
+//! [`on_demand_hourly`] and [`gp3_prices`]) and stores the result in `execution_cost` (an
+//! execution) or `attempt_cost` (a job priced the legacy way, over its span).
 //!
 //! It is an estimate, not the bill: it prices the job's own run time (not host boot/idle), assumes
 //! one job per instance, and ignores Savings Plans and credits. Same-region S3 traffic is free and
@@ -176,7 +177,9 @@ impl PriceSource {
     }
 }
 
-/// Why a job can never be priced; recorded (`unpriceable_job.reason`) so it leaves the queue.
+/// Why an execution or a job can never be priced; recorded (`unpriceable_execution.reason`,
+/// `unpriceable_job.reason`) so it leaves the queue. (An execution with no start is recorded as
+/// `biffix_db::rules::START_UNKNOWN`, which does not take it out of the queue.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unpriceable {
     /// The job has no positive run time.
@@ -335,8 +338,9 @@ pub struct PricingInputs {
 }
 
 /// Whether to leave a job unpriced this tick because an input that is only transiently missing
-/// may still arrive: a cost is written once, so pricing now would make an on-demand fallback
-/// permanent. A job about to leave the pricing window is priced with the fallback instead of never.
+/// may still arrive: a cost is re-priced only when the fold changes the job's own host or run
+/// time, so pricing now would make an on-demand fallback permanent. A job about to leave the
+/// pricing window is priced with the fallback instead of never.
 pub fn defer_pricing(inputs: PricingInputs) -> bool {
     if inputs.leaving_window {
         return false;

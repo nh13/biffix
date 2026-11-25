@@ -64,8 +64,8 @@ pub struct ReconcileConfig {
     pub deploy_region: Option<String>,
     /// Per Batch queue: its configured capacity and root volume, for pricing
     /// (`BIFFIX_QUEUE_PRICING`; empty when unset). A value that is not such a JSON object fails the
-    /// cold start: a cost is written once, so pricing every job without its queue's volume and
-    /// capacity would be wrong for good.
+    /// cold start: a cost is never re-priced for a configuration change, so pricing every job
+    /// without its queue's volume and capacity would be wrong for good.
     pub queue_pricing: BTreeMap<String, QueuePricing>,
     /// Days after a run ends that its intermediate files are deleted (`BIFFIX_RETENTION_DAYS`, at
     /// most `u32::MAX`, as the backend reads it for the launch form); `None` keeps them forever.
@@ -294,7 +294,8 @@ mod tests {
     }
 
     /// A malformed value would price every job without its queue's volume or capacity, and a cost
-    /// is written once, so it fails the cold start like the backend's `BIFFIX_QUEUE_CAPACITIES`.
+    /// is never re-priced for a configuration change, so it fails the cold start like the backend's
+    /// `BIFFIX_QUEUE_CAPACITIES`.
     #[test]
     fn malformed_queue_pricing_fails_the_cold_start() {
         for value in [

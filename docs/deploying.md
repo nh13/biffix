@@ -294,6 +294,15 @@ first use the database (so a paused database does not hold up sign-in). A new co
 image is picked up by the backend sweep within a few minutes, which rebuilds the engine runtimes
 registered versions use; runs keep launching on the previous image until then.
 
+Across the upgrade to the release that prices each execution on its own host, a job's cost can
+read as pending for a few minutes. A deploy updates the ingest stack before the api stack, and from
+then on the reconcile Lambda prices a job that ran on a known host per execution, in lines the
+previous backend does not read. Until the api stack updates, later in the same deploy, that backend
+counts such a job as pending and leaves it out of run, task and usage costs. If the api stack's
+update fails and rolls back, this lasts until a deploy completes. Rolling back to an earlier
+release prices these jobs again the earlier way, for those that finished within its pricing window
+(85 days).
+
 Upgrading can change the engine pins (the Snakemake or Nextflow releases and plugin versions
 biffix builds runtimes from). Existing versions keep the runtime they recorded, except across the
 upgrade to the release where the backend registers task job definitions (below): a runtime from
@@ -480,7 +489,7 @@ sample" until the top of the hour.
   redeploy but before the reconcile Lambda has asked about it gets its start back later: the
   reconcile Lambda asks once more about each finished job submitted in the last 7 days whose log
   lacks its start, and it is priced then. A job priced before the redeploy has no root-volume cost
-  (its queue's volume was not known), and a cost is written once.
+  (its queue's volume was not known), and a redeploy does not re-price it.
 - **Events stop arriving.** Operational alarms (dead-letter queue, ingest lag, reconcile stopped,
   API errors, a failing sweep) email `alert_email` and the recipients added under Settings.
 

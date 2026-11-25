@@ -1,4 +1,5 @@
-//! The pricing step: estimate the cost of every finished job whose host is known.
+//! The pricing step: estimate the cost of every finished execution, and of every finished job
+//! priced the legacy way, whose host is known.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,7 +16,9 @@ use crate::pricing::{
     price_job, spot_history_windows, Gp3Prices, HistoryLookup, JobHost, PricingInputs, SpotHistory,
     Unpriceable, DEFER_UNTIL_WINDOW_END, PRICE_TABLE_REGION,
 };
-use crate::store::pricing::{unpriced_jobs, JobRole, UnpricedJob};
+use crate::store::pricing::{
+    mark_start_unknown_executions, unpriced_executions, unpriced_jobs, JobRole, UnpricedJob,
+};
 
 /// The region whose endpoint serves the AWS Pricing API (it answers for every region).
 const PRICING_API_REGION: &str = "us-east-1";
@@ -41,10 +44,20 @@ pub(super) struct PriceBook {
 /// Jobs fetched per page of the pricing queue.
 const PRICING_BATCH: i64 = 500;
 
-/// Pages of each role's pricing queue one tick works through. A page whose jobs are all left for a
-/// later tick (their spot history could not be read) is paged past, so they hold back newer jobs
-/// only once a role has this many pages of them; a backlog drains over ticks.
+/// Pages of each pricing queue (the executions, and each role's legacy jobs) one tick works
+/// through. A page whose jobs are all left for a later tick (their spot history could not be read)
+/// is paged past, so they hold back newer jobs only once a queue has this many pages of them; a
+/// backlog drains over ticks.
 const PRICING_PAGES_PER_TICK: usize = 10;
+
+/// A pricing queue the tick pages through.
+#[derive(Clone, Copy)]
+enum Queue {
+    /// One role's jobs priced the legacy way, over their span.
+    Legacy(JobRole),
+    /// The executions, each on its own host.
+    Executions,
+}
 
 /// A spot price history's key: (instance type, AZ).
 type SpotKey = (String, String);
@@ -71,13 +84,15 @@ struct PricingClock {
     resolvable_since: i64,
 }
 
-/// Price every finished job (task attempt or coordinator) whose host is known and that has no cost
-/// yet, a page of each role's oldest-first queue at a time while the invocation has time left
-/// (`deadline`). Spot jobs are priced from EC2's spot price history for their type and AZ, fetched
-/// once per (type, AZ) per page over the union of that group's windows. A job whose inputs are only
-/// transiently missing is left for a later tick ([`crate::pricing::defer_pricing`]) and paged past,
-/// and one that can never be priced is recorded as such, so it leaves the queue. Returns how many
-/// were priced.
+/// Price every finished execution, and every finished job (task attempt or coordinator) priced the
+/// legacy way, whose host is known and that has no cost yet, a page of each queue (each role's
+/// legacy jobs, then the executions) oldest first at a time while the invocation has time left
+/// (`deadline`). An ended execution with no start is first recorded as such
+/// ([`START_UNKNOWN`](biffix_db::rules::START_UNKNOWN)). Spot jobs are priced from EC2's spot price
+/// history for their type and AZ, fetched once per (type, AZ) per page over the union of that
+/// group's windows. A job whose inputs are only transiently missing is left for a later tick
+/// ([`crate::pricing::defer_pricing`]) and paged past, and one that can never be priced is recorded
+/// as such, so it leaves the queue. Returns how many were priced.
 pub(super) async fn price_finished_jobs(state: &State, deadline: Deadline) -> Result<usize, Error> {
     let now = since_epoch();
     let since = micros_before(now, PRICING_WINDOW);
@@ -86,15 +101,27 @@ pub(super) async fn price_finished_jobs(state: &State, deadline: Deadline) -> Re
         resolvable_since: micros_before(now, HOST_LIFECYCLE_WINDOW),
     };
     let mut tick = PricingTick::default();
-    for role in [JobRole::Task, JobRole::Coordinator] {
+    match mark_start_unknown_executions(&state.pool, since).await {
+        Ok(marked) => tick.unpriceable += marked as usize,
+        Err(error) => note(&mut tick.first_error, error.into()),
+    }
+    for queue in
+        [Queue::Legacy(JobRole::Task), Queue::Legacy(JobRole::Coordinator), Queue::Executions]
+    {
         let mut after: Option<UnpricedJob> = None;
         for _ in 0..PRICING_PAGES_PER_TICK {
             if !deadline.allows_another(since_epoch()) {
                 break;
             }
-            let jobs = match unpriced_jobs(&state.pool, role, since, after.as_ref(), PRICING_BATCH)
-                .await
-            {
+            let page = match queue {
+                Queue::Legacy(role) => {
+                    unpriced_jobs(&state.pool, role, since, after.as_ref(), PRICING_BATCH).await
+                }
+                Queue::Executions => {
+                    unpriced_executions(&state.pool, since, after.as_ref(), PRICING_BATCH).await
+                }
+            };
+            let jobs = match page {
                 Ok(jobs) => jobs,
                 Err(error) => {
                     note(&mut tick.first_error, error.into());
@@ -232,6 +259,7 @@ async fn price_page(
             Err(reason) => {
                 tracing::warn!(
                     batch_job_id = job.batch_job_id,
+                    execution_id = job.execution_id,
                     instance_type = job.instance_type,
                     availability_zone = job.availability_zone,
                     reason = reason.as_str(),
