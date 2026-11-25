@@ -32,6 +32,18 @@ fn engine_discriminator_distinguishes_repeatable_facts() {
 }
 
 #[test]
+fn batch_execution_keys_name_the_task_arn_and_the_edge() {
+    const T1: &str = "arn:aws:ecs:us-east-1:123456789012:task/AWSBatch-c/t1";
+    let started = dedup::aws_batch_execution_started(T1);
+    let ended = dedup::aws_batch_execution_ended(T1);
+    assert_eq!(started, format!("aws-batch-exec:{T1}:started"));
+    assert_eq!(ended, format!("aws-batch-exec:{T1}:ended"));
+    // A distinct prefix: an execution key never meets a job's `aws-batch:{job}:…` key.
+    assert!(!started.starts_with("aws-batch:"));
+    assert!(!ended.starts_with("aws-batch:"));
+}
+
+#[test]
 fn aws_batch_key_uses_wire_status_not_debug() {
     let key = dedup::aws_batch(&BatchJobId::new("job-1"), &BatchStatus::Failed, 0);
     assert_eq!(key, "aws-batch:job-1:FAILED", "the AWS wire form, not Rust Debug");

@@ -1,7 +1,9 @@
 //! Per-source translators: wire event → normalized [`RunEvent`].
 //!
-//! Deliberately dumb: one wire event → one RunEvent, no status/retry/cost decisions (those are
-//! projections). The AWS translator here is the exact mapping the ingest Lambda uses.
+//! Deliberately dumb: one wire event → one RunEvent per translator call, no status/retry/cost
+//! decisions (those are projections). The AWS translator here is the exact mapping the ingest
+//! Lambda uses. A Batch job state change also yields its executions' events, which
+//! [`crate::eventbridge::execution`] builds, not a translator here.
 //!
 //! A wire value this build does not know (a new Batch/CodeBuild status, EC2 event kind or engine
 //! kind) is not dropped: it becomes an [`EventData::Unknown`] built by [`EventData::unknown`] —

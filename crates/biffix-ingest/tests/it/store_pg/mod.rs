@@ -26,6 +26,7 @@ use common::append;
 
 mod attempts;
 mod builds;
+mod executions;
 mod experiments;
 mod fold;
 mod hosts;

@@ -17,6 +17,8 @@ use crate::wire::aws_batch::{AwsBatchEvent, BatchStatus};
 use crate::wire::aws_codebuild::{CodeBuildEvent, CodeBuildStatus, SUBJECT_VARIABLE};
 use crate::wire::aws_ec2::{Ec2Event, Ec2EventKind};
 
+use super::execution::{execution_events, BatchJobSnapshot, ExecutionFacts};
+
 /// Why an event `route` matched by its `source` and `detail-type` could not be decoded.
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
@@ -50,16 +52,17 @@ pub struct QueueContext {
     pub coordinator_queues: Vec<String>,
 }
 
-/// A Batch job queue's name from its ARN (`arn:aws:batch:…:job-queue/<name>`); a bare name is
-/// returned unchanged.
-pub fn queue_name(queue_arn: &str) -> &str {
-    queue_arn.rsplit([':', '/']).next().unwrap_or(queue_arn)
+// Defined beside the execution builder, which needs them too, and kept at these paths.
+pub use super::arn::{container_instance_id, queue_name};
+
+/// A string field of a JSON object, when present and a string.
+fn str_field<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value.get(key)?.as_str()
 }
 
-/// The container-instance id in a `containerInstanceArn`: its last `/` segment (the whole string
-/// when it has none). Batch job events and ECS host facts are keyed by it, so they join.
-pub fn container_instance_id(container_instance_arn: &str) -> &str {
-    container_instance_arn.rsplit('/').next().unwrap_or(container_instance_arn)
+/// An integer field of a JSON object, when present and an integer that fits an `i64`.
+fn i64_field(value: &serde_json::Value, key: &str) -> Option<i64> {
+    value.get(key)?.as_i64()
 }
 
 impl QueueContext {
@@ -72,30 +75,33 @@ impl QueueContext {
     }
 }
 
-fn parse_status(s: &str) -> BatchStatus {
-    // Single-source the string→status mapping through BatchStatus's own `Deserialize`
-    // (SCREAMING_SNAKE_CASE + untagged `Unknown` fallback) rather than a parallel hand-rolled
-    // table a new variant could silently desync from. The untagged arm makes this infallible.
-    use serde::de::value::{Error, StrDeserializer};
-    serde::Deserialize::deserialize(StrDeserializer::<Error>::new(s))
-        .unwrap_or_else(|_| BatchStatus::Unknown(s.to_string()))
-}
-
-/// Decode an EventBridge "Batch Job State Change" event (the whole envelope) → RunEvent.
+/// Decode an EventBridge "Batch Job State Change" event (the whole envelope) into its RunEvents:
+/// first the job-level event (the job's status change), then the events of the executions its
+/// `detail` reports ([`execution_events`] of [`batch_snapshot`]), in that builder's order.
+///
+/// It fails only as the job-level event does. Executions are extra facts read leniently from
+/// the same `detail`: one that is thin or oddly shaped yields fewer events, or none, and never
+/// makes decoding fail, so it cannot cost the job its status change here. (Appending is another
+/// matter: the drain returns the whole SQS record when Postgres rejects any one of its events.)
 pub fn decode_batch(
     event: &serde_json::Value,
     ctx: &QueueContext,
-) -> Result<RunEvent, DecodeError> {
+) -> Result<Vec<RunEvent>, DecodeError> {
+    let mut events = vec![batch_job_event(event, ctx)?];
+    if let Some(snapshot) = detail_of(event).ok().and_then(batch_snapshot) {
+        events.extend(execution_events(&snapshot));
+    }
+    Ok(events)
+}
+
+/// The job-level event of a "Batch Job State Change" event: the job's status change.
+fn batch_job_event(event: &serde_json::Value, ctx: &QueueContext) -> Result<RunEvent, DecodeError> {
     let detail = detail_of(event)?;
-    let job_id = detail
-        .get("jobId")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| DecodeError::Malformed("missing jobId".into()))?;
-    let status = detail
-        .get("status")
-        .and_then(|v| v.as_str())
+    let job_id =
+        str_field(detail, "jobId").ok_or_else(|| DecodeError::Malformed("missing jobId".into()))?;
+    let status = str_field(detail, "status")
         .ok_or_else(|| DecodeError::Malformed("missing status".into()))?;
-    let queue = detail.get("jobQueue").and_then(|v| v.as_str()).unwrap_or("");
+    let queue = str_field(detail, "jobQueue").unwrap_or("");
 
     // The event's source time: Batch's own status timestamp when present, else the envelope `time`
     // as a strict fallback (never a fabricated epoch zero). This feeds the fold's source-time
@@ -103,9 +109,9 @@ pub fn decode_batch(
     // `(job, status)` alone (see `dedup::aws_batch`), so a missing `stoppedAt` here can no longer
     // desync the live and reconciled terminal into two keys.
     let status_ts_millis = match status {
-        "SUCCEEDED" | "FAILED" => detail.get("stoppedAt").and_then(serde_json::Value::as_i64),
-        "STARTING" | "RUNNING" => detail.get("startedAt").and_then(serde_json::Value::as_i64),
-        _ => detail.get("createdAt").and_then(serde_json::Value::as_i64),
+        "SUCCEEDED" | "FAILED" => i64_field(detail, "stoppedAt"),
+        "STARTING" | "RUNNING" => i64_field(detail, "startedAt"),
+        _ => i64_field(detail, "createdAt"),
     };
     let ts = status_ts_millis
         .map(Timestamp::from_epoch_millis)
@@ -118,21 +124,20 @@ pub fn decode_batch(
 
     let container = detail.get("container");
     let exit_code = container
-        .and_then(|c| c.get("exitCode"))
-        .and_then(serde_json::Value::as_i64)
-        .map(|n| n as i32);
-    let log_stream =
-        container.and_then(|c| c.get("logStreamName")).and_then(|v| v.as_str()).map(String::from);
+        .and_then(|c| i64_field(c, "exitCode"))
+        // As the execution snapshot reads it: a code that does not fit an `i32` is no exit code,
+        // so a job event and its execution's end never disagree on it.
+        .and_then(|n| i32::try_from(n).ok());
+    let log_stream = container.and_then(|c| str_field(c, "logStreamName")).map(String::from);
     let status_reason = translate::batch_reason(
-        detail.get("statusReason").and_then(|v| v.as_str()),
-        container.and_then(|c| c.get("reason")).and_then(|v| v.as_str()),
+        str_field(detail, "statusReason"),
+        container.and_then(|c| str_field(c, "reason")),
     );
     // The Batch event has no raw EC2 instance id; the container-instance ARN is the only host
     // identifier it carries. Keep just the id (the ARN's last segment) — enough to identify/group
     // by host in the UI without an ECS DescribeContainerInstances round-trip in the hot path.
     let instance_id = container
-        .and_then(|c| c.get("containerInstanceArn"))
-        .and_then(|v| v.as_str())
+        .and_then(|c| str_field(c, "containerInstanceArn"))
         .map(|arn| InstanceId::new(container_instance_id(arn)));
 
     let requested = requested_resources_from_json(container);
@@ -140,7 +145,7 @@ pub fn decode_batch(
     let wire = AwsBatchEvent {
         ts,
         batch_job_id: BatchJobId::new(job_id),
-        status: parse_status(status),
+        status: BatchStatus::from_wire(status),
         exit_code,
         status_reason,
         log_stream,
@@ -157,6 +162,50 @@ pub fn decode_batch(
         requested_memory_mib: requested.memory_mib,
     };
     Ok(translate::from_aws_batch(&wire))
+}
+
+/// A Batch job's `detail` (an EventBridge "Batch Job State Change" event's, which has the shape
+/// `DescribeJobs` returns) as the snapshot
+/// [`execution_events`] builds its execution events from.
+/// `None` when it names no `jobId` or no `status`; otherwise it never fails: a missing or
+/// ill-typed field is absent, and an `attempts[]` element that is no object is an entry with
+/// nothing in it.
+///
+/// It stores what AWS sent (an empty ARN, a zero time) and leaves what that means to the builder,
+/// so this reader and the `DescribeJobs` one cannot normalize a job differently.
+pub fn batch_snapshot(detail: &serde_json::Value) -> Option<BatchJobSnapshot> {
+    let text = |value: &serde_json::Value, key: &str| str_field(value, key).map(String::from);
+    let integer = i64_field;
+    // The fields of a `container` block, the same in the job's and in each `attempts[]` entry's.
+    let container = |parent: &serde_json::Value| {
+        let container = parent.get("container").unwrap_or(&serde_json::Value::Null);
+        ExecutionFacts {
+            task_arn: text(container, "taskArn"),
+            container_instance_arn: text(container, "containerInstanceArn"),
+            log_stream: text(container, "logStreamName"),
+            exit_code: integer(container, "exitCode").and_then(|code| i32::try_from(code).ok()),
+            container_reason: text(container, "reason"),
+            ..ExecutionFacts::default()
+        }
+    };
+    let attempts = detail.get("attempts").and_then(|a| a.as_array()).into_iter().flatten();
+    Some(BatchJobSnapshot {
+        batch_job_id: text(detail, "jobId")?,
+        status: BatchStatus::from_wire(detail.get("status")?.as_str()?),
+        queue: text(detail, "jobQueue"),
+        started_at_millis: integer(detail, "startedAt"),
+        stopped_at_millis: integer(detail, "stoppedAt"),
+        status_reason: text(detail, "statusReason"),
+        current: container(detail),
+        attempts: attempts
+            .map(|entry| ExecutionFacts {
+                status_reason: text(entry, "statusReason"),
+                started_at_millis: integer(entry, "startedAt"),
+                stopped_at_millis: integer(entry, "stoppedAt"),
+                ..container(entry)
+            })
+            .collect(),
+    })
 }
 
 /// The resources a Batch job asked for (not what its host has): vCPUs and memory in MiB.

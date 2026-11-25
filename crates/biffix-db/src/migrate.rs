@@ -64,6 +64,11 @@ mod tests {
             "25425c1c56705dfec54cc1a86efbef2ab613d1437daea358e01a05b87eee67d3\
              af0a04e4381f88eff7f861e9c969f627",
         ),
+        (
+            6,
+            "8a64b41177b631a817edc60ff3efb6b7bcaff9f7bfe30eb31a4cd56ebb67a07c\
+             cab2035462edb4e8f046603242555764",
+        ),
     ];
 
     #[test]

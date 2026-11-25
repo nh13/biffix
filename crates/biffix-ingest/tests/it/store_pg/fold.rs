@@ -111,7 +111,10 @@ async fn incremental_advance_equals_full_replay_across_chunks() {
     // still running until a coordinator failure terminates the run (the task is stranded); r3's
     // task is bound in chunk 1 and ended by a run_id-less terminal in chunk 2; r4's terminal
     // precedes its own binding within chunk 2; r5 is cancelled with its task still running, so
-    // the task reads cancelled.
+    // the task reads cancelled. r1's task job ran as two executions, the first lost with its host
+    // and the second ending in chunk 2, and its coordinator job has an execution still running.
+    let execution = biffix_core::testing::execution_task_arn;
+    let host_lost = Some(biffix_core::event::TerminationCategory::HostTerminated);
     let chunk1 = vec![
         submitted(1.0, "r1-sub", "r1"),
         biffix_core::event::coordinator_submitted(
@@ -122,6 +125,8 @@ async fn incremental_advance_equals_full_replay_across_chunks() {
         task_submitted(3.0, "r1-tsub", "r1", "tA", "job-1"),
         batch(4.0, "job-1", "r1-tok", succeeded()),
         batch(5.0, "coord-1", "r1-cok", EventData::CoordinatorSucceeded { log_stream: None }),
+        biffix_core::testing::execution_started("coord-1", &execution(3), 2.5),
+        biffix_core::testing::execution_ended("job-1", &execution(1), Some(3.2), 3.5, host_lost),
         submitted(1.0, "r2-sub", "r2"),
         task_submitted(3.0, "r2-tsub", "r2", "tB", "job-2"),
         batch(
@@ -155,6 +160,7 @@ async fn incremental_advance_equals_full_replay_across_chunks() {
             },
         ),
         batch(7.0, "job-3", "r3-tfail", failed(2)),
+        biffix_core::testing::execution_ended("job-1", &execution(2), Some(3.75), 4.0, None),
         run_ev(
             6.0,
             EventSource::BiffixControlPlane,
@@ -347,6 +353,19 @@ async fn incremental_advance_equals_full_replay_across_chunks() {
     // run fold writes.
     let before = projection_snapshot(&pool).await;
     assert!(!before["attempt_projection"].is_empty());
+    // The executions too, under a task and under a coordinator, with their attempt's durations:
+    // the comparison below is of real rows.
+    let execution_roles: std::collections::BTreeSet<&str> =
+        before["execution_projection"].iter().filter_map(|row| row["role"].as_str()).collect();
+    assert_eq!(before["execution_projection"].len(), 3);
+    assert_eq!(execution_roles, ["coordinator", "task"].into());
+    let retried = before["attempt_projection"]
+        .iter()
+        .find(|row| row["batch_job_id"] == "job-1")
+        .expect("job-1's attempt row");
+    for column in ["run_micros", "lost_micros", "wait_micros"] {
+        assert!(retried[column].as_i64().is_some_and(|micros| micros > 0), "{column}");
+    }
     let page = refold_runs(&pool, None, 100).await.unwrap();
     assert_eq!(page.refolded, 5);
     assert_eq!(projection_snapshot(&pool).await, before, "incremental == full refold");
@@ -358,9 +377,14 @@ async fn projection_snapshot(
     pool: &sqlx::PgPool,
 ) -> std::collections::BTreeMap<&'static str, Vec<serde_json::Value>> {
     let mut snapshot = std::collections::BTreeMap::new();
-    for table in
-        ["run_projection", "task_projection", "attempt_projection", "run_output", "notifications"]
-    {
+    for table in [
+        "run_projection",
+        "task_projection",
+        "attempt_projection",
+        "execution_projection",
+        "run_output",
+        "notifications",
+    ] {
         let rows: Vec<serde_json::Value> = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT to_jsonb(t) - 'updated_at' FROM {table} t ORDER BY (to_jsonb(t) - 'updated_at')::text"
         )))
@@ -536,6 +560,9 @@ async fn a_run_the_fold_no_longer_produces_loses_its_rows() {
         "INSERT INTO task_projection (run_id, task_key, state) VALUES ('ghost', 't', 'failed')",
         "INSERT INTO attempt_projection (run_id, batch_job_id, task_key, state) \
          VALUES ('ghost', 'job-1', 't', 'failed')",
+        "INSERT INTO execution_projection \
+           (run_id, execution_id, batch_job_id, role, ordinal, is_final, ended) \
+         VALUES ('ghost', 'x1', 'job-1', 'task', 1, true, true)",
         "INSERT INTO run_output (run_id, s3_uri, id, role) \
          VALUES ('ghost', 's3://b/o', 'o1', 'output')",
         "INSERT INTO notifications (id, user_sub, run_id, kind, at) \
@@ -563,9 +590,14 @@ async fn a_run_the_fold_no_longer_produces_loses_its_rows() {
             .unwrap()
         }
     };
-    for table in
-        ["run_projection", "task_projection", "attempt_projection", "run_output", "notifications"]
-    {
+    for table in [
+        "run_projection",
+        "task_projection",
+        "attempt_projection",
+        "execution_projection",
+        "run_output",
+        "notifications",
+    ] {
         assert_eq!(count(table).await, 0, "{table}");
     }
     let reads: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notification_reads")

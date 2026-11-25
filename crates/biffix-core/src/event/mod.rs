@@ -1,8 +1,10 @@
 //! The normalized **RunEvent** — the log + fold contract.
 //!
-//! Every wire event translates into exactly one RunEvent (see [`crate::translate`]). The log
-//! stores RunEvents; the reducers fold them. The reducer sees one vocabulary of [`Kind`],
-//! never the per-source wire vocabularies ([`crate::wire`]).
+//! Each translator call turns one wire event into exactly one RunEvent (see [`crate::translate`]);
+//! a Batch job state change also yields an event per execution it reports (see
+//! [`crate::eventbridge::execution`]). The log stores RunEvents; the reducers fold them. The
+//! reducer sees one vocabulary of [`Kind`], never the per-source wire vocabularies
+//! ([`crate::wire`]).
 //!
 //! The `data` payload is a **typed enum keyed by kind**, so each kind's required fields are
 //! compile-time-enforced, with an [`EventData::Unknown`] escape hatch that preserves unknown kinds
@@ -50,7 +52,10 @@ pub use control_plane::{
     FAILURE_STAGE_IMAGE_PREPARATION, FAILURE_STAGE_LAUNCH,
 };
 pub use data::EventData;
-pub use kind::{Kind, BATCH_JOB_START_KINDS, COORDINATOR_TERMINAL_KINDS, TASK_TERMINAL_KINDS};
+pub use kind::{
+    Kind, BATCH_EXECUTION_KINDS, BATCH_JOB_PRE_TERMINAL_KINDS, BATCH_JOB_START_KINDS,
+    COORDINATOR_TERMINAL_KINDS, TASK_TERMINAL_KINDS,
+};
 pub use payload::{Dag, DagEdge, DagNode, OutputRef, OutputRole, TaskVerdict, TerminationCategory};
 pub use samples::{ReusedSample, SampleHint, SampleSpec, StepScope};
 

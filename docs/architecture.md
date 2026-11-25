@@ -47,13 +47,17 @@ Three kinds of producer append to the log:
   renamed, moved into an experiment. The reconcile Lambda's retention sweep reports a deleted work
   directory the same way, through the ingest queue.
 
-The ingest Lambda drains the SQS queue, translates each source's wire format into a `RunEvent`,
-drops duplicates by `dedup_key`, appends, and advances the projections. A scheduled reconcile
-Lambda is the backstop: it asks AWS about jobs whose terminal event has not arrived (and the
-still-live children of ended runs), and records their terminal and, when the log lacks it, their
-start. A known limit: a job whose terminal arrived but whose start was lost is not asked about
-again, so its start is not repaired. The Lambda also refreshes prices, runs the status probe, and
-deletes intermediate files whose retention has passed.
+The ingest Lambda drains the SQS queue, translates each source's wire format into `RunEvent`s (a
+Batch job state change yields the job's event and its executions', appended together), drops
+duplicates by `dedup_key`, appends, and advances the projections. A scheduled reconcile Lambda is
+the backstop: it asks AWS about jobs whose terminal event has not arrived (and the still-live
+children of ended runs), and records their terminal and, when the log lacks them, their starts (one
+per execution) and their executions (each run of the job on a host: AWS Batch re-runs a job under
+the same id when it loses the host). It also asks about each job that finished in the last 7 days
+whose log holds no execution end, fewer execution ends than starts, or fewer Batch starts of the job
+than execution ends (a start the live stream lost while the terminal arrived), until one answer's
+events are all enqueued or Batch no longer returns the job. The Lambda also refreshes prices, runs
+the status probe, and deletes intermediate files whose retention has passed.
 
 A run can also execute as **one** Batch job on one host ([single-job runs](#single-job-runs)): the
 engine runs every task on that host, each in the image its Batch job would run, and AWS reports

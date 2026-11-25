@@ -55,6 +55,8 @@ fn minimal_payloads() -> Vec<serde_json::Value> {
         json!({"kind": "build_started", "subject": "s", "build_arn": "a"}),
         json!({"kind": "build_succeeded", "subject": "s", "build_arn": "a"}),
         json!({"kind": "build_failed", "subject": "s", "build_arn": "a", "reason": "FAILED"}),
+        json!({"kind": "batch_execution_started", "execution_id": "arn:t/1", "started_at": 1.0}),
+        json!({"kind": "batch_execution_ended", "execution_id": "arn:t/1", "stopped_at": 2.0}),
     ]
 }
 
@@ -246,6 +248,48 @@ fn terminal_kind_constants_are_terminals() {
         COORDINATOR_TERMINAL_KINDS.map(|k| k.as_str().to_string()),
         ["coordinator_succeeded", "coordinator_failed"]
     );
+}
+
+#[test]
+fn execution_kinds_are_neither_terminal_nor_start_kinds() {
+    // An execution's end is not a task's or coordinator's terminal, and its start is not a job's
+    // start: the terminal and start queries derived from these lists must stay blind to them.
+    for kind in &BATCH_EXECUTION_KINDS {
+        assert!(!TASK_TERMINAL_KINDS.contains(kind), "{kind:?}");
+        assert!(!COORDINATOR_TERMINAL_KINDS.contains(kind), "{kind:?}");
+        assert!(!BATCH_JOB_START_KINDS.contains(kind), "{kind:?}");
+    }
+}
+
+#[test]
+fn the_pre_terminal_kinds_are_the_start_and_execution_kinds() {
+    assert_eq!(
+        BATCH_JOB_PRE_TERMINAL_KINDS.to_vec(),
+        [BATCH_JOB_START_KINDS, BATCH_EXECUTION_KINDS].concat()
+    );
+}
+
+#[test]
+fn an_execution_end_serializes_only_what_aws_reported() {
+    let ended = EventData::BatchExecutionEnded {
+        execution_id: "arn:t/1".into(),
+        started_at: None,
+        stopped_at: crate::time::Timestamp::from_epoch_seconds(2.0),
+        exit_code: None,
+        status_reason: None,
+        termination_category: None,
+        log_stream: None,
+    };
+    let wire = serde_json::to_value(&ended).unwrap();
+    assert_eq!(
+        wire,
+        json!({"kind": "batch_execution_ended", "execution_id": "arn:t/1", "stopped_at": 2.0})
+    );
+    let mut future = wire;
+    future["future_key"] = json!(1);
+    let read: EventData = serde_json::from_value(future).unwrap();
+    assert_eq!(read, ended);
+    assert!(!read.is_degraded_known_kind());
 }
 
 #[test]

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::event::{submitter_user, OutputRef, OutputRole};
 use crate::ids::{Attempt, RunId};
 use crate::reducer::keep::{keep_min_micros, Stamp};
-use crate::reducer::{OutputProjection, TaskProjection};
+use crate::reducer::{Executions, OutputProjection, TaskProjection};
 use crate::state::{RunState, TaskState};
 
 /// How far a `cancel_requested` may be stamped after the failure it caused and still count as its
@@ -82,6 +82,11 @@ pub struct RunProjection {
     /// The termination category the translator read from that reason (`oom`, `spot`,
     /// `host_terminated`, …), as its wire string. Set-once, min on a conflict.
     pub coordinator_termination_category: Option<String>,
+    /// The executions of the run's coordinator job: each time AWS ran it on a host. Keyed by the
+    /// coordinator's Batch job id, then by execution id, so each job keeps its own executions
+    /// and their order. They are told beside the coordinator facts above and change none of
+    /// them, nor the run's state: a lost execution is not a failed coordinator.
+    pub coordinator_executions: BTreeMap<String, Executions>,
     /// The workflow version id this run executed (from the anchor).
     pub workflow_version_id: Option<String>,
     /// The input URIs declared at submit (from the anchor's `input_uris`).
@@ -226,6 +231,7 @@ impl RunProjection {
             coordinator_exit_code: None,
             coordinator_status_reason: None,
             coordinator_termination_category: None,
+            coordinator_executions: BTreeMap::new(),
             workflow_version_id: None,
             input_uris: Vec::new(),
             output_prefix: None,

@@ -75,6 +75,8 @@ kind_vocabulary! {
     BuildStarted => "build_started",
     BuildSucceeded => "build_succeeded",
     BuildFailed => "build_failed",
+    BatchExecutionStarted => "batch_execution_started",
+    BatchExecutionEnded => "batch_execution_ended",
 }
 
 impl Kind {
@@ -107,3 +109,23 @@ pub const COORDINATOR_TERMINAL_KINDS: [Kind; 2] =
 /// RUNNING to `task_started`, or to `coordinator_running` for a job on a listed coordinator queue.
 /// Shared so the reconcile SQL and the reconcile tick read starts as the translator writes them.
 pub const BATCH_JOB_START_KINDS: [Kind; 2] = [Kind::TaskStarted, Kind::CoordinatorRunning];
+
+/// The kinds of one AWS Batch execution (one ECS task: one run of a job on a host). A job that
+/// Batch retries itself has several executions under one `batch_job_id`, so these are facts about
+/// an execution, never about the job: they are deliberately in none of [`TASK_TERMINAL_KINDS`],
+/// [`COORDINATOR_TERMINAL_KINDS`] or [`BATCH_JOB_START_KINDS`], which keeps an execution's end
+/// from reading as a task's or coordinator's terminal and its start from reading as the job's.
+pub const BATCH_EXECUTION_KINDS: [Kind; 2] =
+    [Kind::BatchExecutionStarted, Kind::BatchExecutionEnded];
+
+/// The facts Batch reports about a job before its terminal: its start ([`BATCH_JOB_START_KINDS`])
+/// and each execution's start and end ([`BATCH_EXECUTION_KINDS`]). The reconcile backstop sends
+/// these ahead of a job's terminal, and enqueues one only when the log lacks its dedup key; its
+/// SQL and its Rust test both read this one list.
+/// (Spelled out, as `Kind` is not `Copy`; a test holds it to the two lists.)
+pub const BATCH_JOB_PRE_TERMINAL_KINDS: [Kind; 4] = [
+    Kind::TaskStarted,
+    Kind::CoordinatorRunning,
+    Kind::BatchExecutionStarted,
+    Kind::BatchExecutionEnded,
+];

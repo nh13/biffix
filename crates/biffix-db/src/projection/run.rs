@@ -1,22 +1,27 @@
 //! The run fold: one run's projection rows (`run_projection` and its `task_projection`,
-//! `attempt_projection`, `run_output` and `notifications` rows), re-derived from its complete event
-//! set.
+//! `attempt_projection`, `execution_projection`, `run_output` and `notifications` rows), re-derived
+//! from its complete event set.
 
-use std::collections::BTreeMap;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use biffix_core::event::TerminationCategory;
 use biffix_core::ids::InstanceId;
-use biffix_core::reducer::{AttemptProjection, Projection, RunProjection};
+use biffix_core::reducer::{
+    execution_durations, ordered_executions, AttemptProjection, ExecutionDurations,
+    ExecutionProjection, Executions, Projection, RunProjection,
+};
 use biffix_core::state::{AttemptState, RunState};
 use sqlx::PgConnection;
 
 use super::rows_to_events;
 use crate::error::DbError;
+use crate::rules::JobRole;
 
 /// Persist one run's projection — its `run_projection` row and its `task_projection`,
-/// `attempt_projection` and `run_output` rows — onto `conn` (a transaction connection). `rp` is a
-/// full re-fold of the run, so the child tables are made to match it exactly: rows the fold no
-/// longer produces are deleted, not left behind (`projection == fold`).
+/// `attempt_projection`, `execution_projection` and `run_output` rows — onto `conn` (a transaction
+/// connection). `rp` is a full re-fold of the run, so the child tables are made to match it
+/// exactly: rows the fold no longer produces are deleted, not left behind (`projection == fold`).
 async fn upsert_run(
     conn: &mut PgConnection,
     run_id: &str,
@@ -193,7 +198,8 @@ async fn upsert_run(
     .bind(&task_keys)
     .execute(&mut *conn)
     .await?;
-    upsert_attempts(conn, run_id, rp).await
+    upsert_attempts(conn, run_id, rp).await?;
+    upsert_executions(conn, run_id, rp).await
 }
 
 /// Make the run's `notifications` rows match the fold ([`RunProjection::notification`]): at most
@@ -465,14 +471,21 @@ async fn upsert_attempts(
         attempts.iter().map(|(_, a)| a.requested_vcpus).collect();
     let requested_memory: Vec<Option<i64>> =
         attempts.iter().map(|(_, a)| a.requested_memory_mib).collect();
+    // What the attempt's span was made of; all three NULL for a job with no execution facts.
+    let durations: Vec<Option<ExecutionDurations>> =
+        attempts.iter().map(|(_, a)| execution_durations(&a.executions)).collect();
+    let duration = |f: fn(&ExecutionDurations) -> i64| -> Vec<Option<i64>> {
+        durations.iter().map(|d| d.as_ref().map(f)).collect()
+    };
     sqlx::query(
         r"INSERT INTO attempt_projection
              (run_id, batch_job_id, task_key, attempt, state, exit_code, termination_category,
               status_reason, log_stream, queue, instance_id, started_at, finished_at,
-              requested_vcpus, requested_memory_mib)
+              requested_vcpus, requested_memory_mib, run_micros, lost_micros, wait_micros)
            SELECT $1, * FROM UNNEST($2::text[], $3::text[], $4::int[], $5::text[], $6::int[],
                                     $7::text[], $8::text[], $9::text[], $10::text[], $11::text[],
-                                    $12::bigint[], $13::bigint[], $14::float8[], $15::bigint[])
+                                    $12::bigint[], $13::bigint[], $14::float8[], $15::bigint[],
+                                    $16::bigint[], $17::bigint[], $18::bigint[])
            ON CONFLICT (run_id, batch_job_id) DO UPDATE SET
              task_key = EXCLUDED.task_key, attempt = EXCLUDED.attempt, state = EXCLUDED.state,
              exit_code = EXCLUDED.exit_code,
@@ -481,7 +494,9 @@ async fn upsert_attempts(
              queue = EXCLUDED.queue, instance_id = EXCLUDED.instance_id,
              started_at = EXCLUDED.started_at, finished_at = EXCLUDED.finished_at,
              requested_vcpus = EXCLUDED.requested_vcpus,
-             requested_memory_mib = EXCLUDED.requested_memory_mib",
+             requested_memory_mib = EXCLUDED.requested_memory_mib,
+             run_micros = EXCLUDED.run_micros, lost_micros = EXCLUDED.lost_micros,
+             wait_micros = EXCLUDED.wait_micros",
     )
     .bind(run_id)
     .bind(&batch_job_ids)
@@ -498,6 +513,9 @@ async fn upsert_attempts(
     .bind(&finished)
     .bind(&requested_vcpus)
     .bind(&requested_memory)
+    .bind(duration(|d| d.run_micros))
+    .bind(duration(|d| d.lost_micros))
+    .bind(duration(|d| d.wait_micros))
     .execute(&mut *conn)
     .await?;
     Ok(())
@@ -506,15 +524,18 @@ async fn upsert_attempts(
 /// The run's `attempt_projection` rows as `(task_key, attempt)`, one per Batch job. A job the run
 /// claimed under more than one task (a producer bug or a forged claim) is in each claiming task,
 /// but only the first claim in the log binds it, so only that task's attempt receives the job's
-/// Batch facts; that attempt is the row. Before any fact arrives every claim is a bare `submitted`
-/// shell and the first task key in order stands in. One `INSERT … ON CONFLICT DO UPDATE` cannot
-/// carry two rows for one key (SQLSTATE 21000), which would refuse the run's whole batch.
+/// Batch facts (its executions among them, which may be all it has: an execution event sets none
+/// of the attempt's own fields when it names no queue); that attempt is the row. Before any fact
+/// arrives every claim is a bare `submitted` shell and the first task key in order stands in. One
+/// `INSERT … ON CONFLICT DO UPDATE` cannot carry two rows for one key (SQLSTATE 21000), which would
+/// refuse the run's whole batch.
 fn attempt_rows(rp: &RunProjection) -> Vec<(&str, &AttemptProjection)> {
     fn has_batch_facts(a: &AttemptProjection) -> bool {
         a.state != AttemptState::Submitted
             || a.queue.is_some()
             || a.instance_id.is_some()
             || a.log_stream.is_some()
+            || !a.executions.is_empty()
     }
     let mut by_job: BTreeMap<&str, (&str, &AttemptProjection)> = BTreeMap::new();
     for (task_key, tp) in &rp.tasks {
@@ -530,6 +551,170 @@ fn attempt_rows(rp: &RunProjection) -> Vec<(&str, &AttemptProjection)> {
         }
     }
     by_job.into_values().collect()
+}
+
+/// One `execution_projection` row: an execution, and where it sits under its job.
+struct ExecutionRow<'a> {
+    /// The job the execution is of.
+    batch_job_id: &'a str,
+    /// How the run bound that job.
+    role: JobRole,
+    /// The task whose attempt the job is; `None` for a coordinator's job.
+    task_key: Option<&'a str>,
+    /// The execution's 1-based position among its job's, in [`ordered_executions`]' order. A
+    /// display value, never an identity: it can change when an earlier execution's events arrive
+    /// late.
+    ordinal: i32,
+    /// True for the job's last execution in that order.
+    is_final: bool,
+    /// The execution's facts: the fold's own, or a merge of two halves of one execution (see
+    /// [`execution_rows`]).
+    execution: Cow<'a, ExecutionProjection>,
+}
+
+/// The run's `execution_projection` rows, one per execution id: the executions of the run's
+/// coordinator jobs, then those of the attempts [`attempt_rows`] selects (so an execution's job is
+/// always an `attempt_projection` row).
+///
+/// A job the run bound first as a task's and later as its coordinator has its earlier executions
+/// under the attempt and its later ones under the coordinator, and an execution whose two events
+/// fell on either side of the rebinding is under both, each half holding the event it folded.
+/// The coordinator's row is then the one written, since the coordinator binding is the one in
+/// force, with the facts of both halves ([`ExecutionProjection::merged`]), and the attempt keeps
+/// only its other executions. Each binding's `ordinal` and `is_final` are given over the rows it
+/// keeps, in [`ordered_executions`]' order of their (merged) facts, so every binding with rows has
+/// exactly one final one. And one `INSERT … ON CONFLICT DO UPDATE` never carries two rows for one
+/// key (SQLSTATE 21000), which would refuse the run's whole fold.
+fn execution_rows(rp: &RunProjection) -> Vec<ExecutionRow<'_>> {
+    fn rows_of<'a>(
+        batch_job_id: &'a str,
+        role: JobRole,
+        task_key: Option<&'a str>,
+        ordered: Vec<Cow<'a, ExecutionProjection>>,
+    ) -> impl Iterator<Item = ExecutionRow<'a>> {
+        let last = ordered.len().saturating_sub(1);
+        ordered.into_iter().enumerate().map(move |(index, execution)| ExecutionRow {
+            batch_job_id,
+            role,
+            task_key,
+            // A job has a handful of executions (Batch caps its retries at 10), so the position
+            // always fits; saturate rather than wrap should that ever stop holding.
+            ordinal: i32::try_from(index + 1).unwrap_or(i32::MAX),
+            is_final: index == last,
+            execution,
+        })
+    }
+    let attempts = attempt_rows(rp);
+    let task_halves: HashMap<&str, &ExecutionProjection> = attempts
+        .iter()
+        .flat_map(|(_, attempt)| attempt.executions.iter())
+        .map(|(id, execution)| (id.as_str(), execution))
+        .collect();
+    let mut rows = Vec::new();
+    for (job, executions) in &rp.coordinator_executions {
+        let merged: Executions = executions
+            .iter()
+            .map(|(id, execution)| {
+                let merged = task_halves
+                    .get(id.as_str())
+                    .map_or_else(|| execution.clone(), |half| half.merged(execution));
+                (id.clone(), merged)
+            })
+            .collect();
+        let ordered = ordered_executions(&merged).into_iter().cloned().map(Cow::Owned).collect();
+        rows.extend(rows_of(job, JobRole::Coordinator, None, ordered));
+    }
+    let of_coordinators: HashSet<&str> =
+        rp.coordinator_executions.values().flat_map(|e| e.keys()).map(String::as_str).collect();
+    for (task_key, attempt) in attempts {
+        let ordered = ordered_executions(&attempt.executions)
+            .into_iter()
+            .filter(|execution| !of_coordinators.contains(execution.execution_id.as_str()))
+            .map(Cow::Borrowed)
+            .collect();
+        rows.extend(rows_of(attempt.batch_job_id.as_str(), JobRole::Task, Some(task_key), ordered));
+    }
+    // An execution is of one job, so no id repeats; should a malformed log ever give one to two
+    // jobs, the first row (a coordinator's first) is kept rather than the run's fold refused.
+    let mut seen = HashSet::new();
+    rows.retain(|row| seen.insert(row.execution.execution_id.clone()));
+    rows
+}
+
+/// Persist every execution of the run's Batch jobs into `execution_projection`, in one statement.
+///
+/// The rows match the fold exactly, as [`upsert_attempts`]' do: every execution the fold produced
+/// is upserted and any row it no longer produces is deleted (including when the fold has no
+/// executions at all), so a replay after a reducer fix leaves no stale execution behind.
+async fn upsert_executions(
+    conn: &mut PgConnection,
+    run_id: &str,
+    rp: &RunProjection,
+) -> Result<(), DbError> {
+    let rows = execution_rows(rp);
+    let execution_ids: Vec<&str> = rows.iter().map(|r| r.execution.execution_id.as_str()).collect();
+    sqlx::query(
+        "DELETE FROM execution_projection x WHERE x.run_id = $1 \
+           AND NOT EXISTS (SELECT 1 FROM UNNEST($2::text[]) AS k(id) WHERE k.id = x.execution_id)",
+    )
+    .bind(run_id)
+    .bind(&execution_ids)
+    .execute(&mut *conn)
+    .await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let text = |f: fn(&ExecutionProjection) -> Option<&str>| -> Vec<Option<&str>> {
+        rows.iter().map(|r| f(&r.execution)).collect()
+    };
+    let micros = |f: fn(&ExecutionProjection) -> Option<i64>| -> Vec<Option<i64>> {
+        rows.iter().map(|r| f(&r.execution)).collect()
+    };
+    let batch_job_ids: Vec<&str> = rows.iter().map(|r| r.batch_job_id).collect();
+    let roles: Vec<&str> = rows.iter().map(|r| r.role.as_str()).collect();
+    let task_keys: Vec<Option<&str>> = rows.iter().map(|r| r.task_key).collect();
+    let ordinals: Vec<i32> = rows.iter().map(|r| r.ordinal).collect();
+    let finals: Vec<bool> = rows.iter().map(|r| r.is_final).collect();
+    let ended: Vec<bool> = rows.iter().map(|r| r.execution.is_ended()).collect();
+    let exit_codes: Vec<Option<i32>> = rows.iter().map(|r| r.execution.exit_code()).collect();
+    sqlx::query(
+        r"INSERT INTO execution_projection
+             (run_id, execution_id, batch_job_id, role, task_key, ordinal, is_final, ended,
+              instance_id, queue, log_stream, started_at, stopped_at, exit_code, status_reason,
+              termination_category)
+           SELECT $1, * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::int[],
+                                    $7::bool[], $8::bool[], $9::text[], $10::text[], $11::text[],
+                                    $12::bigint[], $13::bigint[], $14::int[], $15::text[],
+                                    $16::text[])
+           ON CONFLICT (run_id, execution_id) DO UPDATE SET
+             batch_job_id = EXCLUDED.batch_job_id, role = EXCLUDED.role,
+             task_key = EXCLUDED.task_key, ordinal = EXCLUDED.ordinal,
+             is_final = EXCLUDED.is_final, ended = EXCLUDED.ended,
+             instance_id = EXCLUDED.instance_id, queue = EXCLUDED.queue,
+             log_stream = EXCLUDED.log_stream, started_at = EXCLUDED.started_at,
+             stopped_at = EXCLUDED.stopped_at, exit_code = EXCLUDED.exit_code,
+             status_reason = EXCLUDED.status_reason,
+             termination_category = EXCLUDED.termination_category",
+    )
+    .bind(run_id)
+    .bind(&execution_ids)
+    .bind(&batch_job_ids)
+    .bind(&roles)
+    .bind(&task_keys)
+    .bind(&ordinals)
+    .bind(&finals)
+    .bind(&ended)
+    .bind(text(ExecutionProjection::instance_id))
+    .bind(text(ExecutionProjection::queue))
+    .bind(text(ExecutionProjection::log_stream))
+    .bind(micros(ExecutionProjection::started_at_micros))
+    .bind(micros(ExecutionProjection::stopped_at_micros))
+    .bind(&exit_codes)
+    .bind(text(ExecutionProjection::status_reason))
+    .bind(text(|x| x.termination_category().map(TerminationCategory::as_str)))
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
 }
 
 /// Re-fold one run from its complete event set and persist it: its own events plus the AWS events
@@ -572,9 +757,14 @@ pub(super) async fn fold_run(conn: &mut PgConnection, run_id: &str) -> Result<()
 /// so each table the fold owns is cleared; user state (`notification_reads`,
 /// `notification_dismissals`) and the fact caches are not the fold's and stay.
 async fn delete_run(conn: &mut PgConnection, run_id: &str) -> Result<(), DbError> {
-    for table in
-        ["notifications", "run_output", "attempt_projection", "task_projection", "run_projection"]
-    {
+    for table in [
+        "notifications",
+        "run_output",
+        "execution_projection",
+        "attempt_projection",
+        "task_projection",
+        "run_projection",
+    ] {
         sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table} WHERE run_id = $1")))
             .bind(run_id)
             .execute(&mut *conn)

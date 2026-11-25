@@ -568,9 +568,10 @@ fn described_start(job_id: &str) -> DescribedStartedJob {
     }
 }
 
-/// Each candidate's job id and the dedup keys of the starts the log holds for it.
+/// Each candidate's job id and the dedup keys of the starts and execution events the log holds
+/// for it.
 fn starts(candidates: Vec<StaleAttempt>) -> Vec<(String, Vec<String>)> {
-    candidates.into_iter().map(|c| (c.batch_job_id, c.start_keys)).collect()
+    candidates.into_iter().map(|c| (c.batch_job_id, c.known_fact_keys)).collect()
 }
 
 /// `(job, keys)`, owned, for comparing with [`starts`].
@@ -653,6 +654,39 @@ async fn a_stale_candidate_carries_the_keys_of_the_starts_the_log_holds() {
     );
 }
 
+/// A candidate of either path carries the keys of the execution events the log holds beside its
+/// starts', so the backstop enqueues a described execution once rather than on every rotation.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness"]
+async fn a_candidate_carries_the_execution_keys_the_log_holds() {
+    let pool = common::isolated_pool("a_candidate_carries_the_execution_keys_the_log_holds").await;
+    append_submitted(&pool, "job-k", 1.0).await;
+    let started = EventData::TaskStarted { started_at: None, log_stream: None };
+    let start = testing::event(1.2, EventSource::AwsBatch, "aws-batch:job-k:RUNNING", started);
+    append(&pool, &start.with_job("job-k")).await.unwrap();
+    append(&pool, &testing::execution_started("job-k", "t1", 1.3)).await.unwrap();
+    // An engine's own event about the job is not one of Batch's facts.
+    append(
+        &pool,
+        &event(
+            "job-k",
+            1.4,
+            "engine:job-k:started",
+            EventSource::Snakemake,
+            EventData::TaskStarted { started_at: None, log_stream: None },
+        ),
+    )
+    .await
+    .unwrap();
+
+    let held = [keyed("job-k", &["aws-batch-exec:t1:started", "aws-batch:job-k:RUNNING"])];
+    assert_eq!(starts(stale_attempts(&pool, window(2_000_000, 100, 0)).await.unwrap()), held);
+    let live = live_children_of_run(&pool, "run-reconcile", None, 100).await.unwrap();
+    let children: Vec<(String, Vec<String>)> =
+        live.into_iter().map(|c| (c.batch_job_id, c.known_fact_keys)).collect();
+    assert_eq!(children, held);
+}
+
 /// The reaper filters a described child's start by the starts the log holds, as the stale path
 /// does: each live child carries the dedup keys of its AWS Batch starts of either shape, and an
 /// engine's own start is not one.
@@ -700,7 +734,7 @@ async fn a_live_child_carries_the_keys_of_the_starts_the_log_holds() {
 
     let live = live_children_of_run(&pool, "run-reconcile", None, 100).await.unwrap();
     let children: Vec<(String, Vec<String>)> =
-        live.into_iter().map(|c| (c.batch_job_id, c.start_keys)).collect();
+        live.into_iter().map(|c| (c.batch_job_id, c.known_fact_keys)).collect();
     assert_eq!(
         children,
         [
@@ -713,7 +747,7 @@ async fn a_live_child_carries_the_keys_of_the_starts_the_log_holds() {
     let paged = live_children_of_run(&pool, "run-reconcile", Some("job-a"), 1).await.unwrap();
     assert_eq!(
         paged,
-        [LiveChild { batch_job_id: "job-b".into(), start_keys: vec!["aws:job-b:1.2".into()] }]
+        [LiveChild { batch_job_id: "job-b".into(), known_fact_keys: vec!["aws:job-b:1.2".into()] }]
     );
 }
 
@@ -767,7 +801,8 @@ async fn a_reconciled_start_shows_a_running_job_on_its_host() {
         }),
         &QueueContext { coordinator_queues: vec![] },
     )
-    .unwrap();
+    .unwrap()
+    .remove(0);
     assert!(!append(&pool, &live).await.unwrap());
     let rows: i64 =
         sqlx::query_scalar("SELECT count(*) FROM run_events WHERE batch_job_id = 'job-r'")
@@ -837,4 +872,483 @@ async fn a_reconciled_terminal_with_its_start_has_a_run_time() {
         .map(|job| job.batch_job_id)
         .collect();
     assert_eq!(priced, ["job-p"]);
+}
+
+/// AWS Batch's start (`edge` "started") or end ("ended") of execution `n` of `job_id`, at `ts`,
+/// under `aws-batch-exec:{job_id}-t{n}:{edge}`.
+async fn append_execution(pool: &sqlx::PgPool, job_id: &str, n: u32, edge: &str, ts: f64) {
+    let execution_id = format!("{job_id}-t{n}");
+    let event = match edge {
+        "started" => testing::execution_started(job_id, &execution_id, ts),
+        "ended" => testing::execution_ended(job_id, &execution_id, None, ts, None),
+        other => panic!("no such execution edge: {other}"),
+    };
+    assert_eq!(event.dedup_key, format!("aws-batch-exec:{execution_id}:{edge}"));
+    append(pool, &event).await.unwrap();
+}
+
+/// A task attempt bound at 100 s whose SUCCEEDED Batch reported at `ended_s`.
+async fn append_finished(pool: &sqlx::PgPool, job_id: &str, ended_s: f64) {
+    append_submitted(pool, job_id, 100.0).await;
+    append_succeeded(pool, job_id, ended_s).await;
+}
+
+/// AWS Batch's RUNNING for job `job_id` at `ts`: the job's own start, not an execution's.
+async fn append_job_started(pool: &sqlx::PgPool, job_id: &str, ts: f64) {
+    append_retry_started(pool, job_id, 0, ts).await;
+}
+
+/// Batch's start of `job_id`'s execution after `prior` others (its RUNNING is keyed per execution).
+async fn append_retry_started(pool: &sqlx::PgPool, job_id: &str, prior: u32, ts: f64) {
+    let started = EventData::TaskStarted { started_at: None, log_stream: None };
+    let key = match prior {
+        0 => format!("aws-batch:{job_id}:RUNNING"),
+        prior => format!("aws-batch:{job_id}:RUNNING:{prior}"),
+    };
+    let start = testing::event(ts, EventSource::AwsBatch, key, started).with_job(job_id);
+    append(pool, &start).await.unwrap();
+}
+
+/// The execution candidates' job ids, in the query's order, among the jobs bound since 50 s.
+async fn execution_candidate_ids(pool: &sqlx::PgPool, limit: i64) -> Vec<String> {
+    use biffix_ingest::store::reconcile::execution_candidates;
+    let candidates = execution_candidates(pool, 50_000_000, limit).await.unwrap();
+    candidates.into_iter().map(|candidate| candidate.batch_job_id).collect()
+}
+
+/// `(executions_described_micros, missing_since_micros)` of `job_id`'s `reconcile_describe` row.
+async fn describe_marks(pool: &sqlx::PgPool, job_id: &str) -> (Option<i64>, Option<i64>) {
+    sqlx::query_as(
+        "SELECT executions_described_micros, missing_since_micros FROM reconcile_describe \
+         WHERE batch_job_id = $1",
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// The third candidate class: a finished job, task or coordinator, bound in the window, whose log
+/// holds no execution end, fewer ends than starts, or no start of the job. A job whose record is
+/// complete, one still running and one that finished before the window are not asked about (one
+/// bound before it but finished inside it is), one described without being marked is asked
+/// again, and only AWS Batch's own events count.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness"]
+async fn execution_candidates_are_finished_jobs_missing_executions_or_a_start() {
+    use biffix_ingest::store::reconcile::execution_candidates;
+    let pool = common::isolated_pool(
+        "execution_candidates_are_finished_jobs_missing_executions_or_a_start",
+    )
+    .await;
+    // Finished, and the log holds neither its start nor any execution.
+    append_finished(&pool, "job-none", 110.0).await;
+    // Finished, with its start, and an execution that started and has no recorded end.
+    append_finished(&pool, "job-open", 110.0).await;
+    append_job_started(&pool, "job-open", 101.0).await;
+    append_execution(&pool, "job-open", 1, "started", 101.0).await;
+    // Finished, with its start, two executions started and only one ended.
+    append_finished(&pool, "job-short", 110.0).await;
+    append_job_started(&pool, "job-short", 101.0).await;
+    append_execution(&pool, "job-short", 1, "started", 101.0).await;
+    append_execution(&pool, "job-short", 1, "ended", 103.0).await;
+    append_execution(&pool, "job-short", 2, "started", 105.0).await;
+    // Finished, with its start and no execution at all.
+    append_finished(&pool, "job-start-only", 110.0).await;
+    append_job_started(&pool, "job-start-only", 101.0).await;
+    // Finished with every execution ended (its terminal carried both ends), but its start was
+    // lost: nothing else would ever ask about it.
+    append_finished(&pool, "job-no-start", 110.0).await;
+    append_execution(&pool, "job-no-start", 1, "ended", 103.0).await;
+    append_execution(&pool, "job-no-start", 2, "ended", 109.0).await;
+    // Its retry's start arrived but the first execution's was lost, so the attempt's span starts
+    // at the retry: two ends, one start of the job.
+    append_finished(&pool, "job-first-start-lost", 110.0).await;
+    append_retry_started(&pool, "job-first-start-lost", 1, 105.0).await;
+    append_execution(&pool, "job-first-start-lost", 1, "ended", 103.0).await;
+    append_execution(&pool, "job-first-start-lost", 2, "ended", 109.0).await;
+    // The same as job-no-start, where only the engine reported a start: an engine's start is not
+    // Batch's.
+    append_finished(&pool, "job-engine-start", 110.0).await;
+    append_execution(&pool, "job-engine-start", 1, "ended", 109.0).await;
+    let engine_started = EventData::TaskStarted { started_at: None, log_stream: None };
+    append(
+        &pool,
+        &event(
+            "job-engine-start",
+            101.0,
+            "engine:job-engine-start:started",
+            EventSource::Snakemake,
+            engine_started,
+        ),
+    )
+    .await
+    .unwrap();
+    // Complete: its start, and every execution that started has ended.
+    append_finished(&pool, "job-complete", 110.0).await;
+    append_job_started(&pool, "job-complete", 101.0).await;
+    append_execution(&pool, "job-complete", 1, "started", 101.0).await;
+    append_execution(&pool, "job-complete", 1, "ended", 109.0).await;
+    // Complete: each execution's start of the job and its end alone, which is what a finished
+    // job's describe yields.
+    append_finished(&pool, "job-ended-only", 110.0).await;
+    append_job_started(&pool, "job-ended-only", 101.0).await;
+    append_retry_started(&pool, "job-ended-only", 1, 105.0).await;
+    append_execution(&pool, "job-ended-only", 1, "ended", 103.0).await;
+    append_execution(&pool, "job-ended-only", 2, "ended", 109.0).await;
+    // Has its start and Batch's execution end, so complete: an execution start an engine claims
+    // is not Batch's and leaves no end owed.
+    append_finished(&pool, "job-untrusted", 110.0).await;
+    append_job_started(&pool, "job-untrusted", 101.0).await;
+    append_execution(&pool, "job-untrusted", 1, "ended", 109.0).await;
+    for n in [8, 9] {
+        let claimed = EventData::BatchExecutionStarted {
+            execution_id: format!("job-untrusted-t{n}"),
+            started_at: Timestamp::from_epoch_seconds(102.0),
+            log_stream: None,
+        };
+        let key = format!("engine:job-untrusted:exec-{n}");
+        let claimed = testing::event(102.0, EventSource::Snakemake, key, claimed);
+        append(&pool, &claimed.with_job("job-untrusted")).await.unwrap();
+    }
+    // Not finished: the no-terminal class owns it.
+    append_submitted(&pool, "job-running", 100.0).await;
+    append_execution(&pool, "job-running", 1, "started", 101.0).await;
+    // Finished like job-none, but before the window: Batch no longer has it.
+    append_submitted(&pool, "job-old", 10.0).await;
+    append_succeeded(&pool, "job-old", 40.0).await;
+    // Bound before the window but finished inside it (it ran long): Batch still has it.
+    append_submitted(&pool, "job-long", 10.0).await;
+    append_succeeded(&pool, "job-long", 110.0).await;
+    // Complete by every count, but an earlier describe did not mark it (an event it sent was
+    // rejected): asked again until it is marked.
+    append_finished(&pool, "job-touched", 110.0).await;
+    append_job_started(&pool, "job-touched", 101.0).await;
+    append_execution(&pool, "job-touched", 1, "ended", 109.0).await;
+    biffix_ingest::store::reconcile::touch_described(&pool, &["job-touched".into()], 1)
+        .await
+        .unwrap();
+    // A finished coordinator with no executions.
+    append_bound(&pool, "coord-1", 100.0, "cp:coord-1:sub").await;
+    let succeeded = testing::event(
+        110.0,
+        EventSource::AwsBatch,
+        "aws-batch:coord-1:SUCCEEDED",
+        EventData::CoordinatorSucceeded { log_stream: None },
+    );
+    append(&pool, &succeeded.with_job("coord-1")).await.unwrap();
+
+    let mut candidates = execution_candidates(&pool, 50_000_000, 100).await.unwrap();
+    candidates.sort_by(|a, b| a.batch_job_id.cmp(&b.batch_job_id));
+    let found: Vec<(&str, bool)> =
+        candidates.iter().map(|c| (c.batch_job_id.as_str(), c.bound_coordinator)).collect();
+    assert_eq!(
+        found,
+        [
+            ("coord-1", true),
+            ("job-engine-start", false),
+            ("job-first-start-lost", false),
+            ("job-long", false),
+            ("job-no-start", false),
+            ("job-none", false),
+            ("job-open", false),
+            ("job-short", false),
+            ("job-start-only", false),
+            ("job-touched", false),
+        ]
+    );
+    // Each carries the keys of the facts the log already holds for it.
+    let keys = |job: &str| {
+        let candidate = candidates.iter().find(|c| c.batch_job_id == job).unwrap();
+        candidate.known_fact_keys.clone()
+    };
+    assert!(keys("coord-1").is_empty() && keys("job-none").is_empty());
+    assert_eq!(
+        keys("job-no-start"),
+        ["aws-batch-exec:job-no-start-t1:ended", "aws-batch-exec:job-no-start-t2:ended"]
+    );
+    assert_eq!(
+        keys("job-open"),
+        ["aws-batch-exec:job-open-t1:started", "aws-batch:job-open:RUNNING"]
+    );
+    assert_eq!(
+        keys("job-short"),
+        [
+            "aws-batch-exec:job-short-t1:ended",
+            "aws-batch-exec:job-short-t1:started",
+            "aws-batch-exec:job-short-t2:started",
+            "aws-batch:job-short:RUNNING",
+        ]
+    );
+}
+
+/// The newest-finished candidates come first, so current runs are completed before a backlog; a
+/// failed describe or send rotates a job behind the ones not yet tried; and a marked job is never
+/// asked about again.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness"]
+async fn execution_candidates_come_newest_first_rotate_and_stop_once_marked() {
+    use biffix_ingest::store::reconcile::{mark_executions_described, touch_described};
+    let pool =
+        common::isolated_pool("execution_candidates_come_newest_first_rotate_and_stop_once_marked")
+            .await;
+    for (job, ended_s) in [("j120", 120.0), ("j110", 110.0), ("j130", 130.0)] {
+        append_finished(&pool, job, ended_s).await;
+    }
+    let now = 500_000_000;
+    assert_eq!(execution_candidate_ids(&pool, 2).await, ["j130", "j120"]);
+
+    touch_described(&pool, &["j130".into()], now).await.unwrap();
+    assert_eq!(execution_candidate_ids(&pool, 2).await, ["j120", "j110"]);
+
+    mark_executions_described(&pool, &["j120".into()], now).await.unwrap();
+    assert_eq!(execution_candidate_ids(&pool, 2).await, ["j110", "j130"]);
+    assert!(execution_candidate_ids(&pool, 0).await.is_empty());
+}
+
+/// A finished job that never got an execution (cancelled before it reached a host, so Batch's
+/// `attempts[]` is empty) has no end to wait for: it is described once and then left alone,
+/// rather than on every poll for the rest of its window.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness"]
+async fn a_finished_job_with_no_executions_is_described_once() {
+    use biffix_core::eventbridge::execution::BatchJobSnapshot;
+    use biffix_ingest::reconcile::{execution_backfill, execution_marks};
+    use biffix_ingest::store::reconcile::{mark_executions_described, record_describe_results};
+    use std::collections::{BTreeSet, HashMap};
+    let pool = common::isolated_pool("a_finished_job_with_no_executions_is_described_once").await;
+    // What Batch says of a job cancelled from RUNNABLE: finished, with no execution and no start.
+    let finished_snapshot = BatchJobSnapshot {
+        batch_job_id: "job-none".into(),
+        status: biffix_core::wire::aws_batch::BatchStatus::Failed,
+        started_at_millis: None,
+        current: Default::default(),
+        ..testing::retried_job_snapshot()
+    };
+    append_finished(&pool, "job-none", 110.0).await;
+    assert_eq!(execution_candidate_ids(&pool, 100).await, ["job-none"]);
+
+    // Batch returned the job with nothing to send, so nothing was rejected.
+    let asked = ["job-none".to_string()];
+    let backfill = execution_backfill(
+        [("job-none", vec![], Some(BatchJobSnapshot { attempts: vec![], ..finished_snapshot }))],
+        &HashMap::from([("job-none", &[][..])]),
+    );
+    assert!(backfill.events.is_empty(), "{:?}", backfill.events);
+    let marks = execution_marks(&asked, &backfill, &BTreeSet::new());
+    assert_eq!(marks.described, asked);
+    let now = 500_000_000;
+    mark_executions_described(&pool, &marks.described, now).await.unwrap();
+
+    assert!(execution_candidate_ids(&pool, 100).await.is_empty());
+    assert_eq!(describe_marks(&pool, "job-none").await, (Some(now), None));
+
+    // A later describe of the job by another path (and its cleanup) leaves the mark set.
+    record_describe_results(&pool, &asked, &[], now + 1, now - 1).await.unwrap();
+    assert_eq!(describe_marks(&pool, "job-none").await, (Some(now), None));
+    assert!(execution_candidate_ids(&pool, 100).await.is_empty());
+}
+
+/// Marking a job Batch has been omitting keeps since when: the stale backstop's give-up and the
+/// reaper's forgotten-child rule both read that streak.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness"]
+async fn marking_keeps_an_omission_streak() {
+    use biffix_ingest::store::reconcile::{mark_executions_described, record_describe_results};
+    let pool = common::isolated_pool("marking_keeps_an_omission_streak").await;
+    record_describe_results(&pool, &[], &["job-gone".into()], 500, 0).await.unwrap();
+
+    mark_executions_described(&pool, &["job-gone".into()], 600).await.unwrap();
+
+    assert_eq!(describe_marks(&pool, "job-gone").await, (Some(600), Some(500)));
+    // Nothing to mark is not an error.
+    mark_executions_described(&pool, &[], 700).await.unwrap();
+}
+
+/// A retried job whose live events were all lost but its SUCCEEDED: DescribeJobs alone gives back
+/// both executions and each execution's start of the job, each event surviving the ingest queue's
+/// encoding, and the job then needs nothing more.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness"]
+async fn describe_jobs_alone_recovers_a_retried_jobs_executions() {
+    use biffix_core::eventbridge::decode::QueueContext;
+    use biffix_core::eventbridge::execution::BatchJobSnapshot;
+    use biffix_core::eventbridge::{route, Ingested, NormalizedIngestEnvelope};
+    use biffix_ingest::reconcile::described_events;
+    use biffix_ingest::store::reconcile::{execution_candidates, known_fact_keys_of};
+    let pool =
+        common::isolated_pool("describe_jobs_alone_recovers_a_retried_jobs_executions").await;
+    let bound = |ts: f64, source: EventSource, key: &str, data: EventData| {
+        testing::event(ts, source, key, data)
+            .with_run("r1")
+            .with_task("align")
+            .with_attempt(1)
+            .with_job("job-1")
+    };
+    let submitted = EventData::TaskSubmitted { image: None };
+    append(&pool, &bound(1.0, EventSource::Snakemake, "engine:job-1:submitted", submitted))
+        .await
+        .unwrap();
+    let succeeded = EventData::TaskSucceeded { exit_code: 0, log_stream: None };
+    append(&pool, &bound(2217.0, EventSource::AwsBatch, "aws-batch:job-1:SUCCEEDED", succeeded))
+        .await
+        .unwrap();
+
+    let candidates = execution_candidates(&pool, 0, 100).await.unwrap();
+    assert_eq!(candidates.len(), 1);
+    let candidate = &candidates[0];
+    assert_eq!((candidate.batch_job_id.as_str(), candidate.bound_coordinator), ("job-1", false));
+    assert!(candidate.known_fact_keys.is_empty());
+
+    // What DescribeJobs says of the finished job: each execution's start (`described_starts`)
+    // and both executions.
+    let start = |started_at_millis: i64, prior_attempts: u32, host: &str| DescribedStartedJob {
+        batch_job_id: "job-1".into(),
+        started_at_millis,
+        prior_attempts,
+        facts: DescribedJobFacts {
+            instance_id: Some(host.into()),
+            queue: Some(testing::RETRIED_QUEUE.into()),
+            ..Default::default()
+        },
+    };
+    let starts = [start(3_000, 0, "ci1"), start(831_000, 1, "ci2")];
+    let snapshot =
+        BatchJobSnapshot { batch_job_id: "job-1".into(), ..testing::retried_job_snapshot() };
+    let events = described_events(&starts, Some(&snapshot), None, &candidate.known_fact_keys);
+    assert_eq!(events.len(), 4, "each execution's start and end: {events:?}");
+
+    // Each goes the way the tick sends it: wrapped in the ingest envelope, onto the queue, and
+    // through the drain's router to the single append path.
+    let context = QueueContext { coordinator_queues: vec![] };
+    for event in &events {
+        let message = serde_json::to_string(&NormalizedIngestEnvelope::new(event.clone())).unwrap();
+        let mut routed = route(&serde_json::from_str(&message).unwrap(), &context).unwrap();
+        assert_eq!(routed.len(), 1, "one message, one event");
+        let Some(Ingested::Event(decoded)) = routed.pop() else {
+            panic!("a reconciled event routes as an event");
+        };
+        assert_eq!(&decoded, event, "the queue encoding loses nothing");
+        assert!(append(&pool, &decoded).await.unwrap());
+    }
+
+    // (instance_id, ended, termination_category) of the job's executions, in order.
+    type Execution = (Option<String>, bool, Option<String>);
+    let executions: Vec<Execution> = sqlx::query_as(
+        "SELECT instance_id, ended, termination_category FROM execution_projection \
+         WHERE batch_job_id = 'job-1' ORDER BY ordinal",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        executions,
+        [
+            (Some("ci1".to_string()), true, Some("host_terminated".to_string())),
+            (Some("ci2".to_string()), true, None),
+        ]
+    );
+    // (started_at, finished_at, run_micros, lost_micros, wait_micros)
+    type Span = (Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
+    let span: Span = sqlx::query_as(
+        "SELECT started_at, finished_at, run_micros, lost_micros, wait_micros \
+         FROM attempt_projection WHERE batch_job_id = 'job-1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        span,
+        (
+            // The start the log lacked is repaired: the first execution's.
+            Some(3_000_000),
+            Some(2_217_000_000),
+            Some(2_067_000_000),
+            Some(681_000_000),
+            Some(147_000_000),
+        )
+    );
+
+    // Complete now, so it is no longer a candidate, without having been marked.
+    assert!(execution_candidates(&pool, 0, 100).await.unwrap().is_empty());
+    let marked: i64 = sqlx::query_scalar("SELECT count(*) FROM reconcile_describe")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(marked, 0);
+    // And a second describe would find nothing the log lacks.
+    let mut known = known_fact_keys_of(&pool, &["job-1".to_string()]).await.unwrap();
+    let known = known.remove("job-1").unwrap_or_default();
+    assert_eq!(known.len(), 4);
+    assert!(described_events(&starts, Some(&snapshot), None, &known).is_empty());
+}
+
+/// A finished job whose terminal carried every execution's end while its start was lost: no
+/// execution is owed, but nothing else asks about a finished job, so the missing start alone makes
+/// it a candidate. One describe backfills the start and the job is marked.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness"]
+async fn a_finished_job_whose_start_was_lost_is_described_once_for_it() {
+    use biffix_core::eventbridge::execution::{execution_events, BatchJobSnapshot};
+    use biffix_ingest::reconcile::{execution_backfill, execution_marks};
+    use biffix_ingest::store::reconcile::{execution_candidates, mark_executions_described};
+    use std::collections::{BTreeSet, HashMap};
+    let pool =
+        common::isolated_pool("a_finished_job_whose_start_was_lost_is_described_once_for_it").await;
+    append_submitted(&pool, "job-s", 1.0).await;
+    append_succeeded(&pool, "job-s", 2217.0).await;
+    // Both executions' ends are in the log, as the live terminal carries them.
+    let snapshot =
+        BatchJobSnapshot { batch_job_id: "job-s".into(), ..testing::retried_job_snapshot() };
+    let ends = execution_events(&snapshot);
+    assert_eq!(ends.len(), 2);
+    for end in &ends {
+        append(&pool, end).await.unwrap();
+    }
+    let started_at: Option<i64> = sqlx::query_scalar(
+        "SELECT started_at FROM attempt_projection WHERE batch_job_id = 'job-s'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(started_at, None, "the start was lost");
+
+    let candidates = execution_candidates(&pool, 0, 100).await.unwrap();
+    assert_eq!(candidates.len(), 1, "two ends and no start is a candidate: {candidates:?}");
+    let candidate = &candidates[0];
+    assert_eq!(candidate.batch_job_id, "job-s");
+    assert_eq!(candidate.known_fact_keys.len(), 2);
+
+    // Its one describe: the executions are known, so only the starts are sent, one per execution
+    // as the live stream would have logged them (`described_starts`): the lost execution's first.
+    let start = |started_at_millis, prior_attempts| DescribedStartedJob {
+        batch_job_id: "job-s".into(),
+        started_at_millis,
+        prior_attempts,
+        facts: DescribedJobFacts::default(),
+    };
+    let known = HashMap::from([("job-s", candidate.known_fact_keys.as_slice())]);
+    let starts = vec![start(3_000, 0), start(831_000, 1)];
+    let backfill = execution_backfill([("job-s", starts, Some(snapshot))], &known);
+    assert_eq!(backfill.events.len(), 2, "{:?}", backfill.events);
+    for event in &backfill.events {
+        assert_eq!(event.kind(), biffix_core::event::Kind::TaskStarted);
+        assert!(append(&pool, event).await.unwrap());
+    }
+    let asked = ["job-s".to_string()];
+    let marks = execution_marks(&asked, &backfill, &BTreeSet::new());
+    assert_eq!(marks.described, asked);
+    let now = 5_000_000_000;
+    mark_executions_described(&pool, &marks.described, now).await.unwrap();
+
+    let started_at: Option<i64> = sqlx::query_scalar(
+        "SELECT started_at FROM attempt_projection WHERE batch_job_id = 'job-s'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    // The attempt's span starts at its first execution, not the last.
+    assert_eq!(started_at, Some(3_000_000), "the first execution's start is backfilled");
+    assert_eq!(describe_marks(&pool, "job-s").await, (Some(now), None));
+    assert!(execution_candidates(&pool, 0, 100).await.unwrap().is_empty());
 }

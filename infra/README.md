@@ -448,8 +448,9 @@ queue's jobs run but their state changes do not reach biffix; from some 15 to 20
 submit the reconcile backstop fills in what DescribeJobs reports for each job (its start and host
 once Batch has a start time, its end once the job has stopped; a running job is described again
 on later polls), and prices it without its queue's volume and capacity fallback. A job that ends
-after the ingest stack is redeployed, before the backstop has described it, keeps no start and is
-never priced.
+after the ingest stack is redeployed, before the backstop has described it, gets its start back
+from the finished-job backfill (each finished job submitted in the last 7 days whose log lacks
+its start is described once more) and is priced then.
 
 ### Task job definitions
 

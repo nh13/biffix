@@ -41,6 +41,18 @@ impl BatchStatus {
             BatchStatus::Unknown(s) => s.as_str(),
         }
     }
+
+    /// The status an AWS wire string names; one this build does not know is kept as
+    /// [`BatchStatus::Unknown`]. The EventBridge decoder and both execution snapshot readers map
+    /// a status through here.
+    pub fn from_wire(s: &str) -> BatchStatus {
+        // Single-source the string→status mapping through BatchStatus's own `Deserialize`
+        // (SCREAMING_SNAKE_CASE + untagged `Unknown` fallback) rather than a parallel hand-rolled
+        // table a new variant could silently desync from. The untagged arm makes this infallible.
+        use serde::de::value::{Error, StrDeserializer};
+        serde::Deserialize::deserialize(StrDeserializer::<Error>::new(s))
+            .unwrap_or_else(|_| BatchStatus::Unknown(s.to_string()))
+    }
 }
 
 /// A single AWS Batch Job State Change, as biffix consumes it.

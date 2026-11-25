@@ -2,11 +2,12 @@
 //!
 //! The queue carries raw EventBridge events (Batch job, ECS container instance, EC2 spot
 //! interruption and CodeBuild state changes) and the reconcile tick's `biffix_ingest` envelopes
-//! (`biffix_core::eventbridge::route`); this drains a batch of SQS records, decodes each to a
-//! RunEvent (or a host fact for the host registry), appends idempotently, then reconciles the
-//! projection once per batch.
+//! (`biffix_core::eventbridge::route`); this drains a batch of SQS records, decodes each to its
+//! RunEvents (a Batch job state change is the job's event plus its executions') or a host fact
+//! for the host registry, appends idempotently, then reconciles the projection once per batch.
 //!
-//! One bad record never poisons the batch:
+//! A record's events are appended together or not at all, so a redelivered record never finds
+//! itself half-recorded. One bad record never poisons the batch:
 //! - a record that fails to decode or route is logged (with its `messageId`) and dropped. It is not
 //!   retried and does not reach the DLQ, because no retry can make it decode.
 //! - when the batch's one transaction fails (a hard DB error), each decoded record is retried in a
@@ -15,11 +16,14 @@
 //!   `ReportBatchItemFailures`). SQS redelivers just those, and after `maxReceiveCount` the DLQ
 //!   holds just those; the healthy records are committed.
 
+use std::ops::Range;
+
 use aws_lambda_events::sqs::{BatchItemFailure, SqsBatchResponse, SqsEvent};
 use sqlx::PgPool;
 
 use biffix_core::event::RunEvent;
-use biffix_core::eventbridge::decode::{HostFact, QueueContext};
+use biffix_core::eventbridge::decode::{batch_snapshot, HostFact, QueueContext};
+use biffix_core::eventbridge::execution::BatchJobSnapshot;
 use biffix_core::eventbridge::{route, Ingested};
 use biffix_db::log::ingest_batch;
 use biffix_db::DbError;
@@ -34,7 +38,7 @@ pub struct BatchOutcome {
 }
 
 /// A batch's decoded records: the events and host facts to ingest, in arrival order, and for
-/// each record its `messageId` and where its item sits, so a record can be retried alone.
+/// each record its `messageId` and where its items sit, so a record can be retried alone.
 #[derive(Default)]
 struct Decoded<'a> {
     events: Vec<RunEvent>,
@@ -42,20 +46,31 @@ struct Decoded<'a> {
     records: Vec<(Option<&'a str>, Slot)>,
 }
 
-/// Where a decoded record's item sits in [`Decoded`].
-#[derive(Clone, Copy)]
-enum Slot {
-    Event(usize),
-    Host(usize),
+/// Where one decoded record's items sit in [`Decoded`]: a record's events are contiguous, as
+/// are its host facts, because each record is pushed whole before the next.
+struct Slot {
+    events: Range<usize>,
+    hosts: Range<usize>,
 }
 
-impl Decoded<'_> {
-    /// The events and host facts of one record, alone.
-    fn one(&self, slot: Slot) -> (&[RunEvent], &[HostFact]) {
-        match slot {
-            Slot::Event(i) => (std::slice::from_ref(&self.events[i]), &[]),
-            Slot::Host(i) => (&[], std::slice::from_ref(&self.hosts[i])),
+impl<'a> Decoded<'a> {
+    /// Add one record's items, keeping them together under its `messageId`.
+    fn push(&mut self, message_id: Option<&'a str>, items: Vec<Ingested>) {
+        let (first_event, first_host) = (self.events.len(), self.hosts.len());
+        for item in items {
+            match item {
+                Ingested::Event(run_event) => self.events.push(run_event),
+                Ingested::Host(host) => self.hosts.push(host),
+            }
         }
+        let slot =
+            Slot { events: first_event..self.events.len(), hosts: first_host..self.hosts.len() };
+        self.records.push((message_id, slot));
+    }
+
+    /// The events and host facts of one record, alone.
+    fn one(&self, slot: &Slot) -> (&[RunEvent], &[HostFact]) {
+        (&self.events[slot.events.clone()], &self.hosts[slot.hosts.clone()])
     }
 }
 
@@ -85,21 +100,16 @@ pub async fn handle_sqs_batch(
             }
         };
         match route(&value, ctx) {
-            Ok(Some(item)) => {
-                log_routed(shown, &item);
-                let slot = match item {
-                    Ingested::Event(run_event) => {
-                        decoded.events.push(run_event);
-                        Slot::Event(decoded.events.len() - 1)
-                    }
-                    Ingested::Host(host) => {
-                        decoded.hosts.push(host);
-                        Slot::Host(decoded.hosts.len() - 1)
-                    }
-                };
-                decoded.records.push((message_id, slot));
+            Ok(items) if items.is_empty() => {
+                tracing::debug!(message_id = shown, "ignoring non-ingest event");
             }
-            Ok(None) => tracing::debug!(message_id = shown, "ignoring non-ingest event"),
+            Ok(items) => {
+                for item in &items {
+                    log_routed(shown, item);
+                }
+                warn_of_unidentified_batch_executions(shown, &value);
+                decoded.push(message_id, items);
+            }
             Err(e) => tracing::warn!(message_id = shown, error = %e, "skipping malformed event"),
         }
     }
@@ -132,16 +142,18 @@ pub async fn handle_sqs_batch(
     Ok(outcome)
 }
 
-/// Retry each record in a transaction of its own, collecting the ones that still fail. A failing
-/// record without a `messageId` cannot be reported alone, so it fails the whole invocation.
+/// Retry each record in a transaction of its own, collecting the ones that still fail. All of a
+/// record's events share that transaction, so a record one of whose events is rejected commits
+/// none of them and is redelivered whole. A failing record without a `messageId` cannot be
+/// reported alone, so it fails the whole invocation.
 async fn one_by_one(pool: &PgPool, decoded: &Decoded<'_>) -> Result<BatchOutcome, DbError> {
     let mut outcome = BatchOutcome::default();
-    for &(message_id, slot) in &decoded.records {
+    for (message_id, slot) in &decoded.records {
         let (events, hosts) = decoded.one(slot);
         match ingest_batch(pool, events, hosts).await {
             Ok(appended) => outcome.appended += appended,
             Err(e) => {
-                let Some(message_id) = message_id else {
+                let Some(message_id) = *message_id else {
                     return Err(e);
                 };
                 tracing::error!(
@@ -159,7 +171,38 @@ async fn one_by_one(pool: &PgPool, decoded: &Decoded<'_>) -> Result<BatchOutcome
     Ok(outcome)
 }
 
-/// Log each routed record, so a stuck projection (a coordinator terminal never folding a run) can be
+/// Warn when a Batch job state change lists executions without a task ARN.
+///
+/// The decoders are pure and cannot log, and what they return has no place for the count, so
+/// this reads the job's `detail` a second time.
+fn warn_of_unidentified_batch_executions(message_id: &str, body: &serde_json::Value) {
+    if body.get("source").and_then(|source| source.as_str()) != Some("aws.batch") {
+        return;
+    }
+    if let Some(snapshot) = body.get("detail").and_then(batch_snapshot) {
+        let _span = tracing::warn_span!("record", message_id).entered();
+        warn_of_unidentified_executions(&snapshot, "ingest");
+    }
+}
+
+/// Warn when `snapshot`'s job lists executions without a task ARN (`attempts[]` entries with no
+/// `container.taskArn`), on the ingest `path` that read it (the live drain or the reconcile
+/// backstop). An execution's identity is its task ARN, so such an entry is recorded as nothing
+/// rather than under a made-up identity, and this warning (the job's id and how many) is the
+/// only trace of it.
+pub(crate) fn warn_of_unidentified_executions(snapshot: &BatchJobSnapshot, path: &'static str) {
+    let unidentified = snapshot.entries_without_task_arn();
+    if unidentified > 0 {
+        tracing::warn!(
+            path,
+            batch_job_id = snapshot.batch_job_id.as_str(),
+            unidentified,
+            "Batch reported executions without a task ARN; they are not recorded"
+        );
+    }
+}
+
+/// Log each routed item, so a stuck projection (a coordinator terminal never folding a run) can be
 /// traced from the logs to the record that should have moved it.
 fn log_routed(message_id: &str, item: &Ingested) {
     match item {

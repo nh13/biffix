@@ -12,8 +12,15 @@
 #![cfg(feature = "aws")]
 
 use aws_lambda_events::sqs::{SqsBatchResponse, SqsEvent, SqsMessage};
+use biffix_core::dedup::aws_batch_execution_ended;
+use biffix_core::event::EventData;
 use biffix_core::eventbridge::decode::QueueContext;
 use biffix_core::eventbridge::NormalizedIngestEnvelope;
+use biffix_core::source::EventSource;
+use biffix_core::testing::{
+    event, execution_log_stream, execution_task_arn, retried_job_detail, RunEventExt,
+    RETRIED_JOB_ID,
+};
 use biffix_ingest::drain::handle_sqs_batch;
 
 use crate::common;
@@ -62,6 +69,54 @@ fn coordinator_succeeded() -> String {
         }
     })
     .to_string()
+}
+
+/// The dedup key of [`task_bound`]'s event.
+const TASK_BOUND_KEY: &str = "engine:job-retried:submitted";
+
+/// The engine's binding of the retried job to `run-drain`: attempt 1 of task `align`, as the
+/// envelope the drain routes.
+fn task_bound() -> String {
+    let data = EventData::TaskSubmitted { image: None };
+    let bound = event(1.0, EventSource::Snakemake, TASK_BOUND_KEY, data)
+        .with_run("run-drain")
+        .with_task("align")
+        .with_attempt(1)
+        .with_job(RETRIED_JOB_ID);
+    serde_json::to_string(&NormalizedIngestEnvelope::new(bound)).unwrap()
+}
+
+/// EventBridge's SUCCEEDED for the retried job (the retried case: execution 1 lost with its
+/// host, execution 2 finishing), with `stream_1` as execution 1's log stream.
+fn retried_succeeded(stream_1: &str) -> String {
+    let mut detail = retried_job_detail("SUCCEEDED", 681, 147, 1386);
+    detail["attempts"][0]["container"]["logStreamName"] = stream_1.into();
+    serde_json::json!({
+        "source": "aws.batch",
+        "detail-type": "Batch Job State Change",
+        "time": "2026-09-12T04:12:31Z",
+        "detail": detail,
+    })
+    .to_string()
+}
+
+/// The dedup keys the retried job's SUCCEEDED decodes to and [`task_bound`]'s, sorted.
+fn retried_keys() -> Vec<String> {
+    let mut keys = vec![
+        TASK_BOUND_KEY.to_owned(),
+        "aws-batch:job-retried:SUCCEEDED".to_owned(),
+        aws_batch_execution_ended(&execution_task_arn(1)),
+        aws_batch_execution_ended(&execution_task_arn(2)),
+    ];
+    keys.sort();
+    keys
+}
+
+/// The log's dedup keys, sorted here (the database's collation is not fixed).
+async fn sorted_dedup_keys(pool: &sqlx::PgPool) -> Vec<String> {
+    let mut keys = dedup_keys(pool).await;
+    keys.sort();
+    keys
 }
 
 async fn dedup_keys(pool: &sqlx::PgPool) -> Vec<String> {
@@ -166,6 +221,69 @@ async fn a_record_whose_append_fails_is_the_only_one_returned_to_sqs() {
         ["m-poison"],
         "the redelivery hands back the poison record, and only it"
     );
+}
+
+/// A Batch state change decodes to several events (the job's terminal and its executions' ends).
+/// The drain appends them all, and the fold records each execution under the job's attempt.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness + --features aws"]
+async fn one_record_yielding_several_events_appends_them_together() {
+    let pool = common::isolated_pool("drain_one_record_several_events").await;
+    let event = sqs_event(vec![
+        sqs_msg("m-bind", Some(task_bound())),
+        sqs_msg("m-job", Some(retried_succeeded(&execution_log_stream(1)))),
+    ]);
+
+    let outcome = handle_sqs_batch(&pool, &ctx(), &event).await.unwrap();
+    assert_eq!(outcome.appended, 4, "the binding, the terminal and two executions' ends");
+    assert!(outcome.response.batch_item_failures.is_empty(), "{:?}", outcome.response);
+    assert_eq!(sorted_dedup_keys(&pool).await, retried_keys());
+    // Live JSON reached the execution projection through the drain's own fold.
+    let executions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM execution_projection WHERE run_id = 'run-drain'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(executions, 2);
+}
+
+/// When the batch's transaction fails on another record, a record with several events is
+/// retried alone and all of its events are committed.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness + --features aws"]
+async fn a_healthy_multi_event_record_survives_a_poison_neighbor() {
+    let pool = common::isolated_pool("drain_multi_event_record_poison_neighbor").await;
+    let event = sqs_event(vec![
+        sqs_msg("m-bind", Some(task_bound())),
+        sqs_msg("m-job", Some(retried_succeeded(&execution_log_stream(1)))),
+        sqs_msg("m-poison", Some(coordinator_submitted("cp:poison\u{0}"))),
+    ]);
+
+    let outcome = handle_sqs_batch(&pool, &ctx(), &event).await.unwrap();
+    assert_eq!(failed_ids(&outcome.response), ["m-poison"]);
+    assert_eq!(outcome.appended, 4);
+    assert_eq!(sorted_dedup_keys(&pool).await, retried_keys());
+}
+
+/// One record's events are appended in one transaction: when Postgres rejects one of them (a NUL
+/// byte in execution 1's log stream), the record goes back to SQS whole and none of its events
+/// is committed, not even the job's terminal, so its redelivery finds nothing half-recorded.
+#[tokio::test]
+#[ignore = "requires the LocalStack/Postgres harness + --features aws"]
+async fn a_record_with_a_poison_execution_is_returned_whole() {
+    let pool = common::isolated_pool("drain_poison_execution_returned_whole").await;
+    let event = sqs_event(vec![
+        sqs_msg("m-bind", Some(task_bound())),
+        sqs_msg("m-bad", Some(retried_succeeded("ls\u{0}"))),
+    ]);
+
+    let outcome = handle_sqs_batch(&pool, &ctx(), &event).await.unwrap();
+    assert_eq!(failed_ids(&outcome.response), ["m-bad"]);
+    assert_eq!(outcome.appended, 1, "only the binding is committed");
+    let keys = dedup_keys(&pool).await;
+    assert_eq!(keys, [TASK_BOUND_KEY], "none of the bad record's events is in the log");
+    assert!(!keys.iter().any(|key| key == "aws-batch:job-retried:SUCCEEDED"));
+    assert!(!keys.iter().any(|key| key.starts_with("aws-batch-exec:")));
 }
 
 /// What the drain Lambda does at the end of every invocation (`biffix_db::pool::release_idle`)

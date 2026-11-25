@@ -1,20 +1,22 @@
 //! The scheduled reconcile tick: the reconcile Lambda's periodic work.
 //!
 //! The reconcile step reads stale non-terminal attempt IDs from Aurora, describes them in bounded
-//! AWS batches, and enqueues the start and terminal facts Batch reports (a start only when the log
-//! lacks it) onto the ordinary ingest SQS queue; the reaper does the same for the live children of
-//! ended runs. A job whose terminal reached the log is not described again, so a start lost while
-//! its terminal arrived is not backfilled. It deliberately does not append or fold directly: the
-//! single ingest writer remains the sole append path.
+//! AWS batches, and enqueues the start, execution and terminal facts Batch reports (a start or an
+//! execution's event only when the log lacks it) onto the ordinary ingest SQS queue; the reaper
+//! does the same for the live children of ended runs. A job that finished in the last 7 days is
+//! described again, until one answer's events are all enqueued, when its log holds no execution
+//! end, fewer execution ends than starts, or fewer Batch starts of the job than execution ends (a
+//! start lost while its terminal arrived), or when an earlier describe of it left it unmarked. It
+//! deliberately does not append or fold directly: the single ingest writer remains the sole
+//! append path.
 //!
-//! [`run`] runs every step, one module each — `describe` (reconcile + reap), `probe` (status
-//! probe), `hosts` (host lifecycles), `pricing`, `retention` and `cache` (cache expiry) —
-//! even when an earlier one fails, and inside each step one failing job, group or bucket never
-//! stops the rest; the tick then reports every failure, so the Lambda still errors (and alarms)
-//! while the independent work was done. The decisions each step makes are pure functions in the
-//! library (`reconcile`, `pricing`, `retention`, `cache_expiry`, `status`, `budget`), unit-tested
-//! there; these modules
-//! are the AWS and database wiring around them.
+//! [`run`] runs every step, one module each — `describe` (reconcile, the finished-job backfill
+//! and reap), `probe` (status probe), `hosts` (host lifecycles), `pricing`, `retention` and
+//! `cache` (cache expiry) — even when an earlier one fails, and inside each step one failing job,
+//! group or bucket never stops the rest; the tick then reports every failure, so the Lambda still
+//! errors (and alarms) while the independent work was done. The decisions each step makes are pure
+//! functions in the library (`reconcile`, `pricing`, `retention`, `cache_expiry`, `status`,
+//! `budget`), unit-tested there; these modules are the AWS and database wiring around them.
 
 mod cache;
 mod describe;

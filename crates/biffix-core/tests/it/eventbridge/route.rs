@@ -1,6 +1,6 @@
 //! Routing tests (pure): classify an EventBridge envelope and decode it.
 
-use super::ctx;
+use super::{ctx, retried_event, route_one};
 use biffix_core::event::{Kind, RunEvent};
 use biffix_core::eventbridge::{route, Ingested, NormalizedIngestEnvelope};
 use biffix_core::ids::BatchJobId;
@@ -29,7 +29,7 @@ fn reconciled_terminal(job: &str) -> RunEvent {
 
 /// Route `ev` and expect a run event (not a host fact).
 fn route_event(ev: &serde_json::Value) -> RunEvent {
-    match route(ev, &ctx()).unwrap().unwrap() {
+    match route_one(ev) {
         Ingested::Event(event) => event,
         other => panic!("expected a run event, got {other:?}"),
     }
@@ -73,7 +73,7 @@ fn routes_ecs_container_instance_state_change_to_host() {
             "version": 1
         }
     });
-    match route(&ev, &ctx()).unwrap().unwrap() {
+    match route_one(&ev) {
         Ingested::Host(host) => {
             assert_eq!(host.container_instance_id, "06bf75");
             assert_eq!(host.ec2_instance_id, "i-0715de4fdba56a059");
@@ -89,7 +89,7 @@ fn ignores_unrelated_events() {
         "detail-type": "Object Created",
         "detail": {}
     });
-    assert!(route(&ev, &ctx()).unwrap().is_none());
+    assert!(route(&ev, &ctx()).unwrap().is_empty());
 }
 
 #[test]
@@ -110,9 +110,23 @@ fn does_not_route_an_untagged_run_event() {
     let bare = reconciled_terminal("job-x");
     let value = serde_json::to_value(bare).unwrap();
     assert!(
-        route(&value, &ctx()).unwrap().is_none(),
+        route(&value, &ctx()).unwrap().is_empty(),
         "an untagged RunEvent must not be mistaken for a biffix ingest envelope"
     );
+}
+
+#[test]
+fn a_batch_state_change_routes_every_event_it_decodes_to() {
+    let routed = route(&retried_event("SUCCEEDED", 681, 147, 1386), &ctx()).unwrap();
+    let kinds: Vec<Kind> = routed
+        .iter()
+        .map(|item| match item {
+            Ingested::Event(event) => event.kind(),
+            other => panic!("expected a run event, got {other:?}"),
+        })
+        .collect();
+    // The job's terminal, then the end of each of its two executions.
+    assert_eq!(kinds, [Kind::TaskSucceeded, Kind::BatchExecutionEnded, Kind::BatchExecutionEnded]);
 }
 
 // ── CodeBuild (captured from real builds, trimmed; the account id replaced) ──────────────────────
@@ -269,7 +283,7 @@ fn a_build_biffix_did_not_start_is_ignored() {
         serde_json::json!([{"name": "OTHER", "type": "PLAINTEXT", "value": "x"}]),
         serde_json::json!({}),
     );
-    assert!(route(&ev, &ctx()).unwrap().is_none());
+    assert!(route(&ev, &ctx()).unwrap().is_empty());
 }
 
 #[test]

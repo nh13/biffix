@@ -10,7 +10,8 @@
 use std::time::Duration;
 
 use biffix_core::event::{
-    Kind, BATCH_JOB_START_KINDS, COORDINATOR_TERMINAL_KINDS, TASK_TERMINAL_KINDS,
+    Kind, BATCH_JOB_PRE_TERMINAL_KINDS, BATCH_JOB_START_KINDS, COORDINATOR_TERMINAL_KINDS,
+    TASK_TERMINAL_KINDS,
 };
 use biffix_core::source::EventSource;
 use biffix_core::state::RunState;
@@ -44,11 +45,21 @@ pub fn batch_job_start_kinds() -> Vec<String> {
     kind_strings(&BATCH_JOB_START_KINDS)
 }
 
+/// The kinds of the facts Batch reports about a job before its terminal, which the reconcile
+/// backstop enqueues once each: [`kind_strings`] of `BATCH_JOB_PRE_TERMINAL_KINDS` (the job's
+/// start, of either shape, as [`batch_job_terminal_kinds`], and each execution's start and end),
+/// for a [`batch_fact_predicate`]. The backstop reads the dedup keys the log holds under these
+/// kinds, and enqueues a described fact only when its key is not among them.
+pub fn batch_job_known_fact_kinds() -> Vec<String> {
+    kind_strings(&BATCH_JOB_PRE_TERMINAL_KINDS)
+}
+
 /// An authoritative AWS Batch fact: an [`EventSource::AwsBatch`] event whose kind is one of the
 /// array bound at `kinds_param` ([`batch_job_terminal_kinds`] for a terminal,
-/// [`batch_job_start_kinds`] for a start). An engine-reported fact never counts: an engine's
-/// terminal is never Batch's authoritative exit, nor its start Batch's. Bound to the shared kind
-/// lists, the terminal test cannot drift from the fold's own terminal logic
+/// [`batch_job_start_kinds`] for a start, [`batch_job_known_fact_kinds`] for the facts the
+/// backstop deduplicates: a start, or an execution's start or end). An engine-reported fact never
+/// counts: an engine's terminal is never Batch's authoritative exit, nor its start Batch's. Bound
+/// to the shared kind lists, the terminal test cannot drift from the fold's own terminal logic
 /// (`AttemptState::is_terminal`), whichever shape the translator gave the fact. `alias` qualifies
 /// the columns for a correlated subquery.
 pub fn batch_fact_predicate(alias: Option<&str>, kinds_param: &str) -> String {
@@ -64,8 +75,9 @@ pub fn batch_fact_predicate(alias: Option<&str>, kinds_param: &str) -> String {
     )
 }
 
-/// Which kind of Batch job a priced job is: `attempt_cost.role`, which the reconcile tick's pricer
-/// writes and the backend's cost reads compare.
+/// Which kind of Batch job a job is: `attempt_cost.role`, which the reconcile tick's pricer writes
+/// and the backend's cost reads compare, and `execution_projection.role`, which the fold writes.
+/// Changing a value changes both tables' meaning.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JobRole {
     /// A task attempt (a child job the engine submitted).
@@ -75,7 +87,7 @@ pub enum JobRole {
 }
 
 impl JobRole {
-    /// The `attempt_cost.role` value.
+    /// The `attempt_cost.role` and `execution_projection.role` value.
     pub fn as_str(self) -> &'static str {
         match self {
             JobRole::Task => "task",
