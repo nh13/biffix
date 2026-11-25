@@ -3867,6 +3867,13 @@ export interface components {
       /** @description `forward` (live-tail toward newer events) or `backward`/absent (tail — newest first). */
       direction?: string | null;
       /**
+       * @description One execution's id (`JobExecution.execution_id`, from the task's attempts): its own log.
+       *     Must be an execution of an attempt of this task of this run (of `job`'s, when both are
+       *     given), else 404. An older server ignores it and answers the attempt's log: compare the
+       *     page's `log_stream` with the execution's.
+       */
+      execution?: string | null;
+      /**
        * @description One attempt's Batch job id (from the task's attempts); absent ⇒ the task's display attempt.
        *     Must be an attempt of this task of this run, else 404.
        */

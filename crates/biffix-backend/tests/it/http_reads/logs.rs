@@ -422,3 +422,30 @@ async fn coordinator_logs_404_for_unknown_run_or_expired_stream() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn task_logs_with_execution_serves_that_execution_s_stream() {
+    let logs =
+        |body| post_json(api::router(state_with_attempts()), "/runs/r1/task-logs/query", body);
+    let (status, v) = logs(serde_json::json!({"task": "started", "execution": "x-A1"})).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["log_stream"], "stream-A1");
+    let (status, v) =
+        logs(serde_json::json!({"task": "started", "job": "job-A0", "execution": "x-A0"})).await;
+    assert_eq!((status, &v["log_stream"]), (StatusCode::OK, &serde_json::json!("stream-A0")));
+}
+
+#[tokio::test]
+async fn task_logs_with_an_execution_not_of_the_task_or_job_is_404() {
+    let logs =
+        |body| post_json(api::router(state_with_attempts()), "/runs/r1/task-logs/query", body);
+    for body in [
+        // Another task's execution; one of this task's other attempt than `job`; an unknown one.
+        serde_json::json!({"task": "started", "execution": "x-B"}),
+        serde_json::json!({"task": "started", "job": "job-A0", "execution": "x-A1"}),
+        serde_json::json!({"task": "started", "execution": "nope"}),
+    ] {
+        let (status, _) = logs(body.clone()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    }
+}

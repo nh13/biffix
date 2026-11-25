@@ -1055,10 +1055,10 @@ function logPage(stream, who, query, send) {
   );
 }
 
-/** `POST /runs/{run_id}/task-logs/query`: one task's log, or one of its attempts'
- * (`job`), as logs.rs `task_log_page` derives the stream: a task the run does not have, or a job
- * that is not one of its attempts, is a 404; a task never run on Batch (queued, a cache hit) has
- * no stream yet. */
+/** `POST /runs/{run_id}/task-logs/query`: one task's log, or one of its attempts' (`job`) or
+ * executions' (`execution`), as logs.rs `task_log_page` derives the stream: a task the run does not
+ * have, or a job or execution that is not one of its attempts', is a 404; a task never run on
+ * Batch (queued, a cache hit) has no stream yet. */
 function taskLogs(c) {
   const r = namedRun(c);
   if (!r) return;
@@ -1074,6 +1074,17 @@ function taskLogs(c) {
     t.batch_job_id,
   ];
   if (job != null && !jobs.includes(job)) return send(404);
+  // One execution's own stream: only one of this task's attempts' (of `job`'s, when given).
+  const execution = query.get('execution');
+  if (execution != null) {
+    const views = ATTEMPT_VIEWS.get(`${r.run_id}\u0000${key}`) ?? [];
+    const x = views
+      .filter((_, i) => job == null || job === `job-${i + 1}`)
+      .flatMap((v) => v.executions ?? [])
+      .find((e) => e.execution_id === execution);
+    if (!x) return send(404);
+    return logPage(x.log_stream ?? null, key, query, send);
+  }
   // A queued task's job has no host yet, so no stream.
   const ranOnBatch = t.log_stream != null || (t.batch_job_id != null && t.state !== 'queued');
   logPage(ranOnBatch ? (t.log_stream ?? `mock/${key}`) : null, key, query, send);

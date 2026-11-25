@@ -214,6 +214,20 @@ export const ATTEMPT_VIEWS = new Map([
         spot_warned_at: now - 98.5 * h + 38 * 60,
         termination_category: 'spot',
         host: { capacity: 'spot', capacity_source: 'instance' },
+        executions: [
+          {
+            execution_id: 'arn:aws:ecs:us-east-1:000000000000:task/biffix/9c8d7e6f',
+            ordinal: 1,
+            ended: true,
+            final_execution: true,
+            termination_category: 'spot',
+            log_stream: 'mock/STAR_ALIGN (Tumor_4) #8/1',
+            started_at: now - 98.5 * h,
+            stopped_at: now - 98.5 * h + 40 * 60,
+            spot_warned_at: now - 98.5 * h + 38 * 60,
+            interruption: 'spot_reclaimed',
+          },
+        ],
       },
       {
         started_at: now - 97.7 * h,

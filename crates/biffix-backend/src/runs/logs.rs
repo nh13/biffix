@@ -2,7 +2,7 @@
 //! coordinator's CloudWatch log stream ([`log_page`], [`task_log_page`]), the end of a log for a
 //! failure summary ([`log_lines`]), and a task's Batch attempts ([`task_attempts`]).
 
-use biffix_api::{LogLine, LogPage, Task, TaskAttemptList, TaskLogsRequest};
+use biffix_api::{LogLine, LogPage, Task, TaskAttempt, TaskAttemptList, TaskLogsRequest};
 use biffix_core::ids::{BatchJobId, RunId};
 
 use crate::aws::logs::LogDirection;
@@ -127,26 +127,43 @@ pub(crate) async fn task_log_page(
     // Derive the stream from a task the caller is authorized to see — never trust a client-supplied
     // stream name (that would let a viewer read any stream in the log group).
     let task = task_or_404(state, rid, q.task.as_str()).await?;
-    let stream = match q.job.as_ref().map(BatchJobId::as_str) {
-        None => task.log_stream.clone(),
-        // A specific attempt: only one recorded for THIS task of THIS run, so a viewer can never
-        // name another run's (or task's) job to read its stream.
-        Some(job) => {
-            state
-                .store
-                .get_attempts(rid, &task.task_key)
-                .await
-                .map_err(ServiceError::status_only)?
-                .into_iter()
-                .find(|a| a.batch_job_id.as_str() == job)
-                .ok_or(ServiceError::NotFound(String::new()))?
-                .log_stream
-        }
+    let job = q.job.as_ref().map(BatchJobId::as_str);
+    let stream = if job.is_none() && q.execution.is_none() {
+        task.log_stream.clone()
+    } else {
+        // A specific attempt or execution: only one recorded for THIS task of THIS run, so a
+        // viewer can never name another run's (or task's) job or execution to read its stream.
+        let attempts = state
+            .store
+            .get_attempts(rid, &task.task_key)
+            .await
+            .map_err(ServiceError::status_only)?;
+        picked_stream(&attempts, job, q.execution.as_deref())
+            .ok_or(ServiceError::NotFound(String::new()))?
     };
     // Queued / cache-hit / local rule: no Batch job, so no stream yet — an empty page, not 404.
     let group = project_task_log_group(&*state.projects.current().await, run);
     log_page(state, group.as_deref(), stream, q.cursor.as_deref(), q.direction.as_deref(), q.limit)
         .await
+}
+
+/// The stream of the attempt `job` names, or of the execution `execution` names (among `job`'s
+/// executions when both are given), from a task's own `attempts`: `None` when no attempt or
+/// execution of them matches (a 404). A match's own stream, even when it has none yet, never
+/// another's.
+fn picked_stream(
+    attempts: &[TaskAttempt],
+    job: Option<&str>,
+    execution: Option<&str>,
+) -> Option<Option<String>> {
+    let mut attempts = attempts.iter().filter(|a| job.is_none_or(|j| a.batch_job_id.as_str() == j));
+    match execution {
+        None => attempts.next().map(|a| a.log_stream.clone()),
+        Some(id) => attempts
+            .flat_map(|a| &a.executions)
+            .find(|x| x.execution_id == id)
+            .map(|x| x.log_stream.clone()),
+    }
 }
 
 /// Task `key` of run `rid`, or a bare 404 when the run has no such task.
@@ -180,4 +197,47 @@ pub(crate) async fn task_attempts(
         }
     }
     Ok(TaskAttemptList { task_key: task.task_key.clone(), attempts })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// job-1 (stream s1) ran twice (x1 with stream x1-s, x2 with none yet); job-2 (s2) once (x3).
+    fn attempts() -> Vec<TaskAttempt> {
+        let attempt = |job: &str, stream: &str, executions: serde_json::Value| {
+            serde_json::from_value(serde_json::json!({
+                "batch_job_id": job, "state": "failed", "log_stream": stream,
+                "executions": executions,
+            }))
+            .unwrap()
+        };
+        let execution = |id: &str, stream: Option<&str>| {
+            serde_json::json!({"execution_id": id, "ordinal": 1, "ended": true,
+                               "final_execution": true, "log_stream": stream})
+        };
+        vec![
+            attempt(
+                "job-1",
+                "s1",
+                serde_json::json!([execution("x1", Some("x1-s")), execution("x2", None)]),
+            ),
+            attempt("job-2", "s2", serde_json::json!([execution("x3", Some("x3-s"))])),
+        ]
+    }
+
+    #[test]
+    fn a_log_is_picked_only_from_the_task_s_own_attempts_and_executions() {
+        let a = attempts();
+        let some = |s: &str| Some(Some(s.to_string()));
+        assert_eq!(picked_stream(&a, Some("job-2"), None), some("s2"));
+        assert_eq!(picked_stream(&a, None, Some("x1")), some("x1-s"));
+        assert_eq!(picked_stream(&a, Some("job-2"), Some("x3")), some("x3-s"));
+        // Found, but no stream yet: its own (none), never the attempt's.
+        assert_eq!(picked_stream(&a, None, Some("x2")), Some(None));
+        // Unknown job or execution, or an execution of another attempt than `job`: a 404.
+        assert_eq!(picked_stream(&a, Some("job-9"), None), None);
+        assert_eq!(picked_stream(&a, None, Some("x9")), None);
+        assert_eq!(picked_stream(&a, Some("job-2"), Some("x1")), None);
+    }
 }

@@ -8240,6 +8240,13 @@
             ],
             "description": "`forward` (live-tail toward newer events) or `backward`/absent (tail — newest first)."
           },
+          "execution": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One execution's id (`JobExecution.execution_id`, from the task's attempts): its own log.\nMust be an execution of an attempt of this task of this run (of `job`'s, when both are\ngiven), else 404. An older server ignores it and answers the attempt's log: compare the\npage's `log_stream` with the execution's."
+          },
           "job": {
             "type": [
               "string",

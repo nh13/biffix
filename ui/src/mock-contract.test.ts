@@ -597,6 +597,22 @@ describe('the mock API', () => {
     const align = 'align:sample=HG00096';
     expect(await status(LIVE, { task: align, job: 'job-99' })).toBe(404);
     expect(await status(LIVE, { task: align, direction: 'sideways' })).toBe(400);
+    // One execution's own log, only of this task's attempts (of `job`'s, when given).
+    const DONE = '/runs/run_01HGWDdone';
+    const star = 'STAR_ALIGN (Normal_1) #2';
+    const reclaimed = 'arn:aws:ecs:us-east-1:000000000000:task/biffix/0a1b2c3d';
+    expect(obj(await logs(DONE, { task: star, execution: reclaimed })).log_stream).toBe(
+      'mock/STAR_ALIGN (Normal_1) #2/1',
+    );
+    expect(await status(DONE, { task: star, execution: 'nope' })).toBe(404);
+    expect(await status(DONE, { task: star, job: 'job-99', execution: reclaimed })).toBe(404);
+    // An execution of the task's other attempt than `job` is not `job`'s.
+    const OOM = '/runs/run_01HGWEoom';
+    const tumor = 'STAR_ALIGN (Tumor_4) #8';
+    const first = 'arn:aws:ecs:us-east-1:000000000000:task/biffix/9c8d7e6f';
+    expect(await status(OOM, { task: tumor, job: 'job-1', execution: first })).toBe(200);
+    expect(await status(OOM, { task: tumor, job: 'job-2', execution: first })).toBe(404);
+    expect(await status(LIVE, { task: align, execution: reclaimed })).toBe(404);
     const log = obj(await logs(LIVE, { task: align }));
     expect([log.log_stream, (log.events as Json[]).length]).toEqual([
       'mock/align:sample=HG00096',
