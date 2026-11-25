@@ -20,6 +20,15 @@ pub(super) fn keep_min_by<T: Copy>(slot: &mut Option<T>, value: Option<T>, min: 
     }
 }
 
+/// Set `slot` to `value` if unset, else keep whichever of the two has the lesser `key`: the
+/// order-independent latch for a value taken whole from one of several events. An exact tie keeps
+/// `slot`, which is the same value when the key identifies it (as an event's serialization does).
+pub(super) fn keep_least_by<T, K: Ord>(slot: &mut Option<T>, value: T, key: fn(&T) -> &K) {
+    if slot.as_ref().is_none_or(|current| key(&value) < key(current)) {
+        *slot = Some(value);
+    }
+}
+
 /// The `(ts micros, seq)` of the event a latest-wins field was taken from.
 pub(super) type Stamp = (i64, Option<LogSeq>);
 

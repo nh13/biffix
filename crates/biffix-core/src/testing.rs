@@ -1,12 +1,14 @@
 //! Test builders for the contract types that tests construct everywhere, so a test names only the
 //! fields its case is about and a new field gets its default here once, instead of in a struct
 //! literal in every test that builds one. Also the one Batch job the execution-event tests of
-//! every crate share (`RETRIED_*`, [`retried_job_detail`], [`retried_job_snapshot`]).
+//! every crate share (`RETRIED_*`, [`retried_job_detail`], [`retried_job_snapshot`]), and the
+//! builders of one execution's events ([`execution_started`], [`execution_ended`]).
 //!
 //! Test tooling, not library API: compiled only for this crate's tests and behind the
 //! `test-support` feature, which only the workspace's dev-dependencies turn on.
 
-use crate::event::{EventData, LogSeq, RunEvent, RunSubmitted};
+use crate::dedup::{aws_batch_execution_ended, aws_batch_execution_started};
+use crate::event::{EventData, LogSeq, RunEvent, RunSubmitted, TerminationCategory};
 use crate::eventbridge::execution::{BatchJobSnapshot, ExecutionFacts};
 use crate::ids::{Attempt, BatchJobId, InstanceId, RunId, TaskKey};
 use crate::source::EventSource;
@@ -101,7 +103,7 @@ pub const RETRIED_QUEUE_ARN: &str =
 
 /// The `statusReason` Batch gives an execution lost with its host; it categorizes as
 /// `host_terminated`.
-pub const RETRIED_LOST_REASON: &str = "Host EC2 (instance i-0b97006784c0b855a) terminated.";
+pub const RETRIED_LOST_REASON: &str = "Host EC2 (instance i-0123456789abcdef0) terminated.";
 
 /// The `statusReason` Batch gives an execution whose container exited by itself.
 pub const RETRIED_EXITED_REASON: &str = "Essential container in task exited";
@@ -203,6 +205,44 @@ pub fn retried_job_snapshot() -> BatchJobSnapshot {
             },
         ],
     }
+}
+
+/// The `batch_execution_started` event of execution `execution_id` (its ECS task ARN) of Batch
+/// job `job`, started at `started_s` (epoch seconds): the event the builder
+/// ([`crate::eventbridge::execution::execution_events`]) makes, with its dedup key and its `ts`
+/// at the start, but no host, queue or log stream. Set the host and queue with [`RunEventExt`].
+pub fn execution_started(job: &str, execution_id: &str, started_s: f64) -> RunEvent {
+    let data = EventData::BatchExecutionStarted {
+        execution_id: execution_id.to_owned(),
+        started_at: Timestamp::from_epoch_seconds(started_s),
+        log_stream: None,
+    };
+    let key = aws_batch_execution_started(execution_id);
+    event(started_s, EventSource::AwsBatch, key, data).with_job(job)
+}
+
+/// The `batch_execution_ended` event of execution `execution_id` of Batch job `job`: started at
+/// `started_s` (`None` for an execution AWS gave no start), stopped at `stopped_s` (the event's
+/// `ts`) and categorized `category`, with no exit code, reason, log stream, host or queue. As
+/// [`execution_started`].
+pub fn execution_ended(
+    job: &str,
+    execution_id: &str,
+    started_s: Option<f64>,
+    stopped_s: f64,
+    category: Option<TerminationCategory>,
+) -> RunEvent {
+    let data = EventData::BatchExecutionEnded {
+        execution_id: execution_id.to_owned(),
+        started_at: started_s.map(Timestamp::from_epoch_seconds),
+        stopped_at: Timestamp::from_epoch_seconds(stopped_s),
+        exit_code: None,
+        status_reason: None,
+        termination_category: category,
+        log_stream: None,
+    };
+    let key = aws_batch_execution_ended(execution_id);
+    event(stopped_s, EventSource::AwsBatch, key, data).with_job(job)
 }
 
 /// The environment the deploy's CDK (Python) sets on a Lambda, read as text, for the tests that
