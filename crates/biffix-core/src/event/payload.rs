@@ -43,6 +43,16 @@ impl TerminationCategory {
         }
     }
 
+    /// The categories of an attempt or execution that ended because its host went away (a spot
+    /// reclaim, or a host terminated for another reason): work AWS Batch runs again.
+    pub const HOST_LOST: [TerminationCategory; 2] =
+        [TerminationCategory::Spot, TerminationCategory::HostTerminated];
+
+    /// Whether this category is one of [`TerminationCategory::HOST_LOST`].
+    pub fn is_host_lost(&self) -> bool {
+        Self::HOST_LOST.contains(self)
+    }
+
     /// The category spelled `s` (its serde form), or [`TerminationCategory::Unknown`].
     pub fn parse(s: &str) -> Self {
         [
