@@ -9,9 +9,10 @@ use crate::event::{
     MAX_COORDINATOR_GENERATION,
 };
 use crate::ids::{Attempt, BatchJobId, InstanceId, RunId, TaskKey};
+use crate::reducer::execution::merge_execution;
 use crate::reducer::keep::{keep_latest, keep_min, keep_min_by, keep_min_micros};
 use crate::reducer::{
-    get_or_insert_with, AttemptProjection, RunProjection, TaskProjection, Verdict,
+    get_or_insert_with, AttemptProjection, Executions, RunProjection, TaskProjection, Verdict,
 };
 use crate::source::EventSource;
 use crate::state::{AttemptState, TaskState};
@@ -82,6 +83,14 @@ fn is_coordinator_lifecycle(data: &EventData) -> bool {
     )
 }
 
+/// The two kinds that tell one execution of a Batch job (its start and its end). They fold only
+/// into their job's executions: an execution is not its job's lifecycle, so the fold keeps them
+/// off every path that moves an attempt's or a run's own facts. Named once so those sites cannot
+/// drift apart.
+fn is_batch_execution(data: &EventData) -> bool {
+    matches!(data, EventData::BatchExecutionStarted { .. } | EventData::BatchExecutionEnded { .. })
+}
+
 /// The log stream a coordinator lifecycle event carries, if any.
 fn coordinator_log_stream(data: &EventData) -> Option<&str> {
     match data {
@@ -104,8 +113,9 @@ fn coordinator_log_stream(data: &EventData) -> Option<&str> {
 /// `coordinator_submitted` has two producers: the control plane's binding at submit, and the
 /// translation of the coordinator job's own AWS Batch `SUBMITTED` state change. A Batch job's
 /// other lifecycle kinds fold from the Batch translator alone when they name a job (no producer but
-/// it emits them today, so this is the same guard for a row the ingest check cannot reach). Every
-/// other kind folds from any source.
+/// it emits them today, so this is the same guard for a row the ingest check cannot reach). A Batch
+/// job's executions fold from the Batch translator alone too, job named or not. Every other kind
+/// folds from any source.
 pub fn is_trusted_producer(e: &RunEvent) -> bool {
     match e.data {
         EventData::RunSubmitted(_)
@@ -139,6 +149,8 @@ pub fn is_trusted_producer(e: &RunEvent) -> bool {
         {
             e.source == EventSource::AwsBatch
         }
+        // An execution is AWS's account of one run of a job on a host; nobody else has one.
+        ref data if is_batch_execution(data) => e.source == EventSource::AwsBatch,
         _ => true,
     }
 }
@@ -284,13 +296,16 @@ impl Projection {
             }
         }
 
-        // 2. Events that carry a run_id apply directly.
-        if let Some(run) = &e.run_id {
+        // 2. Events that carry a run_id apply directly. Not an execution's: it belongs to its
+        // job and to whoever that job is bound to, so one that names a run all the same (no
+        // producer does) cannot put an execution on a run that does not own the job.
+        if let Some(run) = e.run_id.as_ref().filter(|_| !is_batch_execution(&e.data)) {
             self.apply_run_scoped(run, e);
             return;
         }
 
-        // 3. AWS events with a batch_job_id but no run_id: attribute via binding, else pend.
+        // 3. AWS events with a batch_job_id but no run_id (and every execution event): attribute
+        // via binding, else pend.
         if let Some(job) = &e.batch_job_id {
             if let Some(run) = self.coordinator_binding.get(job.as_str()).cloned() {
                 // A coordinator job: run-level only, never a task attempt — whatever kind the
@@ -346,6 +361,18 @@ impl Projection {
         let Some(job) = &e.batch_job_id else {
             return;
         };
+        // An execution folds into the job's executions and nowhere else. It stops here, before
+        // the attempt's own latches: its host is its own, not the attempt's (the attempt keeps
+        // the host its job's lifecycle named), and its start, stop, reason and exit code are one
+        // execution's, never the attempt's state, span or terminal detail. It carries no engine
+        // attempt number either, so none is taken from it. The queue is the job's, and the same
+        // on every execution.
+        if is_batch_execution(&e.data) {
+            let ap = self.ensure_attempt(run, task, job, None, AttemptState::Created);
+            keep_min(&mut ap.queue, e.queue.as_deref());
+            merge_execution(&mut ap.executions, e);
+            return;
+        }
         // A task-bound job's AWS facts are task lifecycle even if the translator (going by queue
         // name) shaped them as coordinator events.
         let e = &*as_task_event(e);
@@ -490,6 +517,18 @@ impl Projection {
     }
 
     fn apply_run_fact(&mut self, run: &RunId, e: &RunEvent) {
+        // An execution arrives here only for a coordinator-bound job, and folds into that job's
+        // executions and nowhere else. It stops here, before everything below: an execution is
+        // not coordinator lifecycle, so it neither launches the run nor names its coordinator
+        // job, log stream or host, and its end is not the coordinator's (Batch may run the job
+        // again), so the run's state does not move.
+        if is_batch_execution(&e.data) {
+            if let Some(job) = &e.batch_job_id {
+                let executions = &mut self.run_mut(run).coordinator_executions;
+                merge_execution(get_or_insert_with(executions, job.as_str(), Executions::new), e);
+            }
+            return;
+        }
         // Task-scoped engine events that carry their own task_key.
         if let Some(task) = e.task_key.clone() {
             match &e.data {

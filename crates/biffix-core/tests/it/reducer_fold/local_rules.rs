@@ -261,7 +261,7 @@ fn a_local_task_s_image_is_the_one_its_task_created_names_in_any_order() {
 }
 
 /// A single-job run's anchor.
-fn single_job_anchor(ts: f64, run: &str) -> RunEvent {
+pub(super) fn single_job_anchor(ts: f64, run: &str) -> RunEvent {
     let mut anchor = run_anchor(ts, run);
     if let EventData::RunSubmitted(ref mut a) = anchor.data {
         a.single_job = Some(biffix_core::event::SingleJobUse {

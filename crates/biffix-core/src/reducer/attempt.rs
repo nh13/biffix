@@ -3,6 +3,7 @@
 
 use crate::event::TerminationCategory;
 use crate::ids::{Attempt, BatchJobId, InstanceId};
+use crate::reducer::execution::Executions;
 use crate::reducer::keep::Stamp;
 use crate::state::AttemptState;
 
@@ -41,9 +42,11 @@ pub struct AttemptProjection {
     /// The container image the attempt's Batch job ran, from its `task_submitted` (lexicographic
     /// min on a conflict: one job runs one image).
     pub image: Option<String>,
-    /// The host this attempt ran on: the value from the latest `(ts, seq)` attributed event that
-    /// carries one. A Batch retry within the job can land on another host, so a last-write set
-    /// would depend on fold order; latest-wins agrees with a replay in log order.
+    /// The host this attempt ran on: the value from the latest `(ts, seq)` attributed event of the
+    /// job's own lifecycle that carries one. A Batch retry within the job can land on another
+    /// host, so a last-write set would depend on fold order; latest-wins agrees with a replay in
+    /// log order. An execution's event never sets it: that host is the execution's own
+    /// (`executions`).
     pub instance_id: Option<InstanceId>,
     /// Source-time (epoch micros) the attempt first started running: the **earliest** `TaskStarted`
     /// observed (min-latched). AWS `STARTING` and `RUNNING` both translate to `TaskStarted`, so an
@@ -54,6 +57,12 @@ pub struct AttemptProjection {
     /// Success outranks failure (see `AttemptState::rank`) and owns this field, so it is a pure
     /// function of the observed set regardless of the order the two terminals fold.
     pub finished_at_micros: Option<i64>,
+    /// The job's executions, by execution id: each time AWS ran the job on a host. Empty for a
+    /// job with no execution events (one from before they were recorded). They are told beside
+    /// the attempt's own facts and change none of them: `started_at_micros` to
+    /// `finished_at_micros` is still the whole span, and the executions say what it was made of
+    /// ([`execution_durations`](crate::reducer::execution_durations)).
+    pub executions: Executions,
     /// Source-time (epoch micros) of the earliest `task_submitted` for this job (min-latched, so
     /// order-independent). Lets [`TaskProjection::state`](crate::reducer::TaskProjection::state)
     /// recognize a retry's resubmission even when the engine reuses an attempt number.
@@ -88,6 +97,7 @@ impl AttemptProjection {
             instance_id: None,
             started_at_micros: None,
             finished_at_micros: None,
+            executions: Executions::new(),
             submitted_at_micros: None,
             live_log_stream: None,
             log_stream_at: None,

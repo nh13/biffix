@@ -22,6 +22,7 @@ use common::{fold_in_order, permutations};
 mod attempts;
 mod cancellation;
 mod coordinator;
+mod executions;
 mod experiments;
 mod invariant;
 mod local_rules;

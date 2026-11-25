@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use super::keep::keep_least_by;
 use crate::event::{EventData, RunEvent, TerminationCategory};
+use crate::time::Timestamp;
 
 /// What orders two events of one kind for one execution: `(ts micros, the event serialized)`.
 /// The lesser one is kept. `seq` is not serialized, so the choice does not depend on log position
@@ -191,7 +192,7 @@ pub(super) fn merge_execution(executions: &mut Executions, e: &RunEvent) {
         } => {
             let facts = EndFacts {
                 stamp: stamp(),
-                started_at_micros: started_at.map(crate::time::Timestamp::as_micros),
+                started_at_micros: started_at.map(Timestamp::as_micros),
                 stopped_at_micros: stopped_at.as_micros(),
                 exit_code: *exit_code,
                 status_reason: status_reason.clone(),
