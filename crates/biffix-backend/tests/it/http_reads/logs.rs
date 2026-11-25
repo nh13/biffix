@@ -66,7 +66,9 @@ async fn task_logs_404_for_unknown_run() {
 }
 
 /// `state_with_tasks`, where the `started` task (display job `job-A`) also has an earlier
-/// reclaimed attempt `job-A0`, and the `waiting` task has its own attempt `job-B`.
+/// reclaimed attempt `job-A0`, and the `waiting` task has its own attempt `job-B`. AWS Batch ran
+/// job-A0 once (`x-A0`) and job-A once so far, on a spot host it lost (`x-A1`: Batch is finding
+/// another); job-B once (`x-B`).
 fn state_with_attempts() -> AppState {
     let store = MemStore::new();
     let mut detail = testing::run_detail("r1", "running");
@@ -75,14 +77,22 @@ fn state_with_attempts() -> AppState {
         task_view("waiting", "queued", None, Some("job-B")),
     ];
     store.insert(detail);
+    let execution = |id: &str, stream: &str, interruption: Option<&str>| {
+        serde_json::from_value::<biffix_api::JobExecution>(serde_json::json!({
+            "execution_id": id, "ordinal": 1, "ended": true, "final_execution": true,
+            "log_stream": stream, "interruption": interruption,
+        }))
+        .unwrap()
+    };
     let mut reclaimed = attempt_view("job-A0", 1, "failed", "stream-A0");
     reclaimed.status_reason = Some("Host EC2 (instance i-1) terminated.".into());
-    store.insert_attempts(
-        "r1",
-        "started",
-        vec![reclaimed, attempt_view("job-A", 2, "running", "stream-A")],
-    );
-    store.insert_attempts("r1", "waiting", vec![attempt_view("job-B", 1, "queued", "stream-B")]);
+    reclaimed.executions = vec![execution("x-A0", "stream-A0", None)];
+    let mut display = attempt_view("job-A", 2, "running", "stream-A");
+    display.executions = vec![execution("x-A1", "stream-A1", Some("spot_reclaimed"))];
+    store.insert_attempts("r1", "started", vec![reclaimed, display]);
+    let mut waiting = attempt_view("job-B", 1, "queued", "stream-B");
+    waiting.executions = vec![execution("x-B", "stream-B1", None)];
+    store.insert_attempts("r1", "waiting", vec![waiting]);
     TestState::new().with_store(Arc::new(store)).build()
 }
 
@@ -103,6 +113,9 @@ async fn attempts_lists_every_attempt_and_marks_the_display_one() {
     assert!(attempts[0].get("display").is_none(), "not the display attempt");
     assert_eq!(attempts[1]["batch_job_id"], "job-A");
     assert_eq!(attempts[1]["display"], true);
+    // Batch lost job-A's host and is finding another; job-A0 is over.
+    assert_eq!(attempts[1]["awaiting_host"], true);
+    assert!(attempts[0].get("awaiting_host").is_none());
 }
 
 #[tokio::test]

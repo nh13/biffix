@@ -160,7 +160,8 @@ async fn task_or_404(state: &AppState, rid: &RunId, key: &str) -> Result<Task, S
 }
 
 /// Every Batch attempt of `task` of run `rid`, each marked whether it is the task's display attempt
-/// and with its host's queue capacity. 404 for a task the run does not have.
+/// and whether AWS Batch is finding it a new host, and with its hosts' queue capacity. 404 for a
+/// task the run does not have.
 pub(crate) async fn task_attempts(
     state: &AppState,
     rid: &RunId,
@@ -171,7 +172,10 @@ pub(crate) async fn task_attempts(
         state.store.get_attempts(rid, &task.task_key).await.map_err(ServiceError::status_only)?;
     for attempt in &mut attempts {
         attempt.display = task.batch_job_id.as_ref() == Some(&attempt.batch_job_id);
-        if let Some(host) = attempt.host.as_mut() {
+        attempt.awaiting_host =
+            super::executions::awaiting_host(&attempt.state, &task.state, &attempt.executions);
+        let hosts = attempt.executions.iter_mut().filter_map(|x| x.host.as_mut());
+        for host in attempt.host.as_mut().into_iter().chain(hosts) {
             fill_queue_capacity(host, &state.deploy.queue_capacities);
         }
     }

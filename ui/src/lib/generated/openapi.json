@@ -5065,16 +5065,131 @@
           "price_per_hour": {
             "type": "number",
             "format": "double",
-            "description": "The average compute price over the job, USD/hour."
+            "description": "The average compute price over the job, USD/hour (for an attempt AWS Batch ran more than\nonce, averaged over its executions' run time)."
           },
           "price_source": {
             "type": "string",
-            "description": "Where the compute price came from: `on_demand` (list price), `spot_history` (EC2 spot price\nhistory for the host's type and AZ — what spot bills), `spot_at_on_demand` (spot, history\nunavailable: an upper bound), `unknown_at_on_demand` (lifecycle unknown)."
+            "description": "Where the compute price came from: `on_demand` (list price), `spot_history` (EC2 spot price\nhistory for the host's type and AZ — what spot bills), `spot_at_on_demand` (spot, history\nunavailable: an upper bound), `unknown_at_on_demand` (lifecycle unknown), or `mixed` (an\nattempt whose executions were priced from different sources; see each execution's)."
           },
           "usd": {
             "type": "number",
             "format": "double",
             "description": "Compute + root volume, USD."
+          }
+        }
+      },
+      "JobExecution": {
+        "type": "object",
+        "description": "One execution of a Batch job (a task's attempt, or the coordinator): one time AWS Batch ran\nthe job on a host (one ECS task). An execution that ended because its host went away is a spot\nreclaim or a lost host (`interruption`), and Batch runs the job again while its retries last.",
+        "required": [
+          "execution_id",
+          "ordinal",
+          "ended",
+          "final_execution"
+        ],
+        "properties": {
+          "cost": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/JobCost",
+                "description": "The execution's estimated cost, once priced (a run priced before executions were has\nonly its attempts' costs)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ended": {
+            "type": "boolean",
+            "description": "Whether the execution has ended."
+          },
+          "execution_id": {
+            "type": "string",
+            "description": "The ECS task ARN."
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "final_execution": {
+            "type": "boolean",
+            "description": "Whether this is the job's last execution so far."
+          },
+          "host": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Host",
+                "description": "The host the execution ran on, when anything about it is known."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "instance_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ECS container-instance id of the host (not an EC2 instance id)."
+          },
+          "interruption": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the execution ended early, when its host went away: `spot_reclaimed` (the host was\nspot, by the host registry, AWS's reason or an EC2 warning while it ran) or `host_lost`\n(otherwise, including a spot host biffix has no record of). Open: a reader treats a value\nit does not know as `host_lost`. Omitted for an execution that did not lose its host."
+          },
+          "log_stream": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The execution's own CloudWatch log stream. A task execution's log is read through\n`POST /runs/{id}/task-logs/query` with `execution`; a coordinator execution's only while it\nis the coordinator's current stream (`GET /runs/{id}/coordinator-logs`)."
+          },
+          "ordinal": {
+            "type": "integer",
+            "format": "int64",
+            "description": "1-based position among the job's executions."
+          },
+          "spot_warned_at": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "When EC2 warned that the execution's spot host would be reclaimed (epoch seconds), if it\ndid while the execution ran."
+          },
+          "started_at": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Start / stop as epoch seconds. A start can be missing when AWS reported only the end."
+          },
+          "status_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "AWS Batch's reason the execution stopped (e.g. `Host EC2 (instance i-…) terminated.`)."
+          },
+          "stopped_at": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "termination_category": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -7790,7 +7905,7 @@
       },
       "TaskAttempt": {
         "type": "object",
-        "description": "One AWS Batch attempt of a task. A task retried after a spot reclaim has several; `Task`\nsummarizes only the display attempt (the succeeded one, else the highest-numbered).",
+        "description": "One attempt of a task: one try by the workflow engine, run as one AWS Batch job. A task the\nengine retried has several; `Task` summarizes only the display attempt (the succeeded one, else\nthe highest-numbered). AWS Batch may itself run an attempt's job more than once (after a spot\nreclaim or a lost host): those runs are its `executions`, under the one attempt.",
         "required": [
           "batch_job_id",
           "state"
@@ -7803,6 +7918,10 @@
             ],
             "format": "int64",
             "description": "The engine's attempt number (1-based); absent until the engine's submit is observed."
+          },
+          "awaiting_host": {
+            "type": "boolean",
+            "description": "AWS Batch lost the attempt's host and is finding another to run it again on: the attempt\nhas not ended, every execution so far has, and the last one lost its host. Omitted when\nfalse."
           },
           "batch_job_id": {
             "type": "string"
@@ -7821,6 +7940,13 @@
           "display": {
             "type": "boolean",
             "description": "Whether this is the task's display attempt (the one `Task` summarizes)."
+          },
+          "executions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobExecution"
+            },
+            "description": "Each time AWS Batch ran the attempt's job on a host, in order. More than one when Batch\nran it again after losing a host. Omitted when none is recorded (a run recorded before\nexecutions were, or a job that has not started)."
           },
           "exit_code": {
             "type": [
@@ -7860,6 +7986,13 @@
               "null"
             ]
           },
+          "lost_seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
           "queue": {
             "type": [
               "string",
@@ -7883,6 +8016,14 @@
             "format": "double",
             "description": "The vCPUs the attempt's Batch job requested (not its host's capacity — see `host`); absent when\nBatch reported no requirement."
           },
+          "run_seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "What the span (`started_at` to `finished_at`) was made of, in seconds: the time the\nattempt's containers ran, the part of that spent in executions lost with their host, and\nthe time it waited for a host between executions. Omitted without execution facts."
+          },
           "spot_warned_at": {
             "type": [
               "number",
@@ -7897,7 +8038,7 @@
               "null"
             ],
             "format": "double",
-            "description": "Attempt start / finish as epoch seconds."
+            "description": "Attempt start / finish as epoch seconds: the whole span, from its first execution's start\nto its last one's end, so it includes time on a lost host and the wait for a new one (see\n`run_seconds`, `lost_seconds` and `wait_seconds`)."
           },
           "state": {
             "type": "string",
@@ -7915,6 +8056,13 @@
               "string",
               "null"
             ]
+          },
+          "wait_seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
           }
         }
       },

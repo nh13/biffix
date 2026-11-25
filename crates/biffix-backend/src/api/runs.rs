@@ -417,6 +417,7 @@ pub(super) fn routes() -> axum::Router<AppState> {
         RunQueryRequest,
         TaskAttemptList,
         TaskAttempt,
+        biffix_api::JobExecution,
         Host,
         biffix_api::JobCost,
         biffix_api::RunCost,

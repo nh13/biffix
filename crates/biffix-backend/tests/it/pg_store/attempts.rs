@@ -178,3 +178,69 @@ async fn run_detail_rolls_up_attempt_costs() {
     assert_eq!(a1.cost.as_ref().unwrap().price_source, "spot_history");
     assert!(attempts.iter().find(|a| a.batch_job_id.as_str() == "a3").unwrap().cost.is_none());
 }
+
+#[tokio::test]
+#[ignore = "requires --features pg + the Postgres harness"]
+async fn attempts_nest_their_executions_with_their_own_host_warning_and_cost() {
+    let pool = seeded_pool("attempts_nest_their_executions").await;
+    exec_all(
+        &pool,
+        &[
+            "INSERT INTO host_registry (container_instance_id, ec2_instance_id, cluster_arn, \
+             instance_type, lifecycle, detail_version, raw_detail, first_seen_at) VALUES \
+             ('ci-1', 'i-1', 'c', 'c6a.large', NULL, 1, '{}'::jsonb, 1), \
+             ('ci-2', 'i-2', 'c', 'c6a.large', 'on-demand', 1, '{}'::jsonb, 1)",
+            // One attempt AWS Batch ran twice: lost on ci-1, then finished on ci-2 (the
+            // attempt's host). Another task's job must not be nested here.
+            "INSERT INTO attempt_projection (run_id, batch_job_id, task_key, attempt, state, \
+             instance_id, started_at, finished_at, run_micros, lost_micros, wait_micros) VALUES \
+             ('r1', 'job-1', 't', 1, 'succeeded', 'ci-2', 100, 900, 650, 200, 150), \
+             ('r1', 'job-9', 'u', 1, 'succeeded', 'ci-2', 100, 900, NULL, NULL, NULL)",
+            "INSERT INTO execution_projection (run_id, execution_id, batch_job_id, role, task_key, \
+             ordinal, is_final, ended, instance_id, started_at, stopped_at, exit_code, \
+             status_reason, termination_category) VALUES \
+             ('r1', 'e2', 'job-1', 'task', 't', 2, true, true, 'ci-2', 450, 900, 0, NULL, NULL), \
+             ('r1', 'e1', 'job-1', 'task', 't', 1, false, true, 'ci-1', 100, 300, NULL, \
+              'Host EC2 (instance i-1) terminated.', 'host_terminated'), \
+             ('r1', 'e9', 'job-9', 'task', 'u', 1, true, true, 'ci-2', 100, 900, 0, NULL, NULL)",
+            // A warning on the lost host while e1 ran, and one on the final host while e2 ran.
+            "INSERT INTO spot_interruption (ec2_instance_id, warned_at) VALUES \
+             ('i-1', 250), ('i-2', 800)",
+            "INSERT INTO execution_cost (run_id, execution_id, batch_job_id, role, instance_type, \
+             hours, price_per_hour, price_source, compute_usd, ebs_usd, instance_id, started_at, \
+             stopped_at) VALUES \
+             ('r1', 'e1', 'job-1', 'task', 'c6a.large', 0.5, 0.25, 'spot_history', 0.125, 0.0625, \
+              'ci-1', 100, 300)",
+        ],
+    )
+    .await;
+    let store = PgStore::new(pool);
+    let attempts = store.get_attempts(&RunId::new("r1"), &TaskKey::new("t")).await.unwrap();
+    let [attempt] = attempts.as_slice() else { panic!("one attempt: {attempts:?}") };
+    let ids: Vec<(&str, i64, bool)> = attempt
+        .executions
+        .iter()
+        .map(|x| (x.execution_id.as_str(), x.ordinal, x.final_execution))
+        .collect();
+    assert_eq!(ids, vec![("e1", 1, false), ("e2", 2, true)]);
+    let (lost, last) = (&attempt.executions[0], &attempt.executions[1]);
+    // Each warning matches the execution on its host; the attempt's own is the final host's.
+    assert_eq!(lost.spot_warned_at, Some(250e-6));
+    assert_eq!(last.spot_warned_at, Some(800e-6));
+    assert_eq!(attempt.spot_warned_at, Some(800e-6));
+    // Lost (host_terminated) on a host EC2 warned about: a spot reclaim. The last did not lose
+    // its host, whatever was warned.
+    assert_eq!(lost.interruption.as_deref(), Some("spot_reclaimed"));
+    assert_eq!(last.interruption, None);
+    assert_eq!(lost.host.as_ref().unwrap().ec2_instance_id.as_deref(), Some("i-1"));
+    let cost = lost.cost.as_ref().unwrap();
+    assert_eq!(
+        (cost.usd, cost.price_per_hour, cost.price_source.as_str()),
+        (0.1875, 0.25, "spot_history")
+    );
+    assert!(last.cost.is_none());
+    assert_eq!(
+        (attempt.run_seconds, attempt.lost_seconds, attempt.wait_seconds),
+        (Some(650e-6), Some(200e-6), Some(150e-6))
+    );
+}
