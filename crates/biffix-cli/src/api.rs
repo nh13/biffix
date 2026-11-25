@@ -607,9 +607,13 @@ where
                     let id = correlation_id(resp)
                         .map(|id| format!(" [request id {id}]"))
                         .unwrap_or_default();
-                    eprintln!("[biffix] {label} → {} (attempt {}){id}", resp.status(), attempt + 1);
+                    teprintln!(
+                        "[biffix] {label} → {} (attempt {}){id}",
+                        resp.status(),
+                        attempt + 1
+                    );
                 }
-                Err(e) => eprintln!(
+                Err(e) => teprintln!(
                     "[biffix] {label} → {} (attempt {})",
                     CliError::unreachable(target, e),
                     attempt + 1

@@ -66,6 +66,47 @@ async fn login_logs_its_discovery_under_verbose() {
 }
 
 #[test]
+fn terminal_output_is_filtered_but_json_values_round_trip() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home-\u{1b}[2J\u{85}\u{7}");
+    std::fs::create_dir_all(&home).unwrap();
+    let profile = "test-\u{1b}[2J\u{85}\u{7}";
+    let run = |format| {
+        biffix(&home).args(["--profile", profile, "--output", format, "logout"]).output().unwrap()
+    };
+    let out = run("human");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(out.stdout, b"logged out of test-[2J\n");
+    assert!(out.stderr.is_empty());
+    let out = run("json");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap(),
+        serde_json::json!({"status": "logged_out", "profile": profile})
+    );
+    assert!(out.stderr.is_empty());
+
+    // A directory in place of config.toml takes the config-read error path (exit 1), whose
+    // message includes its path. Exercise the real top-level stderr printer in both modes.
+    std::fs::create_dir_all(config_dir(&home).join("config.toml")).unwrap();
+    let error = |format| biffix(&home).args(["--output", format, "logout"]).output().unwrap();
+    let json = error("json");
+    assert_eq!(json.status.code(), Some(1));
+    assert!(json.stdout.is_empty());
+    let doc: serde_json::Value = serde_json::from_slice(&json.stderr).unwrap();
+    let message = doc["message"].as_str().unwrap();
+    assert!(message.contains(home.to_str().unwrap()), "{message:?}");
+    let human = error("human");
+    assert_eq!(human.status.code(), Some(1));
+    assert!(human.stdout.is_empty());
+    let safe_message: String = message.chars().filter(|c| !c.is_control()).collect();
+    assert_eq!(String::from_utf8(human.stderr).unwrap(), format!("error: {safe_message}\n"));
+    for bytes in [&json.stderr, &json.stdout, &out.stdout] {
+        assert!(String::from_utf8_lossy(bytes).chars().all(|c| !c.is_control() || c == '\n'));
+    }
+}
+
+#[test]
 fn logout_clears_the_profile_in_the_documented_config_dir() {
     let home = tempfile::tempdir().unwrap();
     log_in(home.path(), "default", "https://a.example/api");

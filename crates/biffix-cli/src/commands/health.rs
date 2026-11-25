@@ -66,7 +66,7 @@ async fn probe(http: &reqwest::Client, base: &str, path: &str, verbose: bool) ->
         Err(e) => Probe::Unreachable(crate::error::transport_detail(&e)),
     };
     if verbose {
-        eprintln!("[biffix] GET {url} → {}", result.detail());
+        teprintln!("[biffix] GET {url} → {}", result.detail());
     }
     result
 }
@@ -122,17 +122,17 @@ fn render(
             }));
         }
         OutputMode::Human => {
-            println!("{base}");
-            println!("  healthz: {}", healthz.label());
-            println!("  readyz:  {}", readyz.label());
+            tprintln!("{base}");
+            tprintln!("  healthz: {}", healthz.label());
+            tprintln!("  readyz:  {}", readyz.label());
             if let Some(report) = status {
-                println!("  status:  {}", report.status);
+                tprintln!("  status:  {}", report.status);
                 for component in &report.components {
                     match &component.detail {
                         Some(detail) => {
-                            println!("    - {}: {} ({detail})", component.name, component.status);
+                            tprintln!("    - {}: {} ({detail})", component.name, component.status);
                         }
-                        None => println!("    - {}: {}", component.name, component.status),
+                        None => tprintln!("    - {}: {}", component.name, component.status),
                     }
                 }
             }

@@ -20,9 +20,9 @@ async fn main() {
     }
 }
 
-/// Rust ignores SIGPIPE, so every `println!` into a closed pipe (`biffix runs list | head -1`)
-/// panics. Restoring the default disposition ends the process quietly the moment its reader goes
-/// away, as any Unix filter does — for every output site at once.
+/// Rust ignores SIGPIPE, so every print into a closed pipe (`biffix runs list | head -1`) panics.
+/// Restoring the default disposition ends the process quietly the moment its reader goes away, as
+/// any Unix filter does — for every output site at once.
 #[cfg(unix)]
 fn restore_default_sigpipe() {
     // SAFETY: `signal` with `SIG_DFL` only changes this process's disposition for SIGPIPE; it is

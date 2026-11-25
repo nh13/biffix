@@ -38,13 +38,13 @@ pub(crate) fn form(session: Option<&Session>, opts: FormOpts) -> CliResult<()> {
             crate::local::form::warn_form(&form_schema);
             crate::render::print_json(&form_schema);
         }
-        OutputMode::Human => print!("{}", form_summary(&form_schema, engine)),
+        OutputMode::Human => tprint!("{}", form_summary(&form_schema, engine)),
     }
     if let Some(session) = session {
         let name = infer_name(root).unwrap_or_else(|| "workflow".into());
         let ui = ui_base(&session.api_base).unwrap_or_else(|| {
             let base = session.api_base.trim_end_matches('/');
-            eprintln!(
+            teprintln!(
                 "[biffix] warning: the API base URL {base} does not end in /api, so the UI is \
                  taken to be at the same address; the preview may not open there"
             );
@@ -52,9 +52,9 @@ pub(crate) fn form(session: Option<&Session>, opts: FormOpts) -> CliResult<()> {
         });
         let url = preview_url(ui, &name, engine, &form_schema)?;
         if open::that(&url).is_err() {
-            eprintln!("[biffix] open this URL to see the form:\n{url}");
+            teprintln!("[biffix] open this URL to see the form:\n{url}");
         } else {
-            eprintln!("[biffix] opened the form preview in your browser");
+            teprintln!("[biffix] opened the form preview in your browser");
         }
     }
     Ok(())
