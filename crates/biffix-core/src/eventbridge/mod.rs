@@ -15,9 +15,14 @@
 //!
 //! [`describe`] maps the same Batch start and terminal facts as `DescribeJobs` reports them, for
 //! the ingest reconciler's backstop, onto the event [`decode`] makes of the live one.
+//!
+//! [`execution`] builds the events for a Batch job's executions (each AWS run of the job on a
+//! host) from one snapshot of the job, whichever of the two read it, so both record an execution
+//! as the same event.
 
 pub mod decode;
 pub mod describe;
+pub mod execution;
 
 use serde::{Deserialize, Serialize};
 

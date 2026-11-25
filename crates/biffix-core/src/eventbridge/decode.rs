@@ -17,6 +17,8 @@ use crate::wire::aws_batch::{AwsBatchEvent, BatchStatus};
 use crate::wire::aws_codebuild::{CodeBuildEvent, CodeBuildStatus, SUBJECT_VARIABLE};
 use crate::wire::aws_ec2::{Ec2Event, Ec2EventKind};
 
+use super::execution::{BatchJobSnapshot, ExecutionFacts};
+
 /// Why an event `route` matched by its `source` and `detail-type` could not be decoded.
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
@@ -70,15 +72,6 @@ impl QueueContext {
         let name = queue_name(queue_arn);
         self.coordinator_queues.iter().any(|q| queue_arn == q || name == q)
     }
-}
-
-fn parse_status(s: &str) -> BatchStatus {
-    // Single-source the string→status mapping through BatchStatus's own `Deserialize`
-    // (SCREAMING_SNAKE_CASE + untagged `Unknown` fallback) rather than a parallel hand-rolled
-    // table a new variant could silently desync from. The untagged arm makes this infallible.
-    use serde::de::value::{Error, StrDeserializer};
-    serde::Deserialize::deserialize(StrDeserializer::<Error>::new(s))
-        .unwrap_or_else(|_| BatchStatus::Unknown(s.to_string()))
 }
 
 /// Decode an EventBridge "Batch Job State Change" event (the whole envelope) → RunEvent.
@@ -140,7 +133,7 @@ pub fn decode_batch(
     let wire = AwsBatchEvent {
         ts,
         batch_job_id: BatchJobId::new(job_id),
-        status: parse_status(status),
+        status: BatchStatus::from_wire(status),
         exit_code,
         status_reason,
         log_stream,
@@ -157,6 +150,53 @@ pub fn decode_batch(
         requested_memory_mib: requested.memory_mib,
     };
     Ok(translate::from_aws_batch(&wire))
+}
+
+/// A Batch job's `detail` (an EventBridge "Batch Job State Change" event's, which has the shape
+/// `DescribeJobs` returns) as the snapshot
+/// [`execution_events`](super::execution::execution_events) builds its execution events from.
+/// `None` when it names no `jobId` or no `status`; otherwise it never fails: a missing or
+/// ill-typed field is absent, and an `attempts[]` element that is no object is an entry with
+/// nothing in it.
+///
+/// It stores what AWS sent (an empty ARN, a zero time) and leaves what that means to the builder,
+/// so this reader and the `DescribeJobs` one cannot normalize a job differently.
+pub fn batch_snapshot(detail: &serde_json::Value) -> Option<BatchJobSnapshot> {
+    let text = |value: &serde_json::Value, key: &str| {
+        value.get(key).and_then(|v| v.as_str()).map(String::from)
+    };
+    let integer =
+        |value: &serde_json::Value, key: &str| value.get(key).and_then(serde_json::Value::as_i64);
+    // The fields of a `container` block, the same in the job's and in each `attempts[]` entry's.
+    let container = |parent: &serde_json::Value| {
+        let container = parent.get("container").unwrap_or(&serde_json::Value::Null);
+        ExecutionFacts {
+            task_arn: text(container, "taskArn"),
+            container_instance_arn: text(container, "containerInstanceArn"),
+            log_stream: text(container, "logStreamName"),
+            exit_code: integer(container, "exitCode").and_then(|code| i32::try_from(code).ok()),
+            container_reason: text(container, "reason"),
+            ..ExecutionFacts::default()
+        }
+    };
+    let attempts = detail.get("attempts").and_then(|a| a.as_array()).into_iter().flatten();
+    Some(BatchJobSnapshot {
+        batch_job_id: text(detail, "jobId")?,
+        status: BatchStatus::from_wire(detail.get("status")?.as_str()?),
+        queue: text(detail, "jobQueue"),
+        started_at_millis: integer(detail, "startedAt"),
+        stopped_at_millis: integer(detail, "stoppedAt"),
+        status_reason: text(detail, "statusReason"),
+        current: container(detail),
+        attempts: attempts
+            .map(|entry| ExecutionFacts {
+                status_reason: text(entry, "statusReason"),
+                started_at_millis: integer(entry, "startedAt"),
+                stopped_at_millis: integer(entry, "stoppedAt"),
+                ..container(entry)
+            })
+            .collect(),
+    })
 }
 
 /// The resources a Batch job asked for (not what its host has): vCPUs and memory in MiB.
