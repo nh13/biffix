@@ -689,7 +689,10 @@ does not change runs already launched.
 
 biffix estimates cost from each job's instance time at its instance type's on-demand or spot price,
 plus its EBS volume, and adds the coordinator job. When AWS Batch restarts a job after losing its
-host (a spot reclaim), the time on the lost host is priced too, at that host's price. A run's cost
-grows while it runs and settles when every job has ended. The **Usage** page (Expert view) sums
-estimated cost over a period, grouped by month, workflow, submitter, instance type or project, and
-exports CSV. These are estimates; your AWS bill is the authority.
+host (a spot reclaim), the time on the lost host is priced too, at that host's price, and the run's
+cost estimate (in the API, `cost.lost_usd`) says how much of it was lost that way. A job that ran on
+hosts priced from different sources shows its price source as `mixed`. A run's cost grows while it
+runs and settles when every job has ended; a job priced in part counts as both priced and pending
+until all of it is priced. The **Usage** page (Expert view) sums estimated cost over a period,
+grouped by month, workflow, submitter, instance type or project, and exports CSV. These are
+estimates; your AWS bill is the authority.
