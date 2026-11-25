@@ -90,11 +90,13 @@ pub fn terminal_run_event(job: &DescribedTerminalJob) -> RunEvent {
     })
 }
 
-/// A start AWS Batch `DescribeJobs` reports for a job: its newest attempt reached RUNNING.
+/// A start AWS Batch `DescribeJobs` reports for a job: one of its executions reached RUNNING (the
+/// newest, or an earlier one `attempts[]` lists).
 #[derive(Clone, Debug, PartialEq)]
 pub struct DescribedStartedJob {
     pub batch_job_id: String,
-    /// When the attempt started running, in epoch milliseconds ([`start_time_millis`]).
+    /// When that execution started running, in epoch milliseconds (for the newest,
+    /// [`start_time_millis`]; for an earlier one, its `attempts[]` entry's `startedAt`).
     pub started_at_millis: i64,
     /// The attempts Batch lists before this start ([`prior_attempts_before`]): what the live
     /// RUNNING state change carries as `len(detail.attempts)`, so both get one dedup key.
@@ -158,13 +160,13 @@ pub fn start_time_millis<I: IntoIterator<Item = Option<i64>>>(
 /// length counts it. No exact-millisecond match is needed.
 ///
 /// This assumes `started_at_millis` (the job-level `startedAt`, from [`start_time_millis`]) is the
-/// newest execution's start, as the live RUNNING's `startedAt` is: Batch overwrites it each time
-/// it runs the job again. That was observed in DescribeJobs on three spot-reclaimed jobs once
-/// they had finished (issue #75); while a retry is RUNNING it may still briefly be the lost
-/// execution's, which [`super::execution`]'s rule 3 guards against. Were it an earlier
-/// execution's, the start would count fewer attempts before it and take that execution's dedup
-/// key, a duplicate of a start the log may already hold. Every execution is recorded in its own
-/// right by [`super::execution`].
+/// newest execution's start, as the live RUNNING's `startedAt` is: Batch overwrites it each time it
+/// runs the job again. That was observed in DescribeJobs on three spot-reclaimed jobs once they had
+/// finished (issue #75). While a retry is RUNNING it may still briefly be the lost execution's, so
+/// the readers that take it for the newest execution's start guard against that:
+/// [`super::execution`]'s rule 3, and the ingest reconciler's `described_start`, which then gives
+/// no start for the newest execution rather than the lost one's key on the new host. Every
+/// execution is recorded in its own right by [`super::execution`].
 pub fn prior_attempts_before<I: IntoIterator<Item = (Option<i64>, Option<i64>)>>(
     started_at_millis: i64,
     attempts: I,

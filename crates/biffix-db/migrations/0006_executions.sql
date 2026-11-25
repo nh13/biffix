@@ -41,3 +41,14 @@ ALTER TABLE attempt_projection
 -- epoch microseconds. Not a projection: the tick's own bookkeeping, like the row's other columns.
 -- NULL until that has happened.
 ALTER TABLE reconcile_describe ADD COLUMN executions_described_micros BIGINT;
+
+-- The AWS Batch terminals of every job (`task_succeeded`/`task_failed`, or the coordinator's
+-- `coordinator_succeeded`/`coordinator_failed`), by when. The finished-job execution backfill
+-- starts from the terminals logged in a recent window, since Batch keeps a job for a while after
+-- it finishes however long ago it was bound, and probes each job's facts. The kinds are
+-- `biffix_core::event::TASK_TERMINAL_KINDS` and `COORDINATOR_TERMINAL_KINDS`; the backfill's
+-- query names them the same way (`biffix_ingest::store::reconcile::batch_terminal_kind_list`).
+CREATE INDEX run_events_batch_terminal
+    ON run_events (ts_micros, batch_job_id)
+    WHERE batch_job_id IS NOT NULL AND source = 'aws-batch'
+      AND kind IN ('task_succeeded', 'task_failed', 'coordinator_succeeded', 'coordinator_failed');

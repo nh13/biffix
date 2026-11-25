@@ -472,14 +472,15 @@ sample" until the top of the hour.
   rules the deploy printed, or the config does not yet say they are applied.
 - **Tasks on a new queue-class stay `queued` with no host.** The queue-class was deployed with
   `--stack` for the compute and api stacks only. The ingest stack's Batch rule matches this
-  deployment's queues by exact ARN, so it does not see the new queue's jobs until it is
-  redeployed: run a full `deploy.sh`. Meanwhile the reconcile Lambda asks Batch about each such
-  job from about 15 to 20 minutes after it was submitted and records what Batch reports: the
-  job's start and host once Batch has a start time for it, and its end once it has stopped (a
-  job still running is asked about again on later polls), so tasks catch up late rather than
-  never. A job that ends after the redeploy but before the reconcile Lambda has asked about it
-  keeps no start (its live end arrives, so it is not asked about again) and is never priced. A job priced before the redeploy has no root-volume cost (its queue's
-  volume was not known), and a cost is written once.
+  deployment's queues by exact ARN, so it does not see the new queue's jobs until it is redeployed:
+  run a full `deploy.sh`. Meanwhile the reconcile Lambda asks Batch about each such job from about
+  15 to 20 minutes after it was submitted and records what Batch reports: the job's start and host
+  once Batch has a start time for it, and its end once it has stopped (a job still running is asked
+  about again on later polls), so tasks catch up late rather than never. A job that ends after the
+  redeploy but before the reconcile Lambda has asked about it gets its start back later: the
+  reconcile Lambda asks once more about each finished job submitted in the last 7 days whose log
+  lacks its start, and it is priced then. A job priced before the redeploy has no root-volume cost
+  (its queue's volume was not known), and a cost is written once.
 - **Events stop arriving.** Operational alarms (dead-letter queue, ingest lag, reconcile stopped,
   API errors, a failing sweep) email `alert_email` and the recipients added under Settings.
 
