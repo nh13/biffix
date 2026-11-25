@@ -238,11 +238,11 @@ impl ExperimentReads for PgStore {
     }
 
     async fn experiment_priced_usd(&self, experiment_id: &str) -> Result<Option<f64>, StoreError> {
-        // Every priced job of every run in it, summed as `run_cost` sums a run's: Σcompute + Σebs.
+        // Every cost line of every run in it, summed as `run_cost` sums a run's: Σcompute + Σebs.
         let row = sqlx::query(
             "SELECT count(*) AS n, \
                     (COALESCE(sum(c.compute_usd), 0) + COALESCE(sum(c.ebs_usd), 0))::float8 AS usd \
-             FROM attempt_cost c JOIN run_projection r ON r.run_id = c.run_id \
+             FROM cost_line c JOIN run_projection r ON r.run_id = c.run_id \
              WHERE r.experiment_id = $1",
         )
         .bind(experiment_id)

@@ -1,5 +1,5 @@
 //! Spend over a period: the estimated cost of the runs submitted in it, grouped by month, workflow,
-//! submitter, instance type or project. Estimates come from `attempt_cost` (EC2 prices); a run
+//! submitter, instance type or project. Estimates come from `cost_line` (EC2 prices); a run
 //! counts in the period it was submitted in. Pure helpers; the query is the store's.
 
 use biffix_core::time::{civil_from_days, days_from_civil};

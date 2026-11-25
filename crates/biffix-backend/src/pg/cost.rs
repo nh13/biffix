@@ -1,5 +1,5 @@
-//! [`CostReads`] for [`PgStore`]: run costs from the priced jobs (`attempt_cost`), usage, and the
-//! past runs an estimate reads.
+//! [`CostReads`] for [`PgStore`]: run costs from the cost lines (`cost_line`: each execution's line,
+//! else a job's legacy job-level line), usage, and the past runs an estimate reads.
 
 use std::collections::HashMap;
 
@@ -19,24 +19,24 @@ use crate::store::runs::RunFilter;
 use crate::store::StoreError;
 
 impl PgStore {
-    /// The run's cost estimate from its priced jobs, given the batch job ids of each task's final
-    /// attempt, plus the priced rows themselves.
+    /// The run's cost estimate from its cost lines, given the batch job ids of each task's final
+    /// attempt, plus the lines themselves.
     pub(super) async fn run_cost_rows(
         &self,
         run_id: &RunId,
         final_attempts: &std::collections::BTreeSet<String>,
     ) -> Result<(Option<biffix_api::RunCost>, Vec<crate::store::cost::CostRow>), StoreError> {
-        // Every priced job of the run, with its role and (for a task job) its task, in job id order:
-        // `run_cost` adds them up in this order, as `run_costs` does, so the run page's estimate
-        // and the list's are the same float.
+        // Every cost line of the run, with its role and (for a task job) its task, in job id then
+        // execution id order: `run_cost` adds them up in this order, as `run_costs` does, so the
+        // run page's estimate and the list's are the same float.
         let rows = sqlx::query(
             "SELECT c.batch_job_id, a.task_key, c.role, c.instance_type, c.lifecycle, c.hours, \
              c.price_per_hour, c.price_source, c.compute_usd, c.ebs_usd \
-             FROM attempt_cost c \
+             FROM cost_line c \
              LEFT JOIN attempt_projection a \
                ON a.run_id = c.run_id AND a.batch_job_id = c.batch_job_id \
              WHERE c.run_id = $1 \
-             ORDER BY c.batch_job_id COLLATE \"C\"",
+             ORDER BY c.batch_job_id COLLATE \"C\", c.execution_id COLLATE \"C\"",
         )
         .bind(run_id.as_str())
         .fetch_all(&self.pool);
@@ -164,7 +164,7 @@ fn basis_sql(basis: Basis) -> String {
     let (attempts, coordinator) = pending_jobs_from("b.run_id", "$1");
     let usd = format!(
         "CASE WHEN EXISTS (SELECT 1 {attempts}) OR EXISTS (SELECT 1 {coordinator}) THEN NULL \
-           ELSE (SELECT sum(c.compute_usd + c.ebs_usd) FROM attempt_cost c \
+           ELSE (SELECT sum(c.compute_usd + c.ebs_usd) FROM cost_line c \
                   WHERE c.run_id = b.run_id) END"
     );
     let runs = |scope: &str, extra: &str| {
@@ -225,8 +225,8 @@ impl CostReads for PgStore {
         &self,
         run_ids: &[RunId],
     ) -> Result<HashMap<String, crate::store::cost::ListCost>, StoreError> {
-        // Per run, in one query: its priced jobs' compute and root volume, each summed in job id
-        // order as `run_cost_rows` reads them (so `compute + ebs` is the detail's estimate, the same
+        // Per run, in one query: its cost lines' compute and root volume, each summed in job id
+        // then execution id order as `run_cost_rows` reads them (so `compute + ebs` is the detail's estimate, the same
         // float), and whether any job is still pending (`pending_jobs_from`: EXISTS stops at the
         // first, where the detail counts them all).
         let (attempts, coordinator) = pending_jobs_from("ids.run_id", "$2");
@@ -236,9 +236,11 @@ impl CostReads for PgStore {
              FROM unnest($1::text[]) AS ids(run_id) \
              CROSS JOIN LATERAL ( \
                SELECT count(*) AS n, \
-                      sum(compute_usd ORDER BY batch_job_id COLLATE \"C\")::float8 AS compute, \
-                      sum(ebs_usd ORDER BY batch_job_id COLLATE \"C\")::float8 AS ebs \
-               FROM attempt_cost WHERE run_id = ids.run_id) c"
+                      sum(compute_usd ORDER BY batch_job_id COLLATE \"C\", \
+                                               execution_id COLLATE \"C\")::float8 AS compute, \
+                      sum(ebs_usd ORDER BY batch_job_id COLLATE \"C\", \
+                                           execution_id COLLATE \"C\")::float8 AS ebs \
+               FROM cost_line WHERE run_id = ids.run_id) c"
         );
         let ids: Vec<&str> = run_ids.iter().map(RunId::as_str).collect();
         let rows = sqlx::query(AssertSqlSafe(sql))
@@ -290,7 +292,7 @@ impl CostReads for PgStore {
         // Ties by key in byte order, as the in-memory store breaks them (an output column cannot
         // carry a collation in ORDER BY, so the key's expression does).
         let order = order.replace("{k}", key);
-        const FROM: &str = "FROM attempt_cost c JOIN run_projection r ON r.run_id = c.run_id \
+        const FROM: &str = "FROM cost_line c JOIN run_projection r ON r.run_id = c.run_id \
              LEFT JOIN workflow_versions w ON w.id = r.workflow_version \
              WHERE r.submitted_at >= $1 AND r.submitted_at < $2";
         let totals = |r: &sqlx::postgres::PgRow, key: String| UsageTotals {

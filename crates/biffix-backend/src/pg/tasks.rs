@@ -37,14 +37,14 @@ impl PgStore {
             .collect())
     }
 
-    /// Each of these tasks' estimated cost: every priced attempt of it.
+    /// Each of these tasks' estimated cost: every cost line of every attempt of it.
     pub(super) async fn task_costs(
         &self,
         run_id: &RunId,
         keys: &[String],
     ) -> Result<std::collections::HashMap<String, f64>, StoreError> {
         Ok(sqlx::query(
-            "SELECT a.task_key, sum(c.compute_usd + c.ebs_usd) AS usd FROM attempt_cost c \
+            "SELECT a.task_key, sum(c.compute_usd + c.ebs_usd) AS usd FROM cost_line c \
              JOIN attempt_projection a ON a.run_id = c.run_id AND a.batch_job_id = c.batch_job_id \
              WHERE c.run_id = $1 AND c.role <> $3 AND a.task_key = ANY($2) \
              GROUP BY a.task_key",
@@ -212,13 +212,12 @@ impl TaskReads for PgStore {
             "SELECT a.batch_job_id, a.attempt, a.state, a.exit_code, a.termination_category, \
              a.status_reason, a.log_stream, a.queue, a.instance_id, a.started_at, a.finished_at, \
              a.requested_vcpus, a.requested_memory_mib, {HOST_COLUMNS}, {SPOT_WARNED_AT}, \
-             c.hours AS cost_hours, c.price_per_hour AS cost_price_per_hour, \
-             c.price_source AS cost_price_source, c.compute_usd AS cost_compute_usd, \
+             c.hours AS cost_hours, c.price_source AS cost_price_source, \
+             c.compute_usd AS cost_compute_usd, \
              c.ebs_usd AS cost_ebs_usd \
              FROM attempt_projection a \
              LEFT JOIN host_registry h ON h.container_instance_id = a.instance_id \
-             LEFT JOIN attempt_cost c \
-               ON c.run_id = a.run_id AND c.batch_job_id = a.batch_job_id \
+             LEFT JOIN LATERAL ({ATTEMPT_COST}) c ON TRUE \
              WHERE a.run_id = $1 AND a.task_key = $2 \
              ORDER BY a.attempt NULLS LAST, a.batch_job_id COLLATE \"C\""
         )))
@@ -248,12 +247,16 @@ impl TaskReads for PgStore {
                 cost: r.get::<Option<String>, _>("cost_price_source").map(|price_source| {
                     let compute_usd: f64 = r.get("cost_compute_usd");
                     let ebs_usd: f64 = r.get("cost_ebs_usd");
+                    let hours: f64 = r.get("cost_hours");
+                    // Averaged over the run time, as the pricer prices each line (so one line
+                    // keeps its own price to the bit).
+                    let price_per_hour = if hours > 0.0 { compute_usd / hours } else { 0.0 };
                     biffix_api::JobCost {
                         usd: compute_usd + ebs_usd,
                         compute_usd,
                         ebs_usd,
-                        hours: r.get("cost_hours"),
-                        price_per_hour: r.get("cost_price_per_hour"),
+                        hours,
+                        price_per_hour,
                         price_source,
                     }
                 }),
@@ -263,6 +266,19 @@ impl TaskReads for PgStore {
 }
 
 // ── Row mapping and the SQL fragments the task reads share ─────────────────────────────────
+
+/// The cost of the attempt aliased `a`, for a `LEFT JOIN LATERAL`: its job's cost lines
+/// (`cost_line`: one per execution, or its one legacy line), summed in execution id order, as
+/// `hours`, `compute_usd`, `ebs_usd` and `price_source` (the lines' common one, else `mixed`;
+/// NULL with no line, when the attempt has no cost).
+const ATTEMPT_COST: &str = "SELECT \
+       sum(l.hours ORDER BY l.execution_id COLLATE \"C\") AS hours, \
+       sum(l.compute_usd ORDER BY l.execution_id COLLATE \"C\") AS compute_usd, \
+       sum(l.ebs_usd ORDER BY l.execution_id COLLATE \"C\") AS ebs_usd, \
+       CASE WHEN count(*) = 0 THEN NULL \
+            WHEN count(DISTINCT l.price_source) = 1 THEN min(l.price_source) \
+            ELSE 'mixed' END AS price_source \
+     FROM cost_line l WHERE l.run_id = a.run_id AND l.batch_job_id = a.batch_job_id";
 
 /// The `host_registry` columns a query selects (aliased `h_*`) for [`host_from_row`]; the query
 /// must `LEFT JOIN host_registry h`.
