@@ -203,6 +203,9 @@ const PROFILES: [&str; 4] = [
 ];
 /// Where biffix's own `propertyID`s (resource usage, cache hits) are described.
 const TERMS: &str = "https://github.com/nh13/biffix/blob/main/docs/provenance.md#";
+
+/// The `unitCode` of a duration in seconds.
+const SECONDS: &str = "https://qudt.org/vocab/unit/SEC";
 /// The `@id` of the image the run's tasks ran in by default.
 const DEFAULT_IMAGE_ID: &str = "#image";
 /// The `@id` of the image the default image was derived from.
@@ -1084,8 +1087,9 @@ fn single_job_usage(single: &biffix_core::event::SingleJobUse) -> Vec<Value> {
     .collect()
 }
 
-/// A task's resource usage: attempts, instance type, job queue, cost, and whether it was a cache
-/// hit.
+/// A task's resource usage: attempts, its winning attempt's executions (how many times AWS Batch
+/// ran it, how many lost their host, and its run and lost time), instance type, job queue, cost,
+/// and whether it was a cache hit.
 fn task_usage(key: &str, task: &Task) -> Vec<Value> {
     let mut usage = Vec::new();
     let task_slug = slug(key);
@@ -1104,6 +1108,17 @@ fn task_usage(key: &str, task: &Task) -> Vec<Value> {
     };
     if task.attempts > 0 {
         push("attempts", json!(task.attempts.to_string()), None);
+    }
+    if task.executions > 0 {
+        push("executions", json!(task.executions.to_string()), None);
+    }
+    if task.lost_executions > 0 {
+        push("hostInterruptions", json!(task.lost_executions.to_string()), None);
+    }
+    for (name, seconds) in [("runSeconds", task.run_seconds), ("lostSeconds", task.lost_seconds)] {
+        if let Some(seconds) = seconds {
+            push(name, json!(format!("{seconds:.3}")), Some(SECONDS));
+        }
     }
     if let Some(itype) = task.host.as_ref().and_then(|h| h.instance_type.as_deref()) {
         push("instanceType", json!(itype), None);
