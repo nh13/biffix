@@ -24,7 +24,7 @@ use crate::time::Timestamp;
 use crate::translate::{batch_reason, category_from_reason};
 use crate::wire::aws_batch::BatchStatus;
 
-use super::decode::{container_instance_id, queue_name};
+use super::arn::{container_instance_id, queue_name};
 
 /// What AWS reports about one execution: an `attempts[]` entry, or the job-level `container`
 /// block (the job's current or final execution).

@@ -2,14 +2,13 @@
 //! start or terminal must be the very event the live EventBridge one decodes to, and the
 //! reconciler's envelope must route as one.
 
-use super::ctx;
+use super::{job_event, route_one};
 use biffix_core::event::Kind;
-use biffix_core::eventbridge::decode::decode_batch;
 use biffix_core::eventbridge::describe::{
     prior_attempts_before, start_time_millis, started_run_event, terminal_run_event,
     DescribedJobFacts, DescribedStartedJob, DescribedTerminalJob, TerminalStatus,
 };
-use biffix_core::eventbridge::{route, Ingested, NormalizedIngestEnvelope};
+use biffix_core::eventbridge::{Ingested, NormalizedIngestEnvelope};
 
 #[test]
 fn the_reconcilers_envelope_routes_to_its_event() {
@@ -29,7 +28,7 @@ fn the_reconcilers_envelope_routes_to_its_event() {
     });
     // The reconciler enqueues the typed envelope, exactly as the ingest reconcile tick does.
     let value = serde_json::to_value(NormalizedIngestEnvelope::new(event.clone())).unwrap();
-    match route(&value, &ctx()).unwrap().unwrap() {
+    match route_one(&value) {
         Ingested::Event(routed) => {
             assert_eq!(routed.kind(), Kind::TaskSucceeded);
             assert_eq!(routed, event);
@@ -59,7 +58,7 @@ fn reconciliation_and_eventbridge_share_terminal_event_identity() {
             }
         }
     });
-    let live = decode_batch(&eventbridge, &ctx()).unwrap();
+    let live = job_event(&eventbridge);
     let reconciled = terminal_run_event(&DescribedTerminalJob {
         batch_job_id: "job-reconciled".into(),
         status: TerminalStatus::Failed,
@@ -93,7 +92,7 @@ fn reconciliation_and_eventbridge_share_terminal_event_identity() {
     // one) is the same fact both ways too, Batch's account of the stop included.
     let mut coordinator = eventbridge.clone();
     coordinator["detail"]["jobQueue"] = "q/biffix-dev-coordinator".into();
-    let live_coordinator = decode_batch(&coordinator, &ctx()).unwrap();
+    let live_coordinator = job_event(&coordinator);
     let reconciled_coordinator = terminal_run_event(&DescribedTerminalJob {
         batch_job_id: "job-reconciled".into(),
         status: TerminalStatus::Failed,
@@ -130,7 +129,7 @@ fn reconciliation_and_eventbridge_share_terminal_event_identity() {
             "container": { "exitCode": 137, "logStreamName": "batch/job-reconciled" }
         }
     });
-    let live_fallback = decode_batch(&no_stopped_at, &ctx()).unwrap();
+    let live_fallback = job_event(&no_stopped_at);
     assert_ne!(
         live_fallback.ts, reconciled.ts,
         "the fallback variant is timed differently (envelope time, not stoppedAt)"
@@ -190,7 +189,7 @@ fn reconciled_start(prior_attempts: u32) -> DescribedStartedJob {
 
 #[test]
 fn reconciliation_and_eventbridge_share_start_event_identity() {
-    let live = decode_batch(&live_running(serde_json::json!([])), &ctx()).unwrap();
+    let live = job_event(&live_running(serde_json::json!([])));
     let reconciled = started_run_event(&reconciled_start(0));
     assert_eq!(reconciled, live);
     assert_eq!(live.kind(), Kind::TaskStarted);
@@ -199,7 +198,7 @@ fn reconciliation_and_eventbridge_share_start_event_identity() {
     // A coordinator's start: its queue on the live side, `is_coordinator` on the reconciled one.
     let mut coordinator = live_running(serde_json::json!([]));
     coordinator["detail"]["jobQueue"] = "q/biffix-dev-coordinator".into();
-    let live_coordinator = decode_batch(&coordinator, &ctx()).unwrap();
+    let live_coordinator = job_event(&coordinator);
     let start = reconciled_start(0);
     let reconciled_coordinator = started_run_event(&DescribedStartedJob {
         facts: DescribedJobFacts {
@@ -222,7 +221,7 @@ fn a_retried_jobs_reconciled_start_shares_the_retrys_key() {
         "stoppedAt": 1_789_186_100_000_i64,
         "container": {"exitCode": 137}
     }]);
-    let live = decode_batch(&live_running(attempts), &ctx()).unwrap();
+    let live = job_event(&live_running(attempts));
     let reconciled = started_run_event(&reconciled_start(1));
     assert_eq!(reconciled.dedup_key, live.dedup_key);
     assert!(reconciled.dedup_key.ends_with(":RUNNING:1"), "{}", reconciled.dedup_key);
@@ -293,7 +292,7 @@ fn a_reconciled_start_derives_the_live_runnings_key_from_the_same_payload() {
         ),
     ];
     for (name, live_running, described, prior) in cases {
-        let live = decode_batch(&live_running, &ctx()).unwrap();
+        let live = job_event(&live_running);
         let described = described.unwrap_or_else(|| live_running.clone());
         let reconciled = reconciled_from(&described["detail"]);
         assert_eq!(reconciled.dedup_key, live.dedup_key, "{name}");
@@ -310,7 +309,7 @@ fn a_reconciled_start_derives_the_live_runnings_key_from_the_same_payload() {
 fn the_reconcilers_start_envelope_routes_to_its_event() {
     let event = started_run_event(&reconciled_start(0));
     let value = serde_json::to_value(NormalizedIngestEnvelope::new(event.clone())).unwrap();
-    match route(&value, &ctx()).unwrap().unwrap() {
+    match route_one(&value) {
         Ingested::Event(routed) => {
             assert_eq!(routed.kind(), Kind::TaskStarted);
             assert_eq!(routed, event);

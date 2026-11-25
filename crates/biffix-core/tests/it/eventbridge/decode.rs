@@ -1,9 +1,11 @@
 //! EventBridge decode tests — pure, no AWS. Uses real EventBridge event shapes.
 
-use super::ctx;
+use super::{ctx, job_event, retried_event};
+use biffix_core::dedup::{aws_batch_execution_ended, aws_batch_execution_started};
 use biffix_core::event::Kind;
 use biffix_core::event::{EventData, TerminationCategory};
 use biffix_core::eventbridge::decode::{decode_batch, decode_ecs_host, decode_spot, DecodeError};
+use biffix_core::testing::execution_task_arn;
 
 #[test]
 fn worker_running_uses_batch_detail_timestamp_when_present() {
@@ -17,7 +19,7 @@ fn worker_running_uses_batch_detail_timestamp_when_present() {
             "container": {"logStreamName": "ls/1"}
         }
     });
-    let re = decode_batch(&ev, &ctx()).unwrap();
+    let re = job_event(&ev);
     assert_eq!(re.kind(), Kind::TaskStarted);
     assert_eq!(re.batch_job_id.unwrap().as_str(), "job-1");
     assert_eq!(re.ts.as_micros(), 1_789_186_351_123_000);
@@ -39,7 +41,7 @@ fn worker_running_extracts_container_instance_id() {
             }
         }
     });
-    let re = decode_batch(&ev, &ctx()).unwrap();
+    let re = job_event(&ev);
     // Only the id (ARN's last segment) is kept, not the full ARN.
     assert_eq!(re.instance_id.unwrap().as_str(), "abc123def456");
 }
@@ -54,7 +56,7 @@ fn batch_event_records_the_queue_name_not_its_arn() {
             "status": "RUNNABLE"
         }
     });
-    let re = decode_batch(&ev, &ctx()).unwrap();
+    let re = job_event(&ev);
     assert_eq!(re.queue.as_deref(), Some("biffix-dev-cpu-spot"));
 }
 
@@ -67,12 +69,12 @@ fn a_queued_job_is_timed_at_its_creation_else_at_the_envelope() {
         "createdAt": 1_789_186_351_123_i64
     });
     let ev = serde_json::json!({"time": "2026-09-12T04:12:31Z", "detail": detail});
-    let re = decode_batch(&ev, &ctx()).unwrap();
+    let re = job_event(&ev);
     assert_eq!(re.ts.as_micros(), 1_789_186_351_123_000);
     // No createdAt: the envelope's whole-second time.
     let mut bare = ev.clone();
     bare["detail"].as_object_mut().unwrap().remove("createdAt");
-    let re = decode_batch(&bare, &ctx()).unwrap();
+    let re = job_event(&bare);
     assert_eq!(re.ts.as_micros(), 1_789_186_351_000_000);
 }
 
@@ -87,7 +89,7 @@ fn worker_running_without_container_instance_has_no_instance_id() {
             "container": {"logStreamName": "ls/1"}
         }
     });
-    let re = decode_batch(&ev, &ctx()).unwrap();
+    let re = job_event(&ev);
     assert!(re.instance_id.is_none());
 }
 
@@ -102,7 +104,7 @@ fn coordinator_succeeded_decodes_to_coordinator_succeeded() {
             "container": {"exitCode": 0}
         }
     });
-    let re = decode_batch(&ev, &ctx()).unwrap();
+    let re = job_event(&ev);
     assert_eq!(re.kind(), Kind::CoordinatorSucceeded);
 }
 
@@ -118,7 +120,7 @@ fn worker_failed_carries_exit_and_reason() {
             "container": {"exitCode": 137}
         }
     });
-    let re = decode_batch(&ev, &ctx()).unwrap();
+    let re = job_event(&ev);
     assert_eq!(re.kind(), Kind::TaskFailed);
     // The test name promises exit + reason — actually pin them (and the derived category).
     match re.data {
@@ -157,7 +159,7 @@ fn pre_1970_time_decodes_without_panicking() {
         "time": "1969-01-01T00:00:00Z",
         "detail": {"jobId": "job-1", "jobQueue": "q/x", "status": "RUNNING"}
     });
-    let re = decode_batch(&ev, &ctx()).expect("must not panic on pre-1970 time");
+    let re = decode_batch(&ev, &ctx()).expect("must not panic on pre-1970 time").remove(0);
     assert!(re.ts.as_micros() < 0, "pre-1970 maps to a negative instant");
 }
 
@@ -189,8 +191,8 @@ fn dedup_key_is_the_same_across_redeliveries_of_one_fact() {
             "attempts": [], "foo": "bar"
         }
     });
-    let a = decode_batch(&ev, &ctx()).unwrap().dedup_key;
-    let b = decode_batch(&redelivered, &ctx()).unwrap().dedup_key;
+    let a = job_event(&ev).dedup_key;
+    let b = job_event(&redelivered).dedup_key;
     assert_eq!(a, "aws-batch:job-1:SUCCEEDED");
     assert_eq!(a, b);
 }
@@ -272,7 +274,7 @@ fn task_job_with_container(container: serde_json::Value) -> serde_json::Value {
 
 #[test]
 fn live_task_job_decodes_its_resource_requirements() {
-    let re = decode_batch(&live_task_job_event(), &ctx()).unwrap();
+    let re = job_event(&live_task_job_event());
     assert_eq!(re.kind(), Kind::TaskSucceeded);
     assert_eq!(re.requested_vcpus, Some(1.0));
     assert_eq!(re.requested_memory_mib, Some(1024));
@@ -293,7 +295,7 @@ fn queued_task_job_carries_its_request_before_it_has_a_host() {
         ]
     }));
     event["detail"]["status"] = "RUNNABLE".into();
-    let re = decode_batch(&event, &ctx()).unwrap();
+    let re = job_event(&event);
     assert_eq!(re.kind(), Kind::TaskQueued);
     assert!(re.instance_id.is_none());
     assert_eq!(re.requested_vcpus, Some(4.0));
@@ -302,24 +304,16 @@ fn queued_task_job_carries_its_request_before_it_has_a_host() {
 
 #[test]
 fn legacy_vcpus_and_memory_are_the_fallback() {
-    let re = decode_batch(
-        &task_job_with_container(serde_json::json!({"vcpus": 2, "memory": 4096})),
-        &ctx(),
-    )
-    .unwrap();
+    let re = job_event(&task_job_with_container(serde_json::json!({"vcpus": 2, "memory": 4096})));
     assert_eq!(re.requested_vcpus, Some(2.0));
     assert_eq!(re.requested_memory_mib, Some(4096));
 
     // Per resource: a requirement wins over its legacy field, and a missing one falls back.
-    let re = decode_batch(
-        &task_job_with_container(serde_json::json!({
-            "vcpus": 8,
-            "memory": 1,
-            "resourceRequirements": [{"type": "MEMORY", "value": "2048"}]
-        })),
-        &ctx(),
-    )
-    .unwrap();
+    let re = job_event(&task_job_with_container(serde_json::json!({
+        "vcpus": 8,
+        "memory": 1,
+        "resourceRequirements": [{"type": "MEMORY", "value": "2048"}]
+    })));
     assert_eq!(re.requested_vcpus, Some(8.0));
     assert_eq!(re.requested_memory_mib, Some(2048));
 }
@@ -327,16 +321,12 @@ fn legacy_vcpus_and_memory_are_the_fallback() {
 #[test]
 fn fractional_vcpus_are_kept() {
     // Fargate-style quarter vCPU.
-    let re = decode_batch(
-        &task_job_with_container(serde_json::json!({
-            "resourceRequirements": [
-                {"type": "VCPU", "value": "0.25"},
-                {"type": "MEMORY", "value": "512"}
-            ]
-        })),
-        &ctx(),
-    )
-    .unwrap();
+    let re = job_event(&task_job_with_container(serde_json::json!({
+        "resourceRequirements": [
+            {"type": "VCPU", "value": "0.25"},
+            {"type": "MEMORY", "value": "512"}
+        ]
+    })));
     assert_eq!(re.requested_vcpus, Some(0.25));
     assert_eq!(re.requested_memory_mib, Some(512));
 }
@@ -344,7 +334,7 @@ fn fractional_vcpus_are_kept() {
 #[test]
 fn absent_or_unusable_requests_decode_as_unknown() {
     let unknown = |event: serde_json::Value| {
-        let re = decode_batch(&event, &ctx()).unwrap();
+        let re = job_event(&event);
         (re.requested_vcpus, re.requested_memory_mib)
     };
     // No container block at all (a multi-node or ECS-properties job keeps its containers
@@ -383,34 +373,26 @@ fn absent_or_unusable_requests_decode_as_unknown() {
 fn numeric_requirement_values_are_read_not_dropped() {
     // Batch emits string values; a JSON number for the same fact is read, not silently dropped
     // (which would fall back to legacy fields modern jobs do not carry).
-    let re = decode_batch(
-        &task_job_with_container(serde_json::json!({
-            "resourceRequirements": [
-                {"type": "VCPU", "value": 4},
-                {"type": "MEMORY", "value": 30000}
-            ]
-        })),
-        &ctx(),
-    )
-    .unwrap();
+    let re = job_event(&task_job_with_container(serde_json::json!({
+        "resourceRequirements": [
+            {"type": "VCPU", "value": 4},
+            {"type": "MEMORY", "value": 30000}
+        ]
+    })));
     assert_eq!(re.requested_vcpus, Some(4.0));
     assert_eq!(re.requested_memory_mib, Some(30_000));
 }
 
 #[test]
 fn an_unusable_requirement_falls_back_to_its_legacy_field() {
-    let re = decode_batch(
-        &task_job_with_container(serde_json::json!({
-            "resourceRequirements": [
-                {"type": "VCPU", "value": "lots"},
-                {"type": "MEMORY", "value": "0"}
-            ],
-            "vcpus": 2,
-            "memory": 4096
-        })),
-        &ctx(),
-    )
-    .unwrap();
+    let re = job_event(&task_job_with_container(serde_json::json!({
+        "resourceRequirements": [
+            {"type": "VCPU", "value": "lots"},
+            {"type": "MEMORY", "value": "0"}
+        ],
+        "vcpus": 2,
+        "memory": 4096
+    })));
     assert_eq!(re.requested_vcpus, Some(2.0));
     assert_eq!(re.requested_memory_mib, Some(4096));
 }
@@ -532,6 +514,25 @@ fn ecs_host_event_missing_ec2_instance_id_is_malformed() {
 }
 
 #[test]
+fn an_exit_code_that_does_not_fit_an_i32_is_no_exit_code() {
+    // Read as the execution snapshot reads it (dropped, never wrapped to 705032704), so the job
+    // event and its execution's end agree: a failed job without a code reports the `-1` stand-in.
+    let ev = serde_json::json!({
+        "time": "2026-09-12T04:12:31Z",
+        "detail": {
+            "jobId": "job-2",
+            "jobQueue": "q/biffix-dev-cpu-spot",
+            "status": "FAILED",
+            "container": {"exitCode": 5_000_000_000_i64}
+        }
+    });
+    match job_event(&ev).data {
+        EventData::TaskFailed { exit_code, .. } => assert_eq!(exit_code, -1),
+        other => panic!("expected TaskFailed, got {other:?}"),
+    }
+}
+
+#[test]
 fn a_job_that_never_started_keeps_the_container_reason() {
     let ev = serde_json::json!({
         "id": "e2", "source": "aws.batch", "detail-type": "Batch Job State Change",
@@ -543,7 +544,7 @@ fn a_job_that_never_started_keeps_the_container_reason() {
                           "reason": "CannotPullContainerError: manifest unknown: Requested image not found"}
         }
     });
-    let re = decode_batch(&ev, &ctx()).unwrap();
+    let re = job_event(&ev);
     match re.data {
         EventData::TaskFailed { status_reason, .. } => assert_eq!(
             status_reason.as_deref(),
@@ -596,13 +597,108 @@ fn batch_with_attempts(status: &str, attempts: usize) -> serde_json::Value {
 fn prior_attempts_keep_a_batch_retrys_edges_apart_but_terminals_collapse() {
     // The first attempt's RUNNING and a Batch-internal retry's RUNNING (same job id, one attempt
     // already finished) must get different keys, or the retry's edge is dropped as a duplicate.
-    let first = decode_batch(&batch_with_attempts("RUNNING", 0), &ctx()).unwrap();
-    let retry = decode_batch(&batch_with_attempts("RUNNING", 1), &ctx()).unwrap();
+    let first = job_event(&batch_with_attempts("RUNNING", 0));
+    let retry = job_event(&batch_with_attempts("RUNNING", 1));
     assert_eq!(first.dedup_key, "aws-batch:job-1:RUNNING");
     assert_eq!(retry.dedup_key, "aws-batch:job-1:RUNNING:1");
-    let runnable = decode_batch(&batch_with_attempts("RUNNABLE", 2), &ctx()).unwrap();
+    let runnable = job_event(&batch_with_attempts("RUNNABLE", 2));
     assert_eq!(runnable.dedup_key, "aws-batch:job-1:RUNNABLE:2");
     // A terminal ignores the attempt count, so it collapses with the reconciled terminal.
-    let failed = decode_batch(&batch_with_attempts("FAILED", 2), &ctx()).unwrap();
+    let failed = job_event(&batch_with_attempts("FAILED", 2));
     assert_eq!(failed.dedup_key, "aws-batch:job-1:FAILED");
+}
+
+// ── executions (each AWS run of the job on a host) ───────────────────────────────────────────
+
+/// The kinds of `events`, in order.
+fn kinds(events: &[biffix_core::event::RunEvent]) -> Vec<Kind> {
+    events.iter().map(biffix_core::event::RunEvent::kind).collect()
+}
+
+/// The dedup keys of `events`, in order.
+fn keys(events: &[biffix_core::event::RunEvent]) -> Vec<&str> {
+    events.iter().map(|event| event.dedup_key.as_str()).collect()
+}
+
+/// The retried job's state change in `status` as Batch sends it while execution 2 is still to
+/// come or still running: `attempts[]` lists only the lost execution 1, and the job has not
+/// stopped.
+fn retried_event_after_the_loss(status: &str) -> serde_json::Value {
+    let mut event = retried_event(status, 681, 147, 1386);
+    let detail = event["detail"].as_object_mut().unwrap();
+    detail.remove("stoppedAt");
+    detail["attempts"].as_array_mut().unwrap().truncate(1);
+    event
+}
+
+#[test]
+fn executions_never_change_the_job_level_event() {
+    let mut bare = live_task_job_event();
+    bare["detail"]["attempts"] = serde_json::json!([]);
+    bare["detail"]["container"].as_object_mut().unwrap().remove("taskArn");
+
+    let with_executions = decode_batch(&live_task_job_event(), &ctx()).unwrap();
+    let alone = decode_batch(&bare, &ctx()).unwrap();
+    assert_eq!(alone.len(), 1);
+    assert_eq!(alone[0], with_executions[0]);
+}
+
+#[test]
+fn a_finished_job_yields_its_terminal_then_its_execution() {
+    let events = decode_batch(&live_task_job_event(), &ctx()).unwrap();
+    assert_eq!(kinds(&events), [Kind::TaskSucceeded, Kind::BatchExecutionEnded]);
+
+    let ended = &events[1];
+    assert_eq!(
+        ended.dedup_key,
+        "aws-batch-exec:arn:aws:ecs:us-east-1:123456789012:task/AWSBatch-CEarchc7g-abc/\
+         fe153e5584414ad2983a37b4cd79085b:ended"
+    );
+    // The execution's own stop time, not the envelope's `time`.
+    assert_eq!(ended.ts.as_micros(), 1_790_447_236_769_000);
+    assert_eq!(
+        ended.instance_id.as_ref().map(biffix_core::ids::InstanceId::as_str),
+        Some("5722e7cb963c4ac1861fae158b6c4430")
+    );
+    assert_eq!(ended.queue.as_deref(), Some("biffix-acme-arch-c7g"));
+}
+
+#[test]
+fn a_retrys_runnable_yields_the_lost_executions_end() {
+    // Back in RUNNABLE after its host was reclaimed: the job has no current execution.
+    let mut event = retried_event_after_the_loss("RUNNABLE");
+    event["detail"]["container"].as_object_mut().unwrap().remove("taskArn");
+
+    let events = decode_batch(&event, &ctx()).unwrap();
+    let lost_end = aws_batch_execution_ended(&execution_task_arn(1));
+    assert_eq!(keys(&events), ["aws-batch:job-retried:RUNNABLE:1", lost_end.as_str()]);
+}
+
+#[test]
+fn a_running_event_yields_its_current_execution() {
+    let events = decode_batch(&retried_event_after_the_loss("RUNNING"), &ctx()).unwrap();
+    assert_eq!(
+        kinds(&events),
+        [Kind::TaskStarted, Kind::BatchExecutionEnded, Kind::BatchExecutionStarted]
+    );
+    assert_eq!(events[2].dedup_key, aws_batch_execution_started(&execution_task_arn(2)));
+}
+
+#[test]
+fn a_malformed_attempts_field_still_yields_the_job_level_event() {
+    for attempts in [serde_json::json!("nope"), serde_json::json!([1, null, {"container": 5}])] {
+        let event = serde_json::json!({
+            "time": "2026-09-12T04:12:31Z",
+            "detail": {
+                "jobId": "job-1",
+                "jobQueue": "q/biffix-dev-cpu-spot",
+                "status": "SUCCEEDED",
+                "stoppedAt": 1789186351123_i64,
+                "container": {"exitCode": 0},
+                "attempts": attempts.clone(),
+            }
+        });
+        let events = decode_batch(&event, &ctx()).unwrap();
+        assert_eq!(kinds(&events), [Kind::TaskSucceeded], "attempts: {attempts}");
+    }
 }

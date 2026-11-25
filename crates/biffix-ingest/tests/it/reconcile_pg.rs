@@ -767,7 +767,8 @@ async fn a_reconciled_start_shows_a_running_job_on_its_host() {
         }),
         &QueueContext { coordinator_queues: vec![] },
     )
-    .unwrap();
+    .unwrap()
+    .remove(0);
     assert!(!append(&pool, &live).await.unwrap());
     let rows: i64 =
         sqlx::query_scalar("SELECT count(*) FROM run_events WHERE batch_job_id = 'job-r'")

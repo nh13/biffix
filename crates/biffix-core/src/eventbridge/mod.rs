@@ -9,9 +9,11 @@
 //! - a **raw EventBridge event** — whose shape AWS owns, classified by the standard
 //!   `source` + `detail-type` envelope fields, then handed to [`decode`].
 //!
-//! Most messages decode to a [`RunEvent`]; ECS container-instance state changes decode to a
-//! [`HostFact`] for the host registry instead (see [`Ingested`]). An unrecognized event is
-//! dropped (the ingest drain logs it at debug level); nothing stores it.
+//! Most messages decode to one [`RunEvent`]. A Batch job state change decodes to its job-level
+//! event plus the events of the executions it reports (see [`execution`]), and ECS
+//! container-instance state changes decode to a [`HostFact`] for the host registry instead (see
+//! [`Ingested`]). An unrecognized event decodes to nothing: [`route`]'s result is empty (the
+//! ingest drain logs it at debug level) and nothing stores it.
 //!
 //! [`describe`] maps the same Batch start and terminal facts as `DescribeJobs` reports them, for
 //! the ingest reconciler's backstop, onto the event [`decode`] makes of the live one.
@@ -20,6 +22,7 @@
 //! host) from one snapshot of the job, whichever of the two read it, so both record an execution
 //! as the same event.
 
+mod arn;
 pub mod decode;
 pub mod describe;
 pub mod execution;
@@ -64,7 +67,7 @@ impl NormalizedIngestEnvelope {
     }
 }
 
-/// What one ingest-queue message decodes to.
+/// One of the items an ingest-queue message decodes to.
 ///
 /// Both variants are large and each value lives only while one queue record is routed, so the size
 /// difference between them costs nothing worth an indirection.
@@ -77,18 +80,18 @@ pub enum Ingested {
     Host(HostFact),
 }
 
-/// Decode one ingest-queue message, or `Ok(None)` if it's not one biffix ingests.
-pub fn route(
-    event: &serde_json::Value,
-    ctx: &QueueContext,
-) -> Result<Option<Ingested>, DecodeError> {
+/// Decode one ingest-queue message into everything it says, in the order to ingest it: empty if
+/// it's not a message biffix ingests, and more than one item only for a Batch job state change
+/// (its job-level event, then its executions' events). The items of one message belong together:
+/// the drain appends or retries them as one.
+pub fn route(event: &serde_json::Value, ctx: &QueueContext) -> Result<Vec<Ingested>, DecodeError> {
     // A message biffix produced itself is wrapped in the typed envelope and carries the
     // biffix-owned `biffix_ingest` tag. Its presence — and only its presence — marks the normalized
     // shape, so the two shapes on the queue are told apart deterministically (never by probing
     // which RunEvent fields happen to exist).
     if event.get("biffix_ingest").is_some() {
         return NormalizedIngestEnvelope::deserialize(event)
-            .map(|envelope| Some(Ingested::Event(envelope.event)))
+            .map(|envelope| vec![Ingested::Event(envelope.event)])
             .map_err(|error| {
                 DecodeError::Malformed(format!("invalid biffix ingest envelope: {error}"))
             });
@@ -97,16 +100,19 @@ pub fn route(
     // Otherwise it is a raw EventBridge event (AWS owns this shape): classify by its standard fields.
     match eventbridge_type(event) {
         ("aws.batch", "Batch Job State Change") => {
-            decode_batch(event, ctx).map(|e| Some(Ingested::Event(e)))
+            decode_batch(event, ctx).map(|events| events.into_iter().map(Ingested::Event).collect())
         }
         ("aws.ec2", "EC2 Spot Instance Interruption Warning") => {
-            decode_spot(event).map(|e| Some(Ingested::Event(e)))
+            decode_spot(event).map(|e| vec![Ingested::Event(e)])
         }
         ("aws.ecs", "ECS Container Instance State Change") => {
-            decode_ecs_host(event).map(|h| Some(Ingested::Host(h)))
+            decode_ecs_host(event).map(|h| vec![Ingested::Host(h)])
         }
-        CODEBUILD_STATE_CHANGE => decode_codebuild(event).map(|e| e.map(Ingested::Event)),
-        _ => Ok(None),
+        // A build biffix did not start decodes to nothing.
+        CODEBUILD_STATE_CHANGE => {
+            decode_codebuild(event).map(|e| e.map(Ingested::Event).into_iter().collect())
+        }
+        _ => Ok(Vec::new()),
     }
 }
 
@@ -122,10 +128,10 @@ fn eventbridge_type(event: &serde_json::Value) -> (&str, &str) {
     (source, detail_type)
 }
 
-/// A CodeBuild build state change decoded exactly as [`route`] decodes it (`Ok(None)`: a build
-/// biffix did not start); `None` when `event` is no such change. For a consumer outside the ingest
-/// queue (the backend sweep, which EventBridge also sends build state changes to), so the
-/// classification lives here once.
+/// A CodeBuild build state change decoded as [`route`] decodes it (`Ok(None)`, which `route`
+/// gives as an empty result: a build biffix did not start); `None` when `event` is no such
+/// change. For a consumer outside the ingest queue (the backend sweep, which EventBridge also
+/// sends build state changes to), so the classification lives here once.
 pub fn codebuild_state_change(
     event: &serde_json::Value,
 ) -> Option<Result<Option<RunEvent>, DecodeError>> {

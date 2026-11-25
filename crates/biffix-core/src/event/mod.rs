@@ -1,8 +1,10 @@
 //! The normalized **RunEvent** — the log + fold contract.
 //!
-//! Every wire event translates into exactly one RunEvent (see [`crate::translate`]). The log
-//! stores RunEvents; the reducers fold them. The reducer sees one vocabulary of [`Kind`],
-//! never the per-source wire vocabularies ([`crate::wire`]).
+//! Each translator call turns one wire event into exactly one RunEvent (see [`crate::translate`]);
+//! a Batch job state change also yields an event per execution it reports (see
+//! [`crate::eventbridge::execution`]). The log stores RunEvents; the reducers fold them. The
+//! reducer sees one vocabulary of [`Kind`], never the per-source wire vocabularies
+//! ([`crate::wire`]).
 //!
 //! The `data` payload is a **typed enum keyed by kind**, so each kind's required fields are
 //! compile-time-enforced, with an [`EventData::Unknown`] escape hatch that preserves unknown kinds
