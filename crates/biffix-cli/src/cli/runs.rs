@@ -158,6 +158,10 @@ pub(crate) enum RunsCommand {
         /// Task key (omit to read the coordinator).
         #[arg(long)]
         task: Option<String>,
+        /// Poll until this log's source ends, then exit 0 regardless of the run outcome.
+        /// An older backend cannot report the ending: interrupt with Ctrl-C to stop.
+        #[arg(long)]
+        follow: bool,
     },
     /// Follow a run to a terminal state (exit 0 on success, 8 failed, 9 cancelled, 1 a terminal
     /// state this biffix does not know); a failed run's reason is shown.
@@ -258,8 +262,8 @@ impl RunsCommand {
             }
             RunsCommand::List { state } => commands::runs::list(session, state).await,
             RunsCommand::Show { run } => commands::runs::show(session, &run).await,
-            RunsCommand::Logs { run, task } => {
-                commands::runs_logs::logs(session, &run, task.as_deref(), false).await
+            RunsCommand::Logs { run, task, follow } => {
+                commands::runs_logs::logs(session, &run, task.as_deref(), follow).await
             }
             RunsCommand::Follow { run } => commands::runs::follow(session, &run).await,
             RunsCommand::Cancel { run } => commands::runs::cancel(session, &run).await,

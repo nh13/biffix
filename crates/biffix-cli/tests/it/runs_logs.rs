@@ -21,11 +21,12 @@ async fn invoke(app: Router, format: &str, args: &[&str]) -> Output {
     let mut cmd = biffix(home.path());
     cmd.args(["--allow-insecure", "--url", &base, "--output", format, "runs", "logs"]);
     cmd.args(args);
-    tokio::task::spawn_blocking(move || {
-        let _home = home;
-        cmd.output().unwrap()
-    })
+    tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        tokio::process::Command::from(cmd).kill_on_drop(true).output(),
+    )
     .await
+    .unwrap()
     .unwrap()
 }
 
@@ -107,4 +108,86 @@ fn logs_help_and_missing_run_id_are_usage_checked() {
     assert!(String::from_utf8_lossy(&help.stdout).contains("--task"));
     let missing = biffix(home.path()).args(["runs", "logs"]).output().unwrap();
     assert_eq!(missing.status.code(), Some(2));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_finished_follow_is_noted_on_stderr() {
+    let app = Router::new().route(
+        "/runs/r1/coordinator-logs",
+        get(|| async { Json(json!({"events":[], "ended":true})) }),
+    );
+    let out = invoke(app, "json", &["r1", "--follow"]).await;
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no log output"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn followed_logs_finish_successfully_after_the_source_ends() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let app=Router::new().route("/runs/r1/coordinator-logs",get(move || {
+        let n=counted.fetch_add(1,Ordering::SeqCst);
+        async move {
+            Json(json!({"log_stream":"s","events":if n==0 {json!([{"ts_ms":1,"message":"failed run's log"}])} else {json!([])},"next_forward_token":"f1","ended":true}))
+        }
+    }));
+    let out = invoke(app, "human", &["r1", "--follow"]).await;
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.stdout, b"failed run's log\n");
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn followed_json_is_flushed_live_and_ctrl_c_terminates_an_older_server_follow() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Stdio;
+    use std::time::Duration;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let polled = Arc::new(tokio::sync::Notify::new());
+    let notify = polled.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app=Router::new().route("/runs/r1/coordinator-logs",get(move || {
+        let n=calls.fetch_add(1,Ordering::SeqCst);
+        if n>=2 {notify.notify_one();}
+        async move {
+            Json(json!({"log_stream":"s","events":if n==0 {json!([{"ts_ms":1,"message":"live"}])} else {json!([])},"next_forward_token":"f1"}))
+        }
+    }));
+    let base = serve(app).await;
+    let home = tempfile::tempdir().unwrap();
+    log_in(home.path(), "default", &base);
+    let mut command = biffix(home.path());
+    command.args([
+        "--allow-insecure",
+        "--url",
+        &base,
+        "--output",
+        "json",
+        "runs",
+        "logs",
+        "r1",
+        "--follow",
+    ]);
+    let mut child = tokio::process::Command::from(command)
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let line = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&line).unwrap(), json!({"ts_ms":1,"message":"live"}));
+    tokio::time::timeout(Duration::from_secs(8), polled.notified()).await.unwrap();
+    let pid = child.id().unwrap().to_string();
+    let sent =
+        tokio::process::Command::new("/bin/kill").args(["-INT", &pid]).status().await.unwrap();
+    assert!(sent.success());
+    let status = tokio::time::timeout(Duration::from_secs(3), child.wait()).await.unwrap().unwrap();
+    assert_eq!(status.signal(), Some(2));
 }

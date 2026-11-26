@@ -429,6 +429,7 @@ biffix runs list --state active
 biffix runs show <run-id>          # per-task state
 biffix runs follow <run-id>
 biffix runs logs <run-id>          # coordinator log, from the beginning
+biffix runs logs <run-id> --follow # live output until this log's source ends
 biffix runs logs <run-id> --task 'align:sample=A'   # task's display-attempt log
 biffix runs cancel <run-id>
 biffix runs rename <run-id> "new name"     # or --clear
@@ -441,6 +442,17 @@ task's display attempt, not earlier attempts. An empty log produces no stdout re
 run or task, or a log no longer in CloudWatch, exits 5; this command does not read archived S3 logs.
 With `--output json` (also the default when piped), it emits one compact JSON object per log event,
 one per line, with `ts_ms` and `message`. For plain text in a pipe, use `--output human`.
+
+`runs logs --follow` drains existing pages and polls every three seconds at the current end. It
+exits 0 after two consecutive idle reads both report that the log's coordinator or task has ended,
+regardless of whether the run succeeded or failed. The extra read allows for late CloudWatch
+delivery; if lines arrive after it stops, run the command again. This differs from `runs follow`,
+which reports the workflow outcome. A failed task's follow can stop before the engine starts its
+next attempt; follow it again to read the new display attempt. If a stream changes while you are
+reading it, the command restarts from the new stream's beginning. Transient follow failures are
+retried within a budget; a 404 is always final. Against an older backend that cannot report when
+a source has ended, following continues until interrupted with Ctrl-C, and following a starting
+run can still exit 5 until CloudWatch creates its stream. Empty finished logs are noted on stderr.
 
 For a failed run, `runs show` and `runs follow` (and `runs submit --follow`) also print why it
 failed: each of the first failed steps (or the workflow engine, when it failed before any step) with
