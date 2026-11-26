@@ -225,6 +225,50 @@ describe('LogStreamModel live tail', () => {
 });
 
 describe('LogStreamModel load earlier', () => {
+  it.each([{ messages: [] }, { messages: ['discarded new tail'] }])(
+    'restarts on a different stream during backward paging instead of mixing its lines (%j)',
+    async ({ messages: changedMessages }) => {
+      const m = await opened(page(['old tail'], 'old-f', 'old-b', 'old'));
+      const earlier = m.loadEarlier();
+      calls[0].resolve(page([], 'old-f', 'old-b2', 'old'));
+      await flush();
+      calls[1].resolve(page(changedMessages, 'new-f', 'new-b', 'new'));
+      await flush();
+      expect(msgs(m)).toEqual(['old tail']);
+      expect(calls[2].opts).toEqual({ direction: 'backward', limit: 300 });
+      // A second click must join the reload, not reuse the old stream's cursor.
+      expect(m.loadEarlier()).toBe(earlier);
+      expect(m.loadingEarlier).toBe(true);
+      expect(calls).toHaveLength(3);
+      calls[2].resolve(page(['new tail'], 'new-f', 'new-b', 'new'));
+      await earlier;
+      expect(m.loadingEarlier).toBe(false);
+      expect(msgs(m)).toEqual(['new tail']);
+      void m.loadEarlier();
+      expect(calls[3].opts).toEqual({ direction: 'backward', cursor: 'new-b', limit: 300 });
+    },
+  );
+
+  it('unlocks backward paging when a stream-change reload fails so it can be retried', async () => {
+    const m = await opened(page(['old tail'], 'old-f', 'old-b', 'old'));
+    const earlier = m.loadEarlier();
+    calls[0].resolve(page(['discarded'], 'new-f', 'new-b', 'new'));
+    await flush();
+    expect(m.loadEarlier()).toBe(earlier);
+    calls[1].reject(new Error('throttled'));
+    await earlier;
+    expect(m.loadingEarlier).toBe(false);
+    expect(msgs(m)).toEqual(['old tail']);
+    expect(m.error).toBeNull();
+    void m.loadEarlier();
+    expect(calls[2].opts).toEqual({ direction: 'backward', cursor: 'old-b', limit: 300 });
+    calls[2].resolve(page(['discarded'], 'new-f', 'new-b', 'new'));
+    await flush();
+    calls[3].resolve(page(['new tail'], 'new-f', 'new-b', 'new'));
+    await flush();
+    expect(msgs(m)).toEqual(['new tail']);
+  });
+
   it('follows empty pages with a new token: they are not the start', async () => {
     const m = await opened();
     void m.loadEarlier();

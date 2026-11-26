@@ -222,6 +222,10 @@ export class LogStreamModel {
             limit: this.#limit,
           });
           if (gen !== this.#gen) return;
+          if (page.log_stream != null && this.#stream != null && page.log_stream !== this.#stream) {
+            await this.loadFirst({ quiet: true });
+            return;
+          }
           const next = page.next_backward_token ?? undefined;
           // CloudWatch signals the end by handing back the token it was sent; a page can carry
           // events AND be the last one, so the two are decided separately.
