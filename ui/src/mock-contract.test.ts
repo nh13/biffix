@@ -563,7 +563,8 @@ describe('the mock API', () => {
       await call('GET', `/runs/${q(id)}/failure-summary`);
       await call('GET', `/runs/${q(id)}/reports`);
       await call('GET', `/runs/${q(id)}/provenance`);
-      await call('GET', `/runs/${q(id)}/coordinator-logs`);
+      const coordinatorLog = obj(await call('GET', `/runs/${q(id)}/coordinator-logs`));
+      expect(coordinatorLog.ended, id).toBe(detail.terminal);
       // A termination category is spelled as `TerminationCategory` serializes (`oom`, not `OOM`).
       for (const t of tasks.tasks as { task_key: string; termination_category?: string }[])
         if (t.termination_category != null)
@@ -624,7 +625,10 @@ describe('the mock API', () => {
       events: [],
       next_forward_token: null,
       next_backward_token: null,
+      ended: false,
     };
+    expect(log.ended).toBe(false);
+    expect(obj(await logs(DONE, { task: star, execution: reclaimed })).ended).toBe(true);
     expect(obj(await logs(LIVE, { task: 'joint_call' }))).toEqual(empty);
     // Nor has a just-launched run's coordinator.
     const launched = obj(

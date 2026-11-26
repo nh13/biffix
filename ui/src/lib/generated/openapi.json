@@ -1681,7 +1681,7 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque CloudWatch cursor from a prior page.",
+            "description": "Opaque cursor from a prior page, valid only for the stream it came from.",
             "required": false,
             "schema": {
               "type": "string"
@@ -5263,6 +5263,13 @@
           "events"
         ],
         "properties": {
+          "ended": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the coordinator, task, attempt or execution behind this log has ended. CloudWatch\nmay still deliver its last lines. Absent from an older server: the ending is unknown."
+          },
           "events": {
             "type": "array",
             "items": {
@@ -5287,7 +5294,7 @@
               "string",
               "null"
             ],
-            "description": "Opaque CloudWatch cursors — pass one back as `cursor` to page. `next_backward_token` walks\ntoward older events (\"load earlier\"); `next_forward_token` toward newer (\"live tail\")."
+            "description": "Opaque cursors, valid only for their stream — pass one back as `cursor` to page.\n`next_backward_token` walks\ntoward older events (\"load earlier\"); `next_forward_token` toward newer (\"live tail\")."
           }
         }
       },
@@ -8231,7 +8238,7 @@
               "string",
               "null"
             ],
-            "description": "Opaque CloudWatch cursor from a prior page (`next_forward_token`/`next_backward_token`)."
+            "description": "Opaque cursor from a prior page (`next_forward_token`/`next_backward_token`), valid only\nfor the stream it came from."
           },
           "direction": {
             "type": [

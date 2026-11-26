@@ -1137,6 +1137,7 @@ fn minimal_responses_round_trip() {
         next_cursor: None,
     });
     rt(LogPage {
+        ended: None,
         log_stream: None,
         events: vec![],
         next_forward_token: None,
@@ -1185,4 +1186,16 @@ fn an_older_server_s_cost_without_execution_fields_reads_as_none_priced_or_lost(
     }
     let read: RunCost = serde_json::from_value(old).unwrap();
     assert_eq!(read, RunCost { priced_executions: 0, lost_usd: 0.0, ..cost });
+}
+
+#[test]
+fn log_end_state_is_optional_and_preserved_when_present() {
+    let legacy = serde_json::json!({"events": []});
+    let page: LogPage = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(page).unwrap(), legacy);
+    for ended in [false, true] {
+        let value = serde_json::json!({"events": [], "ended": ended});
+        let page: LogPage = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(page).unwrap(), value);
+    }
 }

@@ -45,6 +45,18 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('LogStreamModel first page', () => {
+  it('polls a recorded but not yet created stream without an error, then tails it', async () => {
+    const m = await opened(page([], null, null, 'starting-stream'));
+    expect(m.error).toBeNull();
+    void m.tick();
+    calls[0].resolve(page(['started'], 'f-start', 'b-start', 'starting-stream'));
+    await flush();
+    expect(msgs(m)).toEqual(['started']);
+    expect(m.error).toBeNull();
+    void m.tick();
+    expect(calls[1].opts).toEqual({ direction: 'forward', cursor: 'f-start', limit: 300 });
+  });
+
   it('keeps polling the first page while there is no stream, then tails its cursor', async () => {
     const m = await opened(noStream());
     expect(m.noStream).toBe(true);

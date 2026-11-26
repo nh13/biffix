@@ -2332,6 +2332,11 @@ export interface components {
      *     authorized to see — never supplied by the client.
      */
     LogPage: {
+      /**
+       * @description Whether the coordinator, task, attempt or execution behind this log has ended. CloudWatch
+       *     may still deliver its last lines. Absent from an older server: the ending is unknown.
+       */
+      ended?: boolean | null;
       events: components['schemas']['LogLine'][];
       /**
        * @description The CloudWatch stream these events came from. `None` ⇒ the task has no stream yet (still
@@ -2340,7 +2345,8 @@ export interface components {
       log_stream?: string | null;
       next_backward_token?: string | null;
       /**
-       * @description Opaque CloudWatch cursors — pass one back as `cursor` to page. `next_backward_token` walks
+       * @description Opaque cursors, valid only for their stream — pass one back as `cursor` to page.
+       *     `next_backward_token` walks
        *     toward older events ("load earlier"); `next_forward_token` toward newer ("live tail").
        */
       next_forward_token?: string | null;
@@ -3862,7 +3868,10 @@ export interface components {
      *     every access log.
      */
     TaskLogsRequest: {
-      /** @description Opaque CloudWatch cursor from a prior page (`next_forward_token`/`next_backward_token`). */
+      /**
+       * @description Opaque cursor from a prior page (`next_forward_token`/`next_backward_token`), valid only
+       *     for the stream it came from.
+       */
       cursor?: string | null;
       /** @description `forward` (live-tail toward newer events) or `backward`/absent (tail — newest first). */
       direction?: string | null;
@@ -6216,7 +6225,7 @@ export interface operations {
   coordinator_logs: {
     parameters: {
       query?: {
-        /** @description Opaque CloudWatch cursor from a prior page. */
+        /** @description Opaque cursor from a prior page, valid only for the stream it came from. */
         cursor?: string;
         /**
          * @description `forward` (from the given cursor toward newer events, or from the start of the stream when

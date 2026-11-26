@@ -79,7 +79,7 @@ fn state_with_attempts() -> AppState {
     store.insert(detail);
     let execution = |id: &str, stream: &str, interruption: Option<&str>| {
         serde_json::from_value::<biffix_api::JobExecution>(serde_json::json!({
-            "execution_id": id, "ordinal": 1, "ended": true, "final_execution": true,
+            "execution_id": id, "ordinal": 1, "ended": id != "x-B", "final_execution": true,
             "log_stream": stream, "interruption": interruption,
         }))
         .unwrap()
@@ -447,5 +447,120 @@ async fn task_logs_with_an_execution_not_of_the_task_or_job_is_404() {
     ] {
         let (status, _) = logs(body.clone()).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn log_pages_report_the_selected_sources_end_state() {
+    for (body, ended) in [
+        (serde_json::json!({"task": "started"}), false),
+        (serde_json::json!({"task": "waiting"}), false),
+        (serde_json::json!({"task": "waiting", "execution": "x-B"}), false),
+        (serde_json::json!({"task": "started", "job": "job-A0"}), true),
+        (serde_json::json!({"task": "started", "job": "job-A"}), false),
+        (serde_json::json!({"task": "started", "execution": "x-A1"}), true),
+    ] {
+        let (status, value) =
+            post_json(api::router(state_with_attempts()), "/runs/r1/task-logs/query", body.clone())
+                .await;
+        assert_eq!(status, StatusCode::OK, "{body}: {value}");
+        assert_eq!(value["ended"], ended, "{body}: {value}");
+    }
+    for (run_state, task_state, ended) in [
+        ("running", "succeeded", true),
+        ("running", "failed", true),
+        ("running", "cancelled", true),
+        ("running", "future_state", false),
+        ("cancelled", "running", true),
+    ] {
+        let store = MemStore::new();
+        let mut detail = testing::run_detail("r1", run_state);
+        detail.tasks = vec![task_view("task", task_state, None, None)];
+        store.insert(detail);
+        let app = api::router(TestState::new().with_store(Arc::new(store)).build());
+        let (status, value) =
+            post_json(app, "/runs/r1/task-logs/query", serde_json::json!({"task":"task"})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ended"], ended, "{run_state}/{task_state}: {value}");
+    }
+}
+
+#[tokio::test]
+async fn a_live_missing_stream_is_empty_but_an_ended_missing_stream_is_404() {
+    for (run_state, ended) in
+        [("running", false), ("succeeded", true), ("failed", true), ("cancelled", true)]
+    {
+        let store = MemStore::new();
+        let mut detail = testing::run_detail("r1", run_state);
+        detail.coordinator_log_stream = Some("missing".into());
+        detail.tasks = vec![task_view("task", "running", Some("missing"), None)];
+        store.insert(detail);
+        let state = TestState::new().with_store(Arc::new(store)).build();
+        let expected = if ended { StatusCode::NOT_FOUND } else { StatusCode::OK };
+        let (status, value) =
+            get_json(api::router(state.clone()), "/runs/r1/coordinator-logs").await;
+        assert_eq!(status, expected, "{run_state}: {value}");
+        if !ended {
+            assert_eq!(
+                value,
+                serde_json::json!({"log_stream":"missing", "events":[], "ended":false})
+            );
+        }
+        let (status, value) = post_json(
+            api::router(state),
+            "/runs/r1/task-logs/query",
+            serde_json::json!({"task":"task"}),
+        )
+        .await;
+        assert_eq!(status, expected, "{run_state}: {value}");
+    }
+}
+
+#[tokio::test]
+async fn coordinator_log_end_state_is_reported_even_without_a_stream() {
+    for (run_state, ended) in
+        [("running", false), ("failed", true), ("cancelled", true), ("future_state", false)]
+    {
+        let store = MemStore::new();
+        store.insert(testing::run_detail("r1", run_state));
+        let app = api::router(TestState::new().with_store(Arc::new(store)).build());
+        let (status, value) = get_json(app, "/runs/r1/coordinator-logs").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ended"], ended, "{run_state}: {value}");
+    }
+}
+
+#[tokio::test]
+async fn log_cursors_are_bound_to_the_server_selected_stream() {
+    use biffix_backend::aws::logs::LogDirection::Forward;
+    let cloud = Arc::new(FakeCloud::new());
+    let state = TestState::from(state_with_attempts()).with_cloud(cloud.clone()).build();
+    let (status, value) = post_json(
+        api::router(state.clone()),
+        "/runs/r1/task-logs/query",
+        serde_json::json!({"task":"started"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let forward = value["next_forward_token"].as_str().unwrap();
+    assert!(forward.starts_with("5415e242576d6009:"), "{value}");
+    assert!(value["next_backward_token"].as_str().unwrap().starts_with("5415e242576d6009:"));
+    for (cursor, expected) in [
+        ("5415e242576d6009:f/next:part", Some("f/next:part")),
+        ("81ec3a39c3389f74:f/next", None),
+        ("f/next:legacy", Some("f/next:legacy")),
+    ] {
+        cloud.log_reads.lock().unwrap().clear();
+        let (status, value) = post_json(
+            api::router(state.clone()),
+            "/runs/r1/task-logs/query",
+            serde_json::json!({"task":"started", "cursor":cursor,"direction":"forward","limit":7}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+        assert_eq!(
+            *cloud.log_reads.lock().unwrap(),
+            [("stream-A".to_string(), expected.map(String::from), Forward, 7)]
+        );
     }
 }

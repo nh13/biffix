@@ -231,7 +231,10 @@ pub(crate) async fn coordinator_logs(
     let page = crate::runs::logs::log_page(
         &state,
         None,
-        detail.coordinator_log_stream,
+        crate::runs::logs::LogSource {
+            ended: crate::runs::detail::state_is_terminal(&detail.run.state),
+            stream: detail.coordinator_log_stream,
+        },
         q.cursor.as_deref(),
         q.direction.as_deref(),
         q.limit,

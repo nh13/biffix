@@ -4,6 +4,8 @@
 
 use biffix_api::{LogLine, LogPage, Task, TaskAttempt, TaskAttemptList, TaskLogsRequest};
 use biffix_core::ids::{BatchJobId, RunId};
+use biffix_core::state::{AttemptState, TaskState};
+use sha2::{Digest, Sha256};
 
 use crate::aws::logs::LogDirection;
 use crate::config::queue_capacity::fill_queue_capacity;
@@ -63,16 +65,19 @@ pub(crate) async fn log_lines(
     }
 }
 
-/// One page of a CloudWatch log stream, shared by the task and coordinator logs. The caller
-/// derives `stream` server-side from what the viewer is authorized to see — never from the client
-/// — and `project_group` as for [`read_log_events`].
-/// No stream ⇒ an empty page (`log_stream: None`), not a 404; a stream CloudWatch no longer has
-/// (rotated/expired) ⇒ 404; any other CloudWatch error ⇒ 502; a `direction` other than `forward`
-/// or `backward` ⇒ 400.
+/// A server-authorized log stream and whether its source has ended.
+pub(crate) struct LogSource {
+    pub stream: Option<String>,
+    pub ended: bool,
+}
+
+/// One page of a server-derived stream, from `project_group` as for [`read_log_events`].
+/// No stream, or one not created yet while its source is live, is an empty page; a missing
+/// stream of an ended source is a bare 404. Cursors are bound to their stream, never authorization.
 pub(crate) async fn log_page(
     state: &AppState,
     project_group: Option<&str>,
-    stream: Option<String>,
+    source: LogSource,
     cursor: Option<&str>,
     direction: Option<&str>,
     limit: Option<i32>,
@@ -87,27 +92,33 @@ pub(crate) async fn log_page(
             )))
         }
     };
-    let Some(stream) = stream else {
-        return Ok(LogPage {
-            log_stream: None,
-            events: vec![],
-            next_forward_token: None,
-            next_backward_token: None,
-        });
+    let LogSource { stream, ended } = source;
+    let empty = |stream| LogPage {
+        log_stream: stream,
+        ended: Some(ended),
+        events: vec![],
+        next_forward_token: None,
+        next_backward_token: None,
     };
+    let Some(stream) = stream else {
+        return Ok(empty(None));
+    };
+    let tag = cursor_tag(&stream);
+    let cursor = read_cursor(&tag, cursor);
     let limit = limit.unwrap_or(200).clamp(1, 1000);
     match read_log_events(state, project_group, &stream, cursor, direction, limit).await {
         Ok(page) => Ok(LogPage {
             log_stream: Some(stream),
+            ended: Some(ended),
             events: page
                 .events
                 .into_iter()
                 .map(|e| LogLine { ts_ms: e.timestamp_ms, message: e.message })
                 .collect(),
-            next_forward_token: page.next_forward_token,
-            next_backward_token: page.next_backward_token,
+            next_forward_token: page.next_forward_token.map(|token| format!("{tag}:{token}")),
+            next_backward_token: page.next_backward_token.map(|token| format!("{tag}:{token}")),
         }),
-        // Stream expired/rotated/not-yet-created ⇒ 404 (not a server error).
+        Err(crate::aws::AwsError::NotFound) if !ended => Ok(empty(Some(stream))),
         Err(crate::aws::AwsError::NotFound) => Err(ServiceError::NotFound(String::new())),
         Err(e) => {
             tracing::warn!(error = %e, "log page: cloudwatch error");
@@ -128,8 +139,13 @@ pub(crate) async fn task_log_page(
     // stream name (that would let a viewer read any stream in the log group).
     let task = task_or_404(state, rid, q.task.as_str()).await?;
     let job = q.job.as_ref().map(BatchJobId::as_str);
-    let stream = if job.is_none() && q.execution.is_none() {
-        task.log_stream.clone()
+    let mut source = if job.is_none() && q.execution.is_none() {
+        LogSource {
+            stream: task.log_stream.clone(),
+            ended: task.state.parse::<TaskState>().is_ok_and(|s| {
+                matches!(s, TaskState::Succeeded | TaskState::Failed | TaskState::Cancelled)
+            }),
+        }
     } else {
         // A specific attempt or execution: only one recorded for THIS task of THIS run, so a
         // viewer can never name another run's (or task's) job or execution to read its stream.
@@ -138,31 +154,51 @@ pub(crate) async fn task_log_page(
             .get_attempts(rid, &task.task_key)
             .await
             .map_err(ServiceError::status_only)?;
-        picked_stream(&attempts, job, q.execution.as_deref())
+        picked_source(&attempts, job, q.execution.as_deref())
             .ok_or(ServiceError::NotFound(String::new()))?
     };
+    source.ended |= super::detail::state_is_terminal(&run.run.state);
     // Queued / cache-hit / local rule: no Batch job, so no stream yet — an empty page, not 404.
     let group = project_task_log_group(&*state.projects.current().await, run);
-    log_page(state, group.as_deref(), stream, q.cursor.as_deref(), q.direction.as_deref(), q.limit)
+    log_page(state, group.as_deref(), source, q.cursor.as_deref(), q.direction.as_deref(), q.limit)
         .await
 }
 
-/// The stream of the attempt `job` names, or of the execution `execution` names (among `job`'s
-/// executions when both are given), from a task's own `attempts`: `None` when no attempt or
-/// execution of them matches (a 404). A match's own stream, even when it has none yet, never
-/// another's.
-fn picked_stream(
+/// A task's own selected attempt/execution and its ending; no match is a 404, never a fallback
+/// to another source's stream.
+fn picked_source(
     attempts: &[TaskAttempt],
     job: Option<&str>,
     execution: Option<&str>,
-) -> Option<Option<String>> {
+) -> Option<LogSource> {
     let mut attempts = attempts.iter().filter(|a| job.is_none_or(|j| a.batch_job_id.as_str() == j));
     match execution {
-        None => attempts.next().map(|a| a.log_stream.clone()),
+        None => attempts.next().map(|a| LogSource {
+            stream: a.log_stream.clone(),
+            ended: a.state.parse::<AttemptState>().is_ok_and(AttemptState::is_terminal),
+        }),
         Some(id) => attempts
             .flat_map(|a| &a.executions)
             .find(|x| x.execution_id == id)
-            .map(|x| x.log_stream.clone()),
+            .map(|x| LogSource { stream: x.log_stream.clone(), ended: x.ended }),
+    }
+}
+
+/// A short stream identity, not an authorization token.
+fn cursor_tag(stream: &str) -> String {
+    hex::encode(&Sha256::digest(stream.as_bytes())[..8])
+}
+
+/// Accept pre-deploy raw tokens; unwrap tagged ones only for the stream they came from.
+fn read_cursor<'a>(tag: &str, cursor: Option<&'a str>) -> Option<&'a str> {
+    let cursor = cursor?;
+    match cursor.split_once(':') {
+        Some((prefix, token))
+            if prefix.len() == 16 && prefix.bytes().all(|b| b.is_ascii_hexdigit()) =>
+        {
+            (prefix == tag).then_some(token)
+        }
+        _ => Some(cursor),
     }
 }
 
@@ -203,6 +239,17 @@ pub(crate) async fn task_attempts(
 mod tests {
     use super::*;
 
+    #[test]
+    fn cursor_tags_preserve_raw_tokens_and_colons_without_crossing_streams() {
+        let tag = cursor_tag("stream-A");
+        assert_eq!(tag, "5415e242576d6009");
+        assert_eq!(read_cursor(&tag, Some("5415e242576d6009:f/a:b")), Some("f/a:b"));
+        assert_eq!(read_cursor(&tag, Some("81ec3a39c3389f74:f/a:b")), None);
+        assert_eq!(read_cursor(&tag, Some("f/a:b")), Some("f/a:b"));
+        assert_eq!(read_cursor(&tag, Some("raw-token")), Some("raw-token"));
+        assert_eq!(read_cursor(&tag, None), None);
+    }
+
     /// job-1 (stream s1) ran twice (x1 with stream x1-s, x2 with none yet); job-2 (s2) once (x3).
     fn attempts() -> Vec<TaskAttempt> {
         let attempt = |job: &str, stream: &str, executions: serde_json::Value| {
@@ -229,6 +276,9 @@ mod tests {
     #[test]
     fn a_log_is_picked_only_from_the_task_s_own_attempts_and_executions() {
         let a = attempts();
+        let picked_stream = |a: &[TaskAttempt], job, execution| {
+            picked_source(a, job, execution).map(|source| source.stream)
+        };
         let some = |s: &str| Some(Some(s.to_string()));
         assert_eq!(picked_stream(&a, Some("job-2"), None), some("s2"));
         assert_eq!(picked_stream(&a, None, Some("x1")), some("x1-s"));

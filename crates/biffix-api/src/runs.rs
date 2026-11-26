@@ -991,8 +991,13 @@ pub struct LogPage {
     /// queued, a cache-hit, or a local rule that never became a Batch job) — render "no logs yet".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_stream: Option<String>,
+    /// Whether the coordinator, task, attempt or execution behind this log has ended. CloudWatch
+    /// may still deliver its last lines. Absent from an older server: the ending is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<bool>,
     pub events: Vec<LogLine>,
-    /// Opaque CloudWatch cursors — pass one back as `cursor` to page. `next_backward_token` walks
+    /// Opaque cursors, valid only for their stream — pass one back as `cursor` to page.
+    /// `next_backward_token` walks
     /// toward older events ("load earlier"); `next_forward_token` toward newer ("live tail").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_forward_token: Option<String>,
@@ -1029,7 +1034,8 @@ pub struct TaskLogsRequest {
     /// The task key.
     #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub task: TaskKey,
-    /// Opaque CloudWatch cursor from a prior page (`next_forward_token`/`next_backward_token`).
+    /// Opaque cursor from a prior page (`next_forward_token`/`next_backward_token`), valid only
+    /// for the stream it came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
     /// `forward` (live-tail toward newer events) or `backward`/absent (tail — newest first).
@@ -1056,7 +1062,7 @@ pub struct TaskLogsRequest {
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct CoordinatorLogsQuery {
-    /// Opaque CloudWatch cursor from a prior page.
+    /// Opaque cursor from a prior page, valid only for the stream it came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
     /// `forward` (from the given cursor toward newer events, or from the start of the stream when
