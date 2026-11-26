@@ -991,8 +991,9 @@ pub struct LogPage {
     /// queued, a cache-hit, or a local rule that never became a Batch job) — render "no logs yet".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_stream: Option<String>,
-    /// Whether the coordinator, task, attempt or execution behind this log has ended. CloudWatch
-    /// may still deliver its last lines. Absent from an older server: the ending is unknown.
+    /// Whether this coordinator, task, attempt or execution is known to have ended, independently
+    /// of the workflow's outcome. False includes missing legacy end facts. CloudWatch may still
+    /// deliver its last lines. Absent from an older server: the ending is unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<bool>,
     pub events: Vec<LogLine>,

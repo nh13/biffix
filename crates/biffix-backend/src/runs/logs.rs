@@ -71,6 +71,44 @@ pub(crate) struct LogSource {
     pub ended: bool,
 }
 
+/// The selected coordinator execution can outlive the engine's terminal workflow event.
+/// Without execution facts, keep its ending conservative; a never-launched terminal run has no
+/// coordinator left to write output.
+pub(crate) async fn coordinator_source(
+    state: &AppState,
+    run: &RunDetailView,
+) -> Result<LogSource, ServiceError> {
+    let terminal = super::detail::state_is_terminal(&run.run.state);
+    let mut source = LogSource { stream: run.coordinator_log_stream.clone(), ended: false };
+    if let Some(job) = &run.coordinator_job_id {
+        let executions = state
+            .store
+            .run_executions(&run.run.run_id, Some(job.as_str()))
+            .await
+            .map_err(ServiceError::status_only)?;
+        if let Some(current) = executions.coordinator.last() {
+            // The historical stream is min-latched; execution order identifies the current one.
+            // Host loss or image-pull failure can retry even after the engine's terminal event.
+            // Only a clean exit with its own stream proves completion without Batch's final
+            // job-stop facts below; an end can fold before the start that supplies the stream.
+            source.stream = current.log_stream.clone().or(source.stream);
+            source.ended = terminal
+                && current.log_stream.is_some()
+                && current.ended
+                && current.exit_code == Some(0)
+                && current.interruption.is_none();
+        }
+    } else if source.stream.is_none() {
+        source.ended = terminal;
+    }
+    // These are Batch's coordinator_failed facts, never the engine's workflow verdict. They also
+    // prove a job that never produced an ECS execution/log (for example an image-pull failure) ended.
+    source.ended |= run.coordinator_stop.exit_code.is_some()
+        || run.coordinator_stop.status_reason.is_some()
+        || run.coordinator_stop.termination_category.is_some();
+    Ok(source)
+}
+
 /// One page of a server-derived stream, from `project_group` as for [`read_log_events`].
 /// No stream, or one not created yet while its source is live, is an empty page; a missing
 /// stream of an ended source is a bare 404. Cursors are bound to their stream, never authorization.
@@ -139,25 +177,31 @@ pub(crate) async fn task_log_page(
     // stream name (that would let a viewer read any stream in the log group).
     let task = task_or_404(state, rid, q.task.as_str()).await?;
     let job = q.job.as_ref().map(BatchJobId::as_str);
-    let mut source = if job.is_none() && q.execution.is_none() {
-        LogSource {
-            stream: task.log_stream.clone(),
-            ended: task.state.parse::<TaskState>().is_ok_and(|s| {
-                matches!(s, TaskState::Succeeded | TaskState::Failed | TaskState::Cancelled)
-            }),
-        }
+    let attempts = if job.is_some() || q.execution.is_some() || task.batch_job_id.is_some() {
+        state.store.get_attempts(rid, &task.task_key).await.map_err(ServiceError::status_only)?
     } else {
-        // A specific attempt or execution: only one recorded for THIS task of THIS run, so a
-        // viewer can never name another run's (or task's) job or execution to read its stream.
-        let attempts = state
-            .store
-            .get_attempts(rid, &task.task_key)
-            .await
-            .map_err(ServiceError::status_only)?;
+        Vec::new()
+    };
+    let source = if job.is_none() && q.execution.is_none() {
+        // Effective task cancellation can precede the worker stopping. Its Batch attempt keeps
+        // the physical lifecycle, unaffected by the enclosing run's outcome.
+        let ended = task
+            .batch_job_id
+            .as_ref()
+            .and_then(|job| attempts.iter().find(|a| a.batch_job_id == *job))
+            .map(|a| a.state.parse::<AttemptState>().is_ok_and(AttemptState::is_terminal))
+            .unwrap_or_else(|| {
+                task.state.parse::<TaskState>().is_ok_and(|s| {
+                    matches!(s, TaskState::Succeeded | TaskState::Failed)
+                        || (s == TaskState::Cancelled && task.batch_job_id.is_none())
+                })
+            });
+        LogSource { stream: task.log_stream.clone(), ended }
+    } else {
+        // An explicit source must belong to THIS task of THIS run; never fall back to another.
         picked_source(&attempts, job, q.execution.as_deref())
             .ok_or(ServiceError::NotFound(String::new()))?
     };
-    source.ended |= super::detail::state_is_terminal(&run.run.state);
     // Queued / cache-hit / local rule: no Batch job, so no stream yet — an empty page, not 404.
     let group = project_task_log_group(&*state.projects.current().await, run);
     log_page(state, group.as_deref(), source, q.cursor.as_deref(), q.direction.as_deref(), q.limit)

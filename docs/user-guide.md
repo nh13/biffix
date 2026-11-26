@@ -452,7 +452,11 @@ next attempt; follow it again to read the new display attempt. If a stream chang
 reading it, the command restarts from the new stream's beginning. Transient follow failures are
 retried within a budget; a 404 is always final. Against an older backend that cannot report when
 a source has ended, following continues until interrupted with Ctrl-C, and following a starting
-run can still exit 5 until CloudWatch creates its stream. Empty finished logs are noted on stderr.
+run can still exit 5 until CloudWatch creates its stream. A newer backend keeps the coordinator
+open through infrastructure retries, even after the engine reports success. Without a clean
+coordinator exit or final Batch-stop facts, it conservatively keeps following; use Ctrl-C to stop
+when those facts are missing from a legacy run. Workflow completion alone does not prove the
+coordinator finished its uploads and cleanup. Empty finished logs are noted on stderr.
 
 For a failed run, `runs show` and `runs follow` (and `runs submit --follow`) also print why it
 failed: each of the first failed steps (or the workflow engine, when it failed before any step) with

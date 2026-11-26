@@ -381,6 +381,10 @@ fn state_with_coordinator_stream(stream: Option<&str>) -> AppState {
     let store = MemStore::new();
     let mut detail = testing::run_detail("r1", "failed");
     detail.coordinator_log_stream = stream.map(String::from);
+    if let Some(stream) = stream {
+        detail.coordinator_job_id = Some("coord-job".into());
+        store.insert_coordinator_executions("r1", vec![log_execution("coord-x", stream, true)]);
+    }
     store.insert(detail);
     TestState::new().with_store(Arc::new(store)).build()
 }
@@ -471,7 +475,7 @@ async fn log_pages_report_the_selected_sources_end_state() {
         ("running", "failed", true),
         ("running", "cancelled", true),
         ("running", "future_state", false),
-        ("cancelled", "running", true),
+        ("cancelled", "running", false),
     ] {
         let store = MemStore::new();
         let mut detail = testing::run_detail("r1", run_state);
@@ -492,9 +496,16 @@ async fn a_live_missing_stream_is_empty_but_an_ended_missing_stream_is_404() {
     {
         let store = MemStore::new();
         let mut detail = testing::run_detail("r1", run_state);
+        detail.coordinator_job_id = Some("coord-job".into());
         detail.coordinator_log_stream = Some("missing".into());
-        detail.tasks = vec![task_view("task", "running", Some("missing"), None)];
+        detail.tasks = vec![task_view(
+            "task",
+            if ended { "failed" } else { "running" },
+            Some("missing"),
+            None,
+        )];
         store.insert(detail);
+        store.insert_coordinator_executions("r1", vec![log_execution("coord-x", "missing", ended)]);
         let state = TestState::new().with_store(Arc::new(store)).build();
         let expected = if ended { StatusCode::NOT_FOUND } else { StatusCode::OK };
         let (status, value) =
@@ -545,6 +556,46 @@ async fn log_cursors_are_bound_to_the_server_selected_stream() {
     let forward = value["next_forward_token"].as_str().unwrap();
     assert!(forward.starts_with("5415e242576d6009:"), "{value}");
     assert!(value["next_backward_token"].as_str().unwrap().starts_with("5415e242576d6009:"));
+    let backward = value["next_backward_token"].as_str().unwrap();
+    for (cursor, direction, raw) in
+        [(forward, "forward", "f/next"), (backward, "backward", "b/next")]
+    {
+        cloud.log_reads.lock().unwrap().clear();
+        let (status, _) = post_json(
+            api::router(state.clone()),
+            "/runs/r1/task-logs/query",
+            serde_json::json!({
+                "task":"started", "cursor":cursor, "direction":direction,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(cloud.log_reads.lock().unwrap()[0].1.as_deref(), Some(raw));
+    }
+    let (_, other) = post_json(
+        api::router(state.clone()),
+        "/runs/r1/task-logs/query",
+        serde_json::json!({
+            "task":"started", "job":"job-A0",
+        }),
+    )
+    .await;
+    for key in ["next_forward_token", "next_backward_token"] {
+        cloud.log_reads.lock().unwrap().clear();
+        let (status, _) = post_json(
+            api::router(state.clone()),
+            "/runs/r1/task-logs/query",
+            serde_json::json!({
+                "task":"started", "cursor":other[key],
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            cloud.log_reads.lock().unwrap()[0].1.is_none(),
+            "another stream's {key} reached CloudWatch"
+        );
+    }
     for (cursor, expected) in [
         ("5415e242576d6009:f/next:part", Some("f/next:part")),
         ("81ec3a39c3389f74:f/next", None),
@@ -563,4 +614,209 @@ async fn log_cursors_are_bound_to_the_server_selected_stream() {
             [("stream-A".to_string(), expected.map(String::from), Forward, 7)]
         );
     }
+}
+
+/// Physical execution facts, independently of the engine's workflow verdict.
+fn log_execution(id: &str, stream: &str, ended: bool) -> biffix_api::JobExecution {
+    serde_json::from_value(serde_json::json!({
+        "execution_id":id, "ordinal":1, "ended":ended, "final_execution":true,
+        "log_stream":stream, "exit_code":if ended { Some(0) } else { None },
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn engine_completion_does_not_end_a_live_coordinator_log() {
+    for (stream, execution_ended, want) in
+        [("cleanup", false, false), ("cleanup", true, true), ("old", false, false)]
+    {
+        let store = MemStore::new();
+        let mut detail = testing::run_detail("r1", "succeeded");
+        detail.coordinator_job_id = Some("coordinator-job".into());
+        detail.coordinator_log_stream = Some(stream.into());
+        store.insert(detail);
+        store.insert_coordinator_executions(
+            "r1",
+            vec![
+                log_execution("old", "old", true),
+                log_execution("current", "cleanup", execution_ended),
+            ],
+        );
+        let app = api::router(TestState::new().with_store(Arc::new(store)).build());
+        let (status, value) = get_json(app, "/runs/r1/coordinator-logs").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ended"], want, "{stream}: {value}");
+    }
+    let store = MemStore::new();
+    let mut detail = testing::run_detail("r1", "succeeded");
+    detail.coordinator_job_id = Some("legacy-job".into());
+    detail.coordinator_log_stream = Some("legacy-stream".into());
+    store.insert(detail);
+    let (status, value) = get_json(
+        api::router(TestState::new().with_store(Arc::new(store)).build()),
+        "/runs/r1/coordinator-logs",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["ended"], false, "workflow outcome cannot prove a legacy coordinator ended");
+}
+
+#[tokio::test]
+async fn terminal_run_does_not_end_a_running_worker_or_execution() {
+    for run_state in ["failed", "cancelled"] {
+        let store = MemStore::new();
+        let mut detail = testing::run_detail("r1", run_state);
+        detail.tasks = vec![task_view("task", "cancelled", Some("worker"), Some("job-worker"))];
+        store.insert(detail);
+        let mut attempt = attempt_view("job-worker", 1, "running", "worker");
+        attempt.executions = vec![log_execution("worker-execution", "worker", false)];
+        store.insert_attempts("r1", "task", vec![attempt]);
+        let state = TestState::new().with_store(Arc::new(store)).build();
+        for body in [
+            serde_json::json!({"task":"task"}),
+            serde_json::json!({"task":"task","job":"job-worker"}),
+            serde_json::json!({"task":"task","execution":"worker-execution"}),
+        ] {
+            let (status, value) =
+                post_json(api::router(state.clone()), "/runs/r1/task-logs/query", body.clone())
+                    .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(value["ended"], false, "{run_state}: {body}: {value}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn coordinator_retries_keep_following_the_latest_execution() {
+    for (run_state, current, stream, ended) in [
+        ("running", None, "old", false),
+        ("running", Some(false), "cleanup", false),
+        ("succeeded", Some(false), "cleanup", false),
+        ("succeeded", Some(true), "cleanup", true),
+    ] {
+        let store = MemStore::new();
+        let mut detail = testing::run_detail("r1", run_state);
+        detail.coordinator_job_id = Some("coordinator-job".into());
+        // The run projection's historical stream is min-latched, not execution-ordered.
+        detail.coordinator_log_stream = Some("old".into());
+        store.insert(detail);
+        let mut executions = vec![log_execution("old", "old", true)];
+        if let Some(stopped) = current {
+            executions.push(log_execution("current", "cleanup", stopped));
+        }
+        store.insert_coordinator_executions("r1", executions);
+        let (status, value) = get_json(
+            api::router(TestState::new().with_store(Arc::new(store)).build()),
+            "/runs/r1/coordinator-logs",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["log_stream"], stream, "{run_state}/{current:?}: {value}");
+        assert_eq!(value["ended"], ended, "{run_state}/{current:?}: {value}");
+    }
+}
+
+#[tokio::test]
+async fn a_coordinator_end_without_its_stream_keeps_following_until_the_start_arrives() {
+    let store = Arc::new(MemStore::new());
+    let mut detail = testing::run_detail("r1", "succeeded");
+    detail.coordinator_job_id = Some("coordinator-job".into());
+    detail.coordinator_log_stream = Some("old".into());
+    store.insert(detail);
+    let old = log_execution("old", "old", true);
+    let mut current = log_execution("current", "cleanup", true);
+    current.log_stream = None;
+    store.insert_coordinator_executions("r1", vec![old.clone(), current.clone()]);
+    let state = TestState::new().with_store(store.clone()).build();
+    let (status, value) = get_json(api::router(state.clone()), "/runs/r1/coordinator-logs").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["log_stream"], "old");
+    assert_eq!(value["ended"], false, "the earlier execution's stream is not the completed log");
+
+    // The start can fold after the clean end and supply the execution's own stream.
+    current.log_stream = Some("cleanup".into());
+    store.insert_coordinator_executions("r1", vec![old, current]);
+    let (status, value) = get_json(api::router(state), "/runs/r1/coordinator-logs").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["log_stream"], "cleanup");
+    assert_eq!(value["ended"], true);
+    assert_eq!(value["events"][0]["message"], "log line for cleanup");
+}
+
+#[tokio::test]
+async fn engine_success_does_not_end_an_interrupted_coordinator_awaiting_retry() {
+    for interruption in ["spot_reclaimed", "host_lost", "future_host_loss"] {
+        let store = Arc::new(MemStore::new());
+        let mut detail = testing::run_detail("r1", "succeeded");
+        detail.coordinator_job_id = Some("coordinator-job".into());
+        detail.coordinator_log_stream = Some("old".into());
+        store.insert(detail.clone());
+        let mut old = log_execution("old", "old", true);
+        old.interruption = Some(interruption.into());
+        store.insert_coordinator_executions("r1", vec![old.clone()]);
+        let state = TestState::new().with_store(store.clone()).build();
+        let (status, value) =
+            get_json(api::router(state.clone()), "/runs/r1/coordinator-logs").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["log_stream"], "old");
+        assert_eq!(value["ended"], false, "{interruption}: {value}");
+
+        store.insert_coordinator_executions(
+            "r1",
+            vec![old.clone(), log_execution("replacement", "cleanup", false)],
+        );
+        let (status, value) =
+            get_json(api::router(state.clone()), "/runs/r1/coordinator-logs").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["log_stream"], "cleanup");
+        assert_eq!(value["ended"], false);
+
+        // Exhausted Batch retries are independent completion evidence even after a host loss.
+        detail.coordinator_stop.status_reason =
+            Some("Host EC2 terminated; retries exhausted".into());
+        store.insert(detail);
+        store.insert_coordinator_executions("r1", vec![old]);
+        let (status, value) = get_json(api::router(state), "/runs/r1/coordinator-logs").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ended"], true);
+    }
+}
+
+#[tokio::test]
+async fn coordinator_execution_end_without_a_clean_exit_needs_batch_stop_facts() {
+    for exit_code in [None, Some(1)] {
+        let store = Arc::new(MemStore::new());
+        let mut detail = testing::run_detail("r1", "succeeded");
+        detail.coordinator_job_id = Some("coordinator-job".into());
+        detail.coordinator_log_stream = Some("old".into());
+        store.insert(detail);
+        let mut execution = log_execution("retry", "cleanup", true);
+        execution.exit_code = exit_code;
+        execution.status_reason = Some("CannotPullContainerError: retryable image pull".into());
+        store.insert_coordinator_executions("r1", vec![execution]);
+        let (status, value) = get_json(
+            api::router(TestState::new().with_store(store).build()),
+            "/runs/r1/coordinator-logs",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ended"], false, "{exit_code:?}: {value}");
+    }
+}
+
+#[tokio::test]
+async fn a_batch_coordinator_stop_is_completion_without_execution_facts() {
+    let store = MemStore::new();
+    let mut detail = testing::run_detail("r1", "failed");
+    detail.coordinator_job_id = Some("coordinator-job".into());
+    detail.coordinator_stop.status_reason = Some("CannotPullContainerError".into());
+    store.insert(detail);
+    let (status, value) = get_json(
+        api::router(TestState::new().with_store(Arc::new(store)).build()),
+        "/runs/r1/coordinator-logs",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["ended"], true);
+    assert_eq!(value["events"], serde_json::json!([]));
 }

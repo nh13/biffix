@@ -564,7 +564,9 @@ describe('the mock API', () => {
       await call('GET', `/runs/${q(id)}/reports`);
       await call('GET', `/runs/${q(id)}/provenance`);
       const coordinatorLog = obj(await call('GET', `/runs/${q(id)}/coordinator-logs`));
-      expect(coordinatorLog.ended, id).toBe(detail.terminal);
+      // These legacy coordinator fixtures have no execution-end facts: the engine's terminal
+      // state alone cannot prove that a launched coordinator has finished its cleanup.
+      expect(coordinatorLog.ended, id).toBe(detail.coordinator_job_id ? false : detail.terminal);
       // A termination category is spelled as `TerminationCategory` serializes (`oom`, not `OOM`).
       for (const t of tasks.tasks as { task_key: string; termination_category?: string }[])
         if (t.termination_category != null)

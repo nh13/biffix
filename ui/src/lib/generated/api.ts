@@ -2333,8 +2333,9 @@ export interface components {
      */
     LogPage: {
       /**
-       * @description Whether the coordinator, task, attempt or execution behind this log has ended. CloudWatch
-       *     may still deliver its last lines. Absent from an older server: the ending is unknown.
+       * @description Whether this coordinator, task, attempt or execution is known to have ended, independently
+       *     of the workflow's outcome. False includes missing legacy end facts. CloudWatch may still
+       *     deliver its last lines. Absent from an older server: the ending is unknown.
        */
       ended?: boolean | null;
       events: components['schemas']['LogLine'][];
