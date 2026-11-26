@@ -7,11 +7,12 @@ use biffix_core::ids::RunId;
 
 use super::StoreError;
 
-/// One priced job of a run (an `attempt_cost` row).
+/// One cost line of a run (a `cost_line` row): an execution's, or a job's legacy job-level line.
+/// A job Batch re-ran has a line per execution, so one job can have several rows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CostRow {
     pub batch_job_id: String,
-    /// The job was the run's coordinator (`attempt_cost.role`), not a task attempt.
+    /// The job was the run's coordinator (`cost_line.role`), not a task attempt.
     pub coordinator: bool,
     /// The task the job was an attempt of. `None` for the coordinator, and for a task job whose
     /// attempt row is gone (a replay that re-keyed or dropped it): that job still counts in the
@@ -53,10 +54,11 @@ impl ListCost {
     }
 }
 
-/// Roll a run's priced jobs up into its [`biffix_api::RunCost`]. `final_attempts` are the job ids of
-/// each task's display (final) attempt — the winning cost counts only those plus the coordinator;
-/// `pending_jobs` counts the run's jobs not priced yet that still can be. `None` when nothing is
-/// priced or pending.
+/// Roll a run's cost lines up into its [`biffix_api::RunCost`]. `final_attempts` are the job ids of
+/// each task's display (final) attempt — the winning cost counts only those (every line of each)
+/// plus the coordinator; `pending_jobs` counts the run's jobs not priced yet that still can be.
+/// `priced_jobs`, and each instance type group's `jobs`, count distinct jobs: a job that ran on two
+/// types is in both groups. `None` when nothing is priced or pending.
 pub(crate) fn run_cost(
     rows: &[CostRow],
     final_attempts: &std::collections::BTreeSet<String>,
@@ -65,8 +67,10 @@ pub(crate) fn run_cost(
     if rows.is_empty() && pending_jobs == 0 {
         return None;
     }
-    let mut by_type: std::collections::BTreeMap<(String, Option<String>), (i64, f64, f64)> =
+    type Group<'a> = (std::collections::BTreeSet<&'a str>, f64, f64);
+    let mut by_type: std::collections::BTreeMap<(String, Option<String>), Group> =
         Default::default();
+    let mut jobs = std::collections::BTreeSet::new();
     let mut sources = std::collections::BTreeSet::new();
     let (mut compute, mut ebs, mut coordinator, mut winning) = (0.0, 0.0, 0.0, 0.0);
     for row in rows {
@@ -79,8 +83,9 @@ pub(crate) fn run_cost(
             winning += row.usd();
         }
         sources.insert(row.price_source.clone());
+        jobs.insert(row.batch_job_id.as_str());
         let entry = by_type.entry((row.instance_type.clone(), row.lifecycle.clone())).or_default();
-        entry.0 += 1;
+        entry.0.insert(row.batch_job_id.as_str());
         entry.1 += row.hours;
         entry.2 += row.usd();
     }
@@ -90,19 +95,20 @@ pub(crate) fn run_cost(
         ebs_usd: ebs,
         coordinator_usd: coordinator,
         winning_usd: winning,
-        priced_jobs: rows.len() as i64,
+        priced_jobs: jobs.len() as i64,
         pending_jobs,
         price_sources: sources.into_iter().collect(),
         by_instance_type: by_type
             .into_iter()
             .map(|((instance_type, lifecycle), (jobs, hours, usd))| {
+                let jobs = jobs.len() as i64;
                 biffix_api::CostByInstanceType { instance_type, lifecycle, jobs, hours, usd }
             })
             .collect(),
     })
 }
 
-/// Run costs (the priced jobs' `attempt_cost`), usage over a period, and the past runs a launch
+/// Run costs (the priced jobs' `cost_line`s), usage over a period, and the past runs a launch
 /// estimate or a workflow's typical run is based on.
 #[async_trait]
 pub trait CostReads: Send + Sync {
@@ -180,6 +186,28 @@ mod cost_tests {
             price_source: "on_demand".into(),
             ..row(job, None, itype, usd)
         }
+    }
+
+    #[test]
+    fn a_job_with_several_lines_counts_once_in_jobs_and_in_each_type_group() {
+        // Job a1 ran three times (Batch re-ran it after spot reclaims): on a c6a.4xlarge, then
+        // twice on a c7i.4xlarge. One line per execution, one job.
+        let rows = vec![
+            row("a1", Some("align"), "c6a.4xlarge", 1.0),
+            row("a1", Some("align"), "c7i.4xlarge", 2.0),
+            row("a1", Some("align"), "c7i.4xlarge", 0.5),
+        ];
+        let finals = ["a1".to_string()].into_iter().collect();
+        let cost = run_cost(&rows, &finals, 0).unwrap();
+        assert_eq!(cost.priced_jobs, 1);
+        // Every line of the final attempt's job.
+        assert!((cost.winning_usd - 3.5).abs() < 1e-9);
+        let groups: Vec<_> = cost
+            .by_instance_type
+            .iter()
+            .map(|g| (g.instance_type.as_str(), g.jobs, g.hours))
+            .collect();
+        assert_eq!(groups, [("c6a.4xlarge", 1, 1.0), ("c7i.4xlarge", 1, 2.0)]);
     }
 
     #[test]

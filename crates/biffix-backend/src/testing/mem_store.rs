@@ -72,7 +72,7 @@ pub struct MemStore {
     /// Each run whose provenance failed (`mark_provenance_failed`): `(attempts, retry_after)`,
     /// dropped by a `mark_provenance`.
     pub provenance_failures: Mutex<BTreeMap<String, (i64, i64)>>,
-    /// Each run's priced jobs (`attempt_cost`), by run id: what `usage` sums. (A run's detail
+    /// Each run's cost lines (`cost_line`), by run id: what `usage` sums. (A run's detail
     /// carries its own `cost`, which a test sets directly.)
     pub costs: Mutex<BTreeMap<String, Vec<crate::store::cost::CostRow>>>,
     /// The output prefixes a submit holds a claim on now.
@@ -608,7 +608,7 @@ impl CostReads for MemStore {
         // Faithful: each run's detail cost as the list shows it, read in one pass (counted).
         self.run_costs_calls.fetch_add(1, Ordering::SeqCst);
         if self.fail_run_costs.load(Ordering::SeqCst) {
-            return Err(StoreError::Unavailable("attempt_cost: timed out".into()));
+            return Err(StoreError::Unavailable("cost_line: timed out".into()));
         }
         let runs = self.runs.lock().unwrap();
         Ok(run_ids

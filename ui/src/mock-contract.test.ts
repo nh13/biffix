@@ -248,7 +248,8 @@ const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
 /**
  * `cost` is one the backend's `store::run_cost` can produce: present only with a priced or pending
  * job; the estimate is compute + root volume, every share of it no more than it, and its breakdown
- * by instance type adds up to it; nothing priced means nothing estimated.
+ * by instance type adds up to it (a job Batch ran on two types is in both groups, so the groups'
+ * jobs are at least the priced jobs); nothing priced means nothing estimated.
  */
 function expectPossibleCost(cost: RunCost, id: string) {
   const { estimated_usd: usd, by_instance_type: types } = cost;
@@ -258,7 +259,9 @@ function expectPossibleCost(cost: RunCost, id: string) {
   expect(
     types.reduce((n, t) => n + t.jobs, 0),
     `${id}: breakdown jobs`,
-  ).toBe(cost.priced_jobs);
+  ).toBeGreaterThanOrEqual(cost.priced_jobs);
+  for (const t of types)
+    expect(t.jobs >= 1 && t.jobs <= cost.priced_jobs, `${id}: ${t.instance_type} jobs`).toBe(true);
   expect(
     near(
       types.reduce((n, t) => n + t.usd, 0),

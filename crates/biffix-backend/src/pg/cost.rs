@@ -1,5 +1,5 @@
-//! [`CostReads`] for [`PgStore`]: run costs from the priced jobs (`attempt_cost`), usage, and the
-//! past runs an estimate reads.
+//! [`CostReads`] for [`PgStore`]: run costs from the cost lines (`cost_line`: each execution's
+//! line, else a job's legacy job-level line), usage, and the past runs an estimate reads.
 
 use std::collections::HashMap;
 
@@ -19,24 +19,24 @@ use crate::store::runs::RunFilter;
 use crate::store::StoreError;
 
 impl PgStore {
-    /// The run's cost estimate from its priced jobs, given the batch job ids of each task's final
-    /// attempt, plus the priced rows themselves.
+    /// The run's cost estimate from its cost lines, given the batch job ids of each task's final
+    /// attempt, plus the lines themselves.
     pub(super) async fn run_cost_rows(
         &self,
         run_id: &RunId,
         final_attempts: &std::collections::BTreeSet<String>,
     ) -> Result<(Option<biffix_api::RunCost>, Vec<crate::store::cost::CostRow>), StoreError> {
-        // Every priced job of the run, with its role and (for a task job) its task, in job id order:
-        // `run_cost` adds them up in this order, as `run_costs` does, so the run page's estimate
-        // and the list's are the same float.
+        // Every cost line of the run, with its role and (for a task job) its task, in job id then
+        // execution id order: `run_cost` adds them up in this order, as `run_costs` does, so the
+        // run page's estimate and the list's are the same float.
         let rows = sqlx::query(
             "SELECT c.batch_job_id, a.task_key, c.role, c.instance_type, c.lifecycle, c.hours, \
              c.price_per_hour, c.price_source, c.compute_usd, c.ebs_usd \
-             FROM attempt_cost c \
+             FROM cost_line c \
              LEFT JOIN attempt_projection a \
                ON a.run_id = c.run_id AND a.batch_job_id = c.batch_job_id \
              WHERE c.run_id = $1 \
-             ORDER BY c.batch_job_id COLLATE \"C\"",
+             ORDER BY c.batch_job_id COLLATE \"C\", c.execution_id COLLATE \"C\"",
         )
         .bind(run_id.as_str())
         .fetch_all(&self.pool);
@@ -82,24 +82,39 @@ fn pricing_window_start() -> i64 {
 }
 
 /// The number of the run (`$1`)'s jobs not priced yet that the pricer still can price (see
-/// [`pending_jobs_from`]), with `$2` the pricing window's start.
+/// [`pending_jobs_from`]), with `$2` the pricing window's start. A job pending for more than one
+/// reason counts once.
 fn pending_jobs_sql() -> String {
-    let (attempts, coordinator) = pending_jobs_from("$1", "$2");
-    format!("SELECT (SELECT COUNT(*) {attempts}) + (SELECT COUNT(*) {coordinator}) AS pending")
+    format!("SELECT COUNT(*) AS pending FROM ({}) p", pending_jobs_from("$1", "$2").join(" UNION "))
 }
 
-/// The `FROM … WHERE` of the run `run` (an SQL expression, never over an alias `r`, which the
-/// coordinator part uses itself)'s jobs not priced yet that the pricer still can price, as two
-/// parts (its task attempts, its coordinator): a job that is not finished yet while its run has
-/// not ended, or one that finished (after `window`, the pricing window's start, an SQL expression)
-/// on a host the registry knows the instance type of. The eligibility is the pricer's own ([`biffix_db::rules`]), so a job
-/// the pricer can never price (terminated before it got a host, or on a host that predates the
-/// registry, or finished before the window) is not "pending" forever.
+/// Whether any of the run `run`'s jobs is pending ([`pending_jobs_from`], with `window` the pricing
+/// window's start): EXISTS stops at the first, where [`pending_jobs_sql`] counts them all.
+fn any_pending(run: &str, window: &str) -> String {
+    let parts = pending_jobs_from(run, window).map(|part| format!("EXISTS ({part})"));
+    format!("({})", parts.join(" OR "))
+}
+
+/// The run `run` (an SQL expression, never over an alias the parts use themselves: `a`, `ar`,
+/// `h`, `r`, `w`, `x`, `xr`, and the rules' `c`, `u`, `eh`, `ex`, `xc`, `xu`)'s jobs not priced yet
+/// that the pricer still can price, as three queries of their job ids (its task attempts, its
+/// coordinator, its executions; one job can be in more than one):
+/// - a job that is not finished yet, or has an execution that has not ended, while its run has
+///   not ended,
+/// - a job with an execution the pricer still owes a line
+///   ([`biffix_db::rules::execution_to_price`], with `window` the pricing window's start, an SQL
+///   expression), or
+/// - a job priced the legacy way (not [`biffix_db::rules::prices_by_execution`]) that finished
+///   (after `window`) on a host the registry knows the instance type of.
 ///
-/// The coordinator's run time is judged from its own Batch facts, by the window the pricer prices
-/// it from ([`biffix_db::rules::coordinator_window`]), so one whose terminal never reached the log
-/// (which the pricer can never price) is not pending once its run has ended.
-fn pending_jobs_from(run: &str, window: &str) -> (String, String) {
+/// The eligibility is the pricer's own ([`biffix_db::rules`]), so a job the pricer can never price
+/// (terminated before it got a host, or on a host that predates the registry, or finished before
+/// the window) is not "pending" forever.
+///
+/// The coordinator's legacy run time is judged from its own Batch facts, by the window the pricer
+/// prices it from ([`biffix_db::rules::coordinator_window`]), so one whose terminal never reached
+/// the log (which the pricer can never price) is not pending once its run has ended.
+fn pending_jobs_from(run: &str, window: &str) -> [String; 3] {
     use biffix_core::state::AttemptState;
     use biffix_db::rules;
     // Enum-derived literals (no user input), so inlining them is injection-safe.
@@ -113,31 +128,45 @@ fn pending_jobs_from(run: &str, window: &str) -> (String, String) {
         sql_list(RunFilter::Completed.states().unwrap_or_default().iter().map(|s| s.as_str()));
     let attempt_unpriced = rules::not_yet_priced("a.run_id", "a.batch_job_id");
     let attempt_priceable = rules::priceable("h", "a.finished_at", window);
+    let attempt_by_execution = rules::prices_by_execution("a.run_id", "a.batch_job_id");
     // An attempt still open counts only while its run has not ended, as the coordinator below:
     // one whose terminal never arrives (lost, and given up on by the reconciler) would otherwise
     // keep an ended run "pending" for good. A terminal that arrives late makes it pending again,
     // when the pricer can price it.
     let attempts = format!(
-        "FROM attempt_projection a \
+        "SELECT a.batch_job_id FROM attempt_projection a \
          JOIN run_projection ar ON ar.run_id = a.run_id \
          LEFT JOIN host_registry h ON h.container_instance_id = a.instance_id \
          WHERE a.run_id = {run} AND {attempt_unpriced} \
            AND ((a.state NOT IN ({finished_attempt}) AND ar.state NOT IN ({ended_run})) \
                 OR (a.state IN ({finished_attempt}) AND a.started_at IS NOT NULL \
-                    AND {attempt_priceable}))"
+                    AND {attempt_priceable} AND NOT {attempt_by_execution}))"
     );
     let coordinator_unpriced = rules::not_yet_priced("r.run_id", "r.coordinator_job_id");
     let coordinator_window = rules::coordinator_window("r.coordinator_job_id");
     let coordinator_priceable = rules::priceable("h", "w.finished", window);
+    let coordinator_by_execution = rules::prices_by_execution("r.run_id", "r.coordinator_job_id");
     let coordinator = format!(
-        "FROM run_projection r \
+        "SELECT r.coordinator_job_id FROM run_projection r \
          LEFT JOIN host_registry h ON h.container_instance_id = r.coordinator_host_id \
          LEFT JOIN LATERAL ({coordinator_window}) w ON TRUE \
          WHERE r.run_id = {run} AND r.coordinator_job_id IS NOT NULL AND {coordinator_unpriced} \
            AND (r.state NOT IN ({ended_run}) \
-                OR (w.started IS NOT NULL AND {coordinator_priceable}))"
+                OR (w.started IS NOT NULL AND {coordinator_priceable} \
+                    AND NOT {coordinator_by_execution}))"
     );
-    (attempts, coordinator)
+    // An execution still running counts only while its run has not ended, as an open attempt
+    // does: its job's attempt can read as finished (the engine reported it) while Batch still runs
+    // it, and the job's line is not all priced until it ends.
+    let execution_to_price = rules::execution_to_price("x", "h", window);
+    let executions = format!(
+        "SELECT x.batch_job_id FROM execution_projection x \
+         JOIN run_projection xr ON xr.run_id = x.run_id \
+         LEFT JOIN host_registry h ON h.container_instance_id = x.instance_id \
+         WHERE x.run_id = {run} \
+           AND ({execution_to_price} OR (NOT x.ended AND xr.state NOT IN ({ended_run})))"
+    );
+    [attempts, coordinator, executions]
 }
 
 /// Which past runs a basis query reads (see [`basis_sql`]).
@@ -161,10 +190,10 @@ enum Basis {
 /// estimate, which is all about cost, leaves such runs out.
 fn basis_sql(basis: Basis) -> String {
     let succeeded = filter_sql(RunFilter::Succeeded);
-    let (attempts, coordinator) = pending_jobs_from("b.run_id", "$1");
+    let pending = any_pending("b.run_id", "$1");
     let usd = format!(
-        "CASE WHEN EXISTS (SELECT 1 {attempts}) OR EXISTS (SELECT 1 {coordinator}) THEN NULL \
-           ELSE (SELECT sum(c.compute_usd + c.ebs_usd) FROM attempt_cost c \
+        "CASE WHEN {pending} THEN NULL \
+           ELSE (SELECT sum(c.compute_usd + c.ebs_usd) FROM cost_line c \
                   WHERE c.run_id = b.run_id) END"
     );
     let runs = |scope: &str, extra: &str| {
@@ -225,20 +254,20 @@ impl CostReads for PgStore {
         &self,
         run_ids: &[RunId],
     ) -> Result<HashMap<String, crate::store::cost::ListCost>, StoreError> {
-        // Per run, in one query: its priced jobs' compute and root volume, each summed in job id
-        // order as `run_cost_rows` reads them (so `compute + ebs` is the detail's estimate, the same
-        // float), and whether any job is still pending (`pending_jobs_from`: EXISTS stops at the
-        // first, where the detail counts them all).
-        let (attempts, coordinator) = pending_jobs_from("ids.run_id", "$2");
+        // Per run, in one query: its cost lines' compute and root volume, each summed in job id
+        // then execution id order as `run_cost_rows` reads them (so `compute + ebs` is the
+        // detail's estimate, the same float), and whether any job is still pending (`any_pending`).
+        let pending = any_pending("ids.run_id", "$2");
         let sql = format!(
-            "SELECT ids.run_id, c.n, c.compute, c.ebs, \
-                    (EXISTS (SELECT 1 {attempts}) OR EXISTS (SELECT 1 {coordinator})) AS pending \
+            "SELECT ids.run_id, c.n, c.compute, c.ebs, {pending} AS pending \
              FROM unnest($1::text[]) AS ids(run_id) \
              CROSS JOIN LATERAL ( \
                SELECT count(*) AS n, \
-                      sum(compute_usd ORDER BY batch_job_id COLLATE \"C\")::float8 AS compute, \
-                      sum(ebs_usd ORDER BY batch_job_id COLLATE \"C\")::float8 AS ebs \
-               FROM attempt_cost WHERE run_id = ids.run_id) c"
+                      sum(compute_usd ORDER BY batch_job_id COLLATE \"C\", \
+                                               execution_id COLLATE \"C\")::float8 AS compute, \
+                      sum(ebs_usd ORDER BY batch_job_id COLLATE \"C\", \
+                                           execution_id COLLATE \"C\")::float8 AS ebs \
+               FROM cost_line WHERE run_id = ids.run_id) c"
         );
         let ids: Vec<&str> = run_ids.iter().map(RunId::as_str).collect();
         let rows = sqlx::query(AssertSqlSafe(sql))
@@ -290,7 +319,7 @@ impl CostReads for PgStore {
         // Ties by key in byte order, as the in-memory store breaks them (an output column cannot
         // carry a collation in ORDER BY, so the key's expression does).
         let order = order.replace("{k}", key);
-        const FROM: &str = "FROM attempt_cost c JOIN run_projection r ON r.run_id = c.run_id \
+        const FROM: &str = "FROM cost_line c JOIN run_projection r ON r.run_id = c.run_id \
              LEFT JOIN workflow_versions w ON w.id = r.workflow_version \
              WHERE r.submitted_at >= $1 AND r.submitted_at < $2";
         let totals = |r: &sqlx::postgres::PgRow, key: String| UsageTotals {

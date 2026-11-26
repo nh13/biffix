@@ -414,43 +414,240 @@ async fn only_jobs_the_pricer_can_still_price_are_pending() {
     assert!(!costs["ended"].pending);
 }
 
-/// The list's cost is the run page's to the bit: both add a run's priced jobs as Σcompute + Σebs in
-/// job id order, which these values tell apart from Σ(compute + ebs) (and from another order).
+/// A job priced per execution is pending while one of its ended, started executions on a known
+/// host is not priced, or, while its run goes on, one has not ended; it is counted once however
+/// many reasons it has, and its legacy job-level line is no longer owed. A job whose only
+/// execution ended with no start, or ran on a host the registry does not know, is still priced the
+/// legacy way, so it stays pending until that line is written.
+#[tokio::test]
+#[ignore = "requires --features pg + the Postgres harness"]
+async fn executions_still_to_price_are_pending_once_per_job() {
+    let pool = migrated_pool("pending_executions").await;
+    let now = biffix_core::clock::epoch_micros();
+    let hour = 3_600_000_000;
+    exec_all(
+        &pool,
+        &[
+            "INSERT INTO host_registry (container_instance_id, ec2_instance_id, cluster_arn, \
+               instance_type, detail_version, raw_detail, first_seen_at) VALUES \
+               ('ci-1', 'i-1', 'c', 'c6a.4xlarge', 1, '{}'::jsonb, 1)",
+            "INSERT INTO run_projection (run_id, state) VALUES ('live', 'running')",
+        ],
+    )
+    .await;
+    // (job, state): all but j-open finished on ci-1 (j-retry by the engine's word), j-open is
+    // still running.
+    for (job, state) in [
+        ("j-exec", "succeeded"),
+        ("j-open", "running"),
+        ("j-thin", "succeeded"),
+        ("j-legacy", "succeeded"),
+        ("j-retry", "succeeded"),
+        ("j-nohost", "succeeded"),
+    ] {
+        let finished = (state == "succeeded").then_some(now);
+        sqlx::query(
+            "INSERT INTO attempt_projection (run_id, batch_job_id, task_key, attempt, state, \
+             instance_id, started_at, finished_at) VALUES ('live', $1, $1, 1, $2, 'ci-1', $3, $4)",
+        )
+        .bind(job)
+        .bind(state)
+        .bind(now - hour)
+        .bind(finished)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    // (run, execution, job, role, host, start, ended). j-exec ran twice; j-open has an execution
+    // that ended (Batch is running it again); j-thin's only one ended with no start; j-retry's
+    // second is still running though the engine reported the job done; j-nohost's ran on a host
+    // the registry never saw; the ended run's coordinator ran once.
+    for (run, execution, job, role, host, started, ended) in [
+        ("live", "e1", "j-exec", "task", "ci-1", Some(now - hour), true),
+        ("live", "e2", "j-exec", "task", "ci-1", Some(now - hour / 2), true),
+        ("live", "e3", "j-open", "task", "ci-1", Some(now - hour), true),
+        ("live", "e4", "j-thin", "task", "ci-1", None, true),
+        ("live", "e6", "j-retry", "task", "ci-1", Some(now - hour), true),
+        ("live", "e7", "j-retry", "task", "ci-1", Some(now - hour / 2), false),
+        ("live", "e8", "j-nohost", "task", "ci-gone", Some(now - hour), true),
+        ("ended", "e5", "coord-x", "coordinator", "ci-1", Some(now - hour), true),
+    ] {
+        sqlx::query(
+            "INSERT INTO execution_projection (run_id, execution_id, batch_job_id, role, ordinal, \
+             is_final, ended, instance_id, started_at, stopped_at) \
+             VALUES ($1, $2, $3, $4, 1, false, $5, $6, $7, $8)",
+        )
+        .bind(run)
+        .bind(execution)
+        .bind(job)
+        .bind(role)
+        .bind(ended)
+        .bind(host)
+        .bind(started)
+        .bind(ended.then_some(now - hour / 4))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    // An ended run whose coordinator the pricer could price the legacy way (a known host, its Batch
+    // facts), but whose execution is priced: the legacy line is not owed, so nothing is pending.
+    sqlx::query(
+        "INSERT INTO run_projection (run_id, state, coordinator_job_id, coordinator_host_id, \
+         completed_at) VALUES ('ended', 'succeeded', 'coord-x', 'ci-1', $1)",
+    )
+    .bind(now)
+    .execute(&pool)
+    .await
+    .unwrap();
+    for (kind, ts) in [("task_started", now - hour), ("task_succeeded", now)] {
+        sqlx::query(
+            "INSERT INTO run_events (dedup_key, ts_micros, source, kind, batch_job_id, \
+             schema_version, payload) VALUES ($1, $2, 'aws-batch', $3, 'coord-x', 1, '{}')",
+        )
+        .bind(format!("aws:coord-x:{kind}"))
+        .bind(ts)
+        .bind(kind)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let price =
+        |run: &'static str, execution: &'static str, job: &'static str, role: &'static str| {
+            let pool = pool.clone();
+            async move {
+                // Priced from the execution's current inputs.
+                sqlx::query(
+                    "INSERT INTO execution_cost (run_id, execution_id, batch_job_id, role, \
+                   instance_type, hours, price_per_hour, price_source, compute_usd, ebs_usd, \
+                   instance_id, queue, started_at, stopped_at) \
+                 SELECT $1, $2, $3, $4, 'c6a.4xlarge', 1, 1, 'on_demand', 1, 0, x.instance_id, \
+                   x.queue, x.started_at, x.stopped_at \
+                   FROM execution_projection x WHERE x.run_id = $1 AND x.execution_id = $2",
+                )
+                .bind(run)
+                .bind(execution)
+                .bind(job)
+                .bind(role)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        };
+    price("live", "e1", "j-exec", "task").await;
+    price("live", "e6", "j-retry", "task").await;
+
+    let store = PgStore::new(pool.clone());
+    let pending = |run: &'static str| {
+        let store = &store;
+        async move {
+            let id = RunId::new(run);
+            let detail = store.get_run(&id).await.unwrap().cost.map(|c| c.pending_jobs);
+            let listed = store.run_costs(std::slice::from_ref(&id)).await.unwrap()[run].pending;
+            assert_eq!(listed, detail.unwrap_or(0) > 0, "{run}: the list agrees");
+            detail
+        }
+    };
+    // j-exec (e2), j-open (open, and e3: once), j-thin, j-legacy and j-nohost (legacy), and j-retry
+    // (e7 still running).
+    assert_eq!(pending("live").await, Some(6));
+    // The ended run owes only its coordinator's execution.
+    assert_eq!(pending("ended").await, Some(1));
+    price("ended", "e5", "coord-x", "coordinator").await;
+    assert_eq!(pending("ended").await, Some(0));
+    // A replay moves e5's stop: its line was priced from the old one, so it is owed again.
+    let move_stop = |by: i64| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "UPDATE execution_projection SET stopped_at = stopped_at + $1 \
+                 WHERE execution_id = 'e5'",
+            )
+            .bind(by)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    move_stop(1).await;
+    assert_eq!(pending("ended").await, Some(1));
+    move_stop(-1).await;
+    assert_eq!(pending("ended").await, Some(0));
+    // Once e2 is priced j-exec owes nothing, though it has no legacy line.
+    price("live", "e2", "j-exec", "task").await;
+    assert_eq!(pending("live").await, Some(5));
+    // j-open is still running, so priced e3 does not settle it.
+    price("live", "e3", "j-open", "task").await;
+    exec_all(
+        &pool,
+        &["INSERT INTO attempt_cost (run_id, batch_job_id, role, instance_type, hours, \
+             price_per_hour, price_source, compute_usd, ebs_usd) VALUES \
+             ('live', 'j-thin', 'task', 'c6a.4xlarge', 1, 1, 'on_demand', 1, 0), \
+             ('live', 'j-legacy', 'task', 'c6a.4xlarge', 1, 1, 'on_demand', 1, 0), \
+             ('live', 'j-nohost', 'task', 'c6a.4xlarge', 1, 1, 'on_demand', 1, 0)"],
+    )
+    .await;
+    // j-open and j-retry are still running.
+    assert_eq!(pending("live").await, Some(2));
+}
+
+/// The list's cost is the run page's to the bit: both add a run's cost lines as Σcompute + Σebs in
+/// job id then execution id order, which these values tell apart from Σ(compute + ebs) and from
+/// the other order of j3's two execution lines.
 #[tokio::test]
 #[ignore = "requires --features pg + the Postgres harness"]
 async fn the_list_s_run_cost_is_the_detail_s_to_the_bit() {
     let pool = migrated_pool("run_cost_bit_identical").await;
-    let jobs = [
-        ("j1", 2.059452, 0.48452),
-        ("j2", 2.177558, 0.263815),
-        ("j3", 2.291103, 0.469584),
-        ("j4", 1.658579, 0.17285),
-        ("j5", 2.030546, 0.380474),
+    // (job, execution, compute, ebs): j3 is priced per execution (Batch ran it twice), the rest by
+    // their legacy job-level line.
+    let lines = [
+        ("j1", None, 2.059452, 0.48452),
+        ("j2", None, 2.177558, 0.263815),
+        ("j3", Some("j3-e1"), 0.965989, 0.117177),
+        ("j3", Some("j3-e2"), 0.983835, 0.120438),
+        ("j4", None, 1.658579, 0.17285),
+        ("j5", None, 2.030546, 0.380474),
     ];
-    // Precondition: the two ways of adding differ for these values.
-    let per_job: f64 = jobs.iter().map(|(_, c, e)| c + e).sum();
-    let split =
-        jobs.iter().map(|(_, c, _)| c).sum::<f64>() + jobs.iter().map(|(_, _, e)| e).sum::<f64>();
-    assert_ne!(per_job, split, "the values must tell the two sums apart");
+    let split = |lines: &[(&str, Option<&str>, f64, f64)]| {
+        lines.iter().map(|l| l.2).sum::<f64>() + lines.iter().map(|l| l.3).sum::<f64>()
+    };
+    // Preconditions: the ways of adding differ for these values.
+    let per_line: f64 = lines.iter().map(|l| l.2 + l.3).sum();
+    let mut swapped = lines;
+    swapped.swap(2, 3);
+    let split_of_lines = split(&lines);
+    assert_ne!(per_line, split_of_lines, "the values must tell the two sums apart");
+    assert_ne!(split(&swapped), split_of_lines, "the values must tell the two orders apart");
+    let split = split_of_lines;
     exec_all(
         &pool,
         &["INSERT INTO run_projection (run_id, state, submitted_at, dag) \
            VALUES ('r1', 'succeeded', 1000000, '{}')"],
     )
     .await;
-    // Inserted newest job first, so a scan-order sum is not the job-id-order one by accident.
-    for (job, compute, ebs) in jobs.iter().rev() {
-        sqlx::query(
-            "INSERT INTO attempt_cost (run_id, batch_job_id, role, instance_type, lifecycle, \
-               hours, price_per_hour, price_source, compute_usd, ebs_usd) \
-             VALUES ('r1', $1, 'task', 'c6a.4xlarge', 'spot', 1, 1, 'spot_history', $2, $3)",
-        )
-        .bind(job)
-        .bind(compute)
-        .bind(ebs)
-        .execute(&pool)
-        .await
-        .unwrap();
+    // Inserted newest line first, so a scan-order sum is not the id-order one by accident.
+    for (job, execution, compute, ebs) in lines.iter().rev() {
+        let sql = match execution {
+            None => {
+                "INSERT INTO attempt_cost (run_id, batch_job_id, role, instance_type, lifecycle, \
+                   hours, price_per_hour, price_source, compute_usd, ebs_usd) \
+                 VALUES ('r1', $1, 'task', 'c6a.4xlarge', 'spot', 1, 1, 'spot_history', $3, $4)"
+            }
+            Some(_) => {
+                "INSERT INTO execution_cost (run_id, batch_job_id, execution_id, role, \
+                   instance_type, lifecycle, hours, price_per_hour, price_source, compute_usd, \
+                   ebs_usd, instance_id, started_at, stopped_at) \
+                 VALUES ('r1', $1, $2, 'task', 'c6a.4xlarge', 'spot', 1, 1, 'spot_history', $3, \
+                   $4, 'ci-1', 0, 3600000000)"
+            }
+        };
+        sqlx::query(sql)
+            .bind(job)
+            .bind(execution)
+            .bind(compute)
+            .bind(ebs)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
     let store = PgStore::new(pool);
     let run = RunId::new("r1");
@@ -460,6 +657,62 @@ async fn the_list_s_run_cost_is_the_detail_s_to_the_bit() {
     assert_eq!(detail.estimated_usd, split);
     assert_eq!(light.estimated_usd, split);
     assert_eq!(listed.usd, Some(split));
+}
+
+/// A job priced per execution counts its execution lines, never its legacy job-level line too
+/// (written before its executions were priced, or by an older pricer mid-deploy): in the run's
+/// cost, the list's, and its attempt's, which adds up the lines.
+#[tokio::test]
+#[ignore = "requires --features pg + the Postgres harness"]
+async fn execution_lines_replace_their_job_s_legacy_line() {
+    use biffix_backend::store::tasks::TaskReads;
+    let pool = migrated_pool("execution_lines_replace_legacy").await;
+    exec_all(
+        &pool,
+        &[
+            "INSERT INTO run_projection (run_id, state, submitted_at, dag) \
+             VALUES ('rx', 'succeeded', 1000000, '{}')",
+            "INSERT INTO attempt_projection (run_id, batch_job_id, task_key, attempt, state) \
+             VALUES ('rx', 'j1', 't1', 1, 'succeeded'), ('rx', 'j2', 't2', 1, 'succeeded')",
+            "INSERT INTO attempt_cost (run_id, batch_job_id, role, instance_type, lifecycle, \
+               hours, price_per_hour, price_source, compute_usd, ebs_usd) VALUES \
+             ('rx', 'j1', 'task', 'c6a.4xlarge', 'spot', 3, 2.5, 'spot_history', 7.5, 2.5), \
+             ('rx', 'j2', 'task', 'c6a.4xlarge', 'spot', 1, 3, 'spot_history', 3, 1)",
+            // j1 ran twice: reclaimed on a spot c6a, then finished on an on-demand c7i.
+            "INSERT INTO execution_cost (run_id, batch_job_id, execution_id, role, instance_type, \
+               lifecycle, hours, price_per_hour, price_source, compute_usd, ebs_usd, instance_id, \
+               started_at, stopped_at) VALUES \
+             ('rx', 'j1', 'j1-e1', 'task', 'c6a.4xlarge', 'spot', 1, 0.25, 'spot_history', \
+              0.25, 0.25, 'ci-a', 0, 3600000000), \
+             ('rx', 'j1', 'j1-e2', 'task', 'c7i.4xlarge', 'on_demand', 3, 1, 'on_demand', \
+              3, 0.5, 'ci-b', 3600000000, 14400000000)",
+        ],
+    )
+    .await;
+    let store = PgStore::new(pool);
+    let run = RunId::new("rx");
+    let cost = store.get_run(&run).await.unwrap().cost.unwrap();
+    assert_eq!((cost.estimated_usd, cost.priced_jobs, cost.pending_jobs), (8.0, 2, 0));
+    let listed = store.run_costs(std::slice::from_ref(&run)).await.unwrap()["rx"];
+    assert_eq!(listed, ListCost { usd: Some(8.0), pending: false });
+
+    // j1's attempt adds up its two lines, its price their average over its run time (neither
+    // line's); j2's keeps its one line, its price as it is.
+    let attempt_cost = |key: &'static str| {
+        let store = &store;
+        let run = &run;
+        async move {
+            let attempts = store.get_attempts(run, &TaskKey::new(key)).await.unwrap();
+            assert_eq!(attempts.len(), 1);
+            attempts.into_iter().next().unwrap().cost.unwrap()
+        }
+    };
+    let j1 = attempt_cost("t1").await;
+    assert_eq!((j1.usd, j1.compute_usd, j1.hours), (4.0, 3.25, 4.0));
+    assert_eq!((j1.price_per_hour, j1.price_source.as_str()), (0.8125, "mixed"));
+    let j2 = attempt_cost("t2").await;
+    assert_eq!((j2.usd, j2.hours, j2.price_per_hour), (4.0, 1.0, 3.0));
+    assert_eq!(j2.price_source, "spot_history");
 }
 
 /// A task job's cost row whose attempt row is gone (a replay dropped it) counts in the gross, not
