@@ -230,6 +230,7 @@ run_nextflow() {
     # shellcheck disable=SC2034 # read by lib/logs.sh
     LOCAL_WORK_DIR="$SCRATCH/work"
   fi
+  init_engine_output
   start_logs_sync
   # From the source root, as `nextflow run <entrypoint>` from a checkout: Nextflow reads the
   # nextflow.config of the launch dir and the entrypoint's own dir only, so a pipeline whose config

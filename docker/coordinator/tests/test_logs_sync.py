@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -12,6 +13,7 @@ from executables import python_executable
 from test_lib import LIB
 
 _UPLOAD_SCRIPT = """\
+import json
 import os
 import signal
 import sys
@@ -30,6 +32,7 @@ if Path(os.environ['BIFFIX_TEST_ARGV0']).name == 'sleep':
         publish('sleeping')
     os.execv('/bin/sleep', ['sleep', *sys.argv[1:]])
 
+publish('argv', json.dumps(sys.argv[1:]))
 if '--max-bytes' not in sys.argv:
     publish('final', 'complete' if (work / 'ended').exists() else 'overlap')
     sys.exit(0)
@@ -168,6 +171,36 @@ def test_term_between_child_launch_and_pid_assignment_reaps_child(tmp_path: Path
     )
     assert got.returncode == 0, got.stderr
     assert got.stdout == "stopped\n"
+
+
+def test_signal_interrupting_stop_wait_still_reaps_before_final_upload(tmp_path: Path) -> None:
+    got = _run(
+        tmp_path,
+        '. "$LIB_DIR/signals.sh"\ninstall_signal_traps\nENGINE_DONE=1\n'
+        "start_logs_sync\nawait_file started\nparent=$BASHPID\n"
+        '(await_file terminating; kill -TERM "$parent") &\ninterrupter=$!\n'
+        'stop_logs_sync\nwait "$interrupter"\nupload_run_logs final\n',
+        UPLOAD_MODE="delayed-stop",
+    )
+    assert got.returncode == 0, got.stderr
+    assert "received SIGTERM" in got.stderr
+    assert (tmp_path / "final").read_text() == "complete"
+
+
+def test_restart_reaps_old_loop_and_captures_later_arguments(tmp_path: Path) -> None:
+    got = _run(
+        tmp_path,
+        "start_logs_sync\nold=$LOGS_PID\n"
+        'trap \'for p in "$old" "${LOGS_PID:-}"; do '
+        '[ -z "$p" ] || kill "$p" 2>/dev/null || true; done\' EXIT\n'
+        'LOCAL_WORK_DIR="$WORK/local"\nstart_logs_sync\n'
+        'if kill -0 "$old" 2>/dev/null; then exit 91; fi\n'
+        "await_file retried\nstop_logs_sync\n",
+        UPLOAD_MODE="failed",
+    )
+    assert got.returncode == 0, got.stderr
+    args = json.loads((tmp_path / "argv").read_text())
+    assert args[args.index("--failed-tasks") + 1] == str(tmp_path / "local")
 
 
 def test_dry_run_starts_no_uploader_and_preserves_parent(tmp_path: Path) -> None:

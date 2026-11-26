@@ -35,7 +35,9 @@ def warn(text: str) -> None:
 class Segments:
     """One segment writer, reserving sequence numbers before creating their files."""
 
-    def __init__(self, directory: str, segment_bytes: int, seal_secs: float, max_local: int):
+    def __init__(
+        self, directory: str, segment_bytes: int, seal_secs: float, max_local: int
+    ) -> None:
         self.directory = Path(directory)
         self.segment_bytes, self.seal_secs, self.max_local = segment_bytes, seal_secs, max_local
         self.out: BinaryIO | None = None

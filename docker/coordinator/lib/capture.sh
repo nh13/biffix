@@ -26,21 +26,34 @@ capture_stream() {
 start_coordinator_capture() {
   [ -z "${BIFFIX_DRY_RUN:-}" ] || return 0
   [ -z "${CAPTURE_PID:-}" ] || return 0
-  local directory writer
+  local directory writer="" saved_out="" saved_err="" pid
   directory=$(mktemp -d /tmp/biffix-coordinator-logs.XXXXXX) || return 0
   # /tmp is a symlink on macOS. The uploader deliberately refuses symlinked ancestors.
   directory=$(cd "$directory" && pwd -P) || return 0
-  exec {ORIG_STDOUT_FD}>&1
-  exec {ORIG_STDERR_FD}>&2
-  exec {writer}> >(capture_stream "$directory" 1>&"$ORIG_STDERR_FD" 2>&"$ORIG_STDERR_FD")
-  CAPTURE_PID=$!
-  # shellcheck disable=SC2034 # consumed by the archive uploader, lib/logs.sh
-  CAPTURE_DIR=$directory
-  CAPTURE_FINISHED=0
-  exec 1>&"$writer" 2>&1
-  exec {writer}>&-
-  printf 'biffix-coordinator: output archive run=%s attempt=%s job=%s\n' \
-    "${BIFFIX_RUN_ID:-unknown}" "${AWS_BATCH_JOB_ATTEMPT:-1}" "${AWS_BATCH_JOB_ID:-unknown}" >&2
+  # Acquire privately before replacing stdio or publishing state. Logging is optional, including
+  # when descriptors are exhausted or an original stream is closed.
+  if exec {saved_out}>&1 && exec {saved_err}>&2 \
+    && exec {writer}> >(capture_stream "$directory" 1>&"$saved_err" 2>&"$saved_err"); then
+    pid=$!
+    if exec 1>&"$writer" 2>&1; then
+      ORIG_STDOUT_FD=$saved_out ORIG_STDERR_FD=$saved_err
+      CAPTURE_PID=$pid
+      # shellcheck disable=SC2034 # consumed by the archive uploader, lib/logs.sh
+      CAPTURE_DIR=$directory
+      CAPTURE_FINISHED=0
+      exec {writer}>&-
+      printf 'biffix-coordinator: output archive run=%s attempt=%s job=%s\n' \
+        "${BIFFIX_RUN_ID:-unknown}" "${AWS_BATCH_JOB_ATTEMPT:-1}" "${AWS_BATCH_JOB_ID:-unknown}" >&2
+      return 0
+    fi
+    exec 1>&"$saved_out" 2>&"$saved_err" || true
+  fi
+  [ -z "$writer" ] || exec {writer}>&- || true
+  [ -z "$saved_out" ] || exec {saved_out}>&- || true
+  [ -z "$saved_err" ] || exec {saved_err}>&- || true
+  rm -rf -- "$directory" || true
+  printf 'biffix-coordinator: output archive unavailable; keeping original output\n' >&2 || true
+  return 0
 }
 
 finish_coordinator_capture() {

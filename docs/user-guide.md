@@ -629,16 +629,77 @@ ends, and hold:
   run whose coordinator Batch retried (its host went away) and whose retry then succeeded or was
   cancelled: the retry's first upload removes the earlier attempt's.
 
-This archive is best-effort. A run that fails before the uploader starts (a required setting
-missing, or a single-job host whose scratch root is unusable, say) uploads nothing; the two
-single-job setup failures above are the exception, and upload their logs and `failure.txt` once.
-An upload that fails or runs out of time leaves files out without failing the run. When files are missing, read the Expert view's **Coordinator** tab.
+This archive is best-effort. Catchable failures before the engine starts also attempt to archive
+coordinator output when the project bucket and run prefix are known. They do not produce an
+engine `failure.txt` unless a setup step supplied an explicit failure label. Missing destination
+settings, unavailable capture, failed uploads and exhausted deadlines can leave files out without
+changing the run's exit status. When files are missing, read the Expert view's **Coordinator** tab.
 
-A file is uploaded up to a size limit: 8 MiB for the uploads while the engine runs, 64 MiB for the
-last one. A larger file is uploaded as its last 8 or 64 MiB, so the S3 copy of a long engine log
-may not be the whole log.
+Named engine/configuration files and failed-task files have a size limit: 8 MiB for periodic
+uploads, 64 MiB for the last one. A larger file is uploaded as its last 8 or 64 MiB, so its S3 copy
+may not be the whole log. Coordinator output segments use the separate contract below.
 
 A dry run writes nothing to S3, so it leaves no logs there.
+
+#### Coordinator output archive
+
+Both successful and failed runs capture stdout and stderr as one combined stream, including setup,
+staging, image conversion, engine output, metadata synchronization and events archival. The engine's
+output is combined as it is in the live job log; it is not duplicated into separate stream files.
+The first line identifies the run, Batch job and attempt. Each Batch retry keeps its own objects:
+
+```text
+s3://<project-bucket>/<run-prefix>logs/coordinator/attempt-<N>/<NNNNNN>.log
+```
+
+`N` is the AWS Batch attempt number (1 outside Batch). Segments start at `000001`, contain at most
+4 MiB and seal at that size, 60 seconds after their first byte, or at EOF. Concatenate by numeric
+segment number within one attempt, not by modification time; upload completion order is not log
+order. Sealed objects are created conditionally, and uncertain retries verify the existing content
+instead of overwriting it or creating another version.
+
+The periodic uploader runs every 120 seconds by default (`BIFFIX_LOGS_SYNC_SECS`), so typical lag
+can include 60 seconds to seal plus an upload interval and upload time. Final archival uses the
+existing `BIFFIX_LOGS_FINAL_SECS` budget (8 seconds by default, reduced after a stopping signal).
+Failure reports, named engine logs and failed-task files go first; coordinator segments go last,
+newest-first at exit so a backlog's end has priority. Final snapshots are bounded at the capture
+boundary; final-upload and background-helper diagnostics, later event replay and scratch cleanup
+remain in CloudWatch only.
+
+There is no total S3 size cap: storage grows with the successfully archived output. Local buffering
+is bounded to 64 sealed segments (256 MiB), plus an active segment and bounded final-snapshot
+staging. When that queue fills, the oldest unsent segment is dropped, leaving a numbered gap, and
+the job log reports the drop. Bursts can fill the queue even with healthy S3. Capture is lossless
+only while the copier stays healthy and uploads keep the backlog within the limit; copier death
+can lose an in-flight chunk. A missing or repeatedly failing copier falls back to live forwarding.
+A wrapper killed outright, host loss, container OOM or SIGKILL can leave only previously uploaded
+segments. Missing trailing bytes need not leave a visible numbered gap, so an archive is not a
+completeness guarantee.
+
+Capture stops before the final upload. A descendant keeping a pipe open cannot delay capture drain
+for more than one second; forwarding is left alive and final archival snapshots the open segment.
+Scratch is cleared only after archival and events replay, and is left for the next run to clear
+when a signal was seen. Existing bucket retention/lifecycle settings apply; this feature adds no
+new expiry policy, and imported buckets remain owner-managed.
+
+The Expert coordinator view still reads CloudWatch; automatic archive fallback through the API or
+CLI is separate work. To retrieve segments directly, use an AWS identity authorized to read this
+project's run prefix. For example, download one attempt, concatenate to a file, then inspect it:
+
+```sh
+aws s3 cp s3://PROJECT-BUCKET/biffix/runs/RUN-ID/logs/coordinator/attempt-1/ coordinator-attempt-1/ --recursive --exclude '*' --include '*.log'
+python3 - <<'PY' > coordinator.log
+from pathlib import Path
+import sys
+
+for segment in sorted(Path('coordinator-attempt-1').glob('*.log'), key=lambda p: int(p.stem)):
+    sys.stdout.buffer.write(segment.read_bytes())
+PY
+less coordinator.log
+```
+
+Keep each attempt in a separate local directory. Inspect raw logs with a viewer that escapes
+terminal controls rather than printing untrusted engine output directly to your terminal.
 
 ### Notifications and Needs attention
 

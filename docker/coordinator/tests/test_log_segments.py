@@ -89,19 +89,27 @@ def test_remote_commit_before_process_exit_is_not_published_again(
         assert segment.read_bytes().endswith(b"late bytes beyond final snapshot")
 
 
-def test_existing_different_object_is_never_overwritten_or_acknowledged(tmp_path: Path) -> None:
+@pytest.mark.parametrize("existing", [b"old content", b"new content plus trailing bytes"])
+def test_existing_different_object_is_never_overwritten_or_acknowledged(
+    tmp_path: Path, existing: bytes
+) -> None:
     segments = tmp_path / "segments"
     segments.mkdir()
     source = segments / "000001.log"
     source.write_bytes(b"new content")
     remote = tmp_path / "s3/b/logs" / NAME / source.name
     remote.parent.mkdir(parents=True)
-    remote.write_bytes(b"old content")
+    remote.write_bytes(existing)
+    before = remote.stat()
     got = upload(tmp_path)
     assert got.returncode == 0
-    assert remote.read_bytes() == b"old content"
+    assert remote.read_bytes() == existing
+    assert remote.stat().st_mtime_ns == before.st_mtime_ns
+    assert remote.stat().st_ino == before.st_ino
+    assert source.exists(), "a collision must not acknowledge or remove its local source"
     assert source.read_bytes() == b"new content"
     assert "failed" in got.stderr or "collision" in got.stderr
+    assert "uploaded 1 log file" not in got.stderr
 
 
 @pytest.mark.parametrize("unsafe", ["file", "directory", "fifo", "dotdot", "snapshot"])

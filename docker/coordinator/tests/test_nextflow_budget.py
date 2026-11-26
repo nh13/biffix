@@ -37,6 +37,7 @@ def test_nextflow_receives_the_task_budget_only_for_single_job(
             "-eu",
             "-c",
             r"""
+source "$LIB/logs.sh"
 source "$LIB/nextflow.sh"
 is_single_job() { [ "$EXECUTION" = single_job ]; }
 require_count() { :; }

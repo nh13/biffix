@@ -6,6 +6,7 @@ import os
 import shutil
 import signal
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -139,6 +140,7 @@ os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
         "for ((i=0; i<250; i++)); do "
         '[ "$(cat "$COPIER_PID")" = "$old" ] || break; sleep 0.02; done\n'
         '[ "$(cat "$COPIER_PID")" != "$old" ]\n'
+        'await_file "$CAPTURE_DIR/000001.log"\n'
         'printf "after\\n" >&2\nfinish_coordinator_capture\nexit 7\n',
         PATH=f"{shim.parent}:{os.environ['PATH']}",
         COPIER_PID=str(tmp_path / "copier.pid"),
@@ -169,3 +171,30 @@ def test_inherited_writer_is_abandoned_not_killed(tmp_path: Path) -> None:
     assert got.returncode == 0, got.stderr
     assert got.stdout == "finished\n"
     assert archive
+
+
+@pytest.mark.parametrize(
+    "setup,marker_fd", [("exec 1>&-", 2), ("exec 2>&-", 1), ("ulimit -n 12", 2)]
+)
+def test_capture_descriptor_allocation_fails_open(
+    tmp_path: Path, setup: str, marker_fd: int
+) -> None:
+    directory = Path(tempfile.mkdtemp(prefix="biffix-coordinator-logs.", dir="/tmp")).resolve()
+    try:
+        got, archived = run_capture(
+            tmp_path,
+            'mktemp() { printf "%s\\n" "$TEST_CAPTURE_DIR"; }\n'
+            + setup
+            + "\n"
+            + START
+            + f'printf "caller survived\\n" >&{marker_fd}\n'
+            + '[ -z "${CAPTURE_DIR:-}${CAPTURE_PID:-}${ORIG_STDOUT_FD:-}${ORIG_STDERR_FD:-}" ]\n'
+            + "finish_coordinator_capture\nexit 7\n",
+            TEST_CAPTURE_DIR=str(directory),
+        )
+        assert got.returncode == 7, got.stderr
+        assert "caller survived\n" in got.stdout + got.stderr
+        assert archived == b""
+        assert not directory.exists()
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)

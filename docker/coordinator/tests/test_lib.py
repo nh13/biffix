@@ -2147,7 +2147,9 @@ def test_a_second_coordinator_never_wipes_the_first_s_scratch_root(
 
 def test_a_failed_setup_step_ends_the_run_with_its_error_as_the_failure(tmp_path: Path) -> None:
     got = bash(
+        # The entrypoint owns final archival; standalone callers must arrange their own EXIT hook.
         'upload_run_logs() { printf "%s|%s|%s" "$FAILURE_LABEL" "$(cat "$FAILURE_FILE")" "$rc"; }\n'
+        "trap 'upload_run_logs final' EXIT\n"
         "run_setup_step 'Linking failed' sh -c 'echo why it failed >&2; exit 3'\n"
         "echo not reached",
         "single_job",

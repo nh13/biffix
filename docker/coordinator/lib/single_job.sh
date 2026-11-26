@@ -5,14 +5,14 @@
 #          BIFFIX_SINGLE_JOB_MEMORY_MIB, BIFFIX_SCRATCH_ROOT and BIFFIX_INSTANCE_STORE_MARKER (both
 #          set by the single-job job definition), BIFFIX_RESUME, BIFFIX_DRY_RUN,
 #          BIFFIX_IMAGE_MAP_FILE, BIFFIX_WORKER_IMAGE, BIFFIX_SIF_PARALLEL, ENGINE_STOPPED_BY
-#          (lib/signals.sh), BIFFIX_OOM_SCORE_ADJ_FILE (a test hook: the file a task's oom score is
-#          written to, /proc/self/oom_score_adj).
+#          and COORDINATOR_SIGNAL_SEEN (lib/signals.sh), BIFFIX_OOM_SCORE_ADJ_FILE (a test hook:
+#          the file a task's oom score is written to, /proc/self/oom_score_adj).
 #   Sets:  EXECUTION; for a single-job run WORK (under the scratch root), SCRATCH, SJ_MARKER, SJ_CPUS,
 #          SJ_MEMORY_MIB, SJ_TASK_MEMORY_MIB and SJ_JVM_HEAP_MIB (single_job_memory), SJ_IMAGES
 #          (the task image files), SJ_TASK_TMP, SJ_BIN (the apptainer wrapper's directory, which
 #          the engine gets first on PATH), APPTAINER_CACHEDIR and APPTAINER_TMPDIR; FAILURE_FILE,
 #          FAILURE_LABEL and rc (when a task image cannot be converted, or a step before the engine
-#          fails: run_setup_step).
+#          fails: run_setup_step), COORDINATOR_SCRATCH_PREPARED (entrypoint-owned cleanup).
 
 # A single-job run (BIFFIX_EXECUTION=single_job) is the whole run in this one Batch job, on a host of
 # its own: the engine runs every task here (Nextflow's local executor; for Snakemake the biffix
@@ -161,9 +161,9 @@ clear_scratch() {
 # run clears it anyway) when this one exits. Not when a signal stopped the run: a large work dir
 # can take longer to remove than Batch's stop timeout leaves (its SIGKILL would cut the wipe short
 # anyway), and the steps before it (the logs, the events replay) matter more.
-# shellcheck disable=SC2329 # invoked by the EXIT trap below
+# shellcheck disable=SC2329 # invoked by the entrypoint's EXIT finalizer
 clear_scratch_at_exit() {
-  if [ -n "${ENGINE_STOPPED_BY:-}" ]; then
+  if [ -n "${ENGINE_STOPPED_BY:-}" ] || [ "${COORDINATOR_SIGNAL_SEEN:-0}" = 1 ]; then
     echo "biffix-coordinator: stopped by a signal: leaving $SCRATCH for the next run to clear" >&2
     return 0
   fi
@@ -202,7 +202,8 @@ fcntl.flock(int(sys.argv[1]), fcntl.LOCK_EX | fcntl.LOCK_NB)' "$SJ_LOCK_FD" 2>/d
   run_stoppable "the scratch root's wipe" TERM clear_scratch
   exit_if_stopped
   [ "$rc" = 0 ] || runtime_error "could not clear the scratch root $SCRATCH"
-  trap 'clear_scratch_at_exit' EXIT
+  # shellcheck disable=SC2034 # the entrypoint's EXIT owner archives before removing scratch
+  COORDINATOR_SCRATCH_PREPARED=1
   SJ_IMAGES="$SCRATCH/apptainer/images" SJ_TASK_TMP="$SCRATCH/tmp" SJ_BIN="$WORK/bin"
   # Apptainer's own layer cache and build space, and the engine's temporary files (and those of
   # tasks that run in the engine's own environment), on the instance store rather than the
@@ -242,7 +243,6 @@ prepare_task_images() {
     # shellcheck disable=SC2034 # read by upload_run_logs (lib/logs.sh)
     rc=1 FAILURE_FILE=$failure FAILURE_LABEL="Converting the task images failed"
   fi
-  upload_run_logs final || true
   exit "$rc"
 }
 
@@ -272,7 +272,6 @@ run_setup_step() {
   fi
   # shellcheck disable=SC2034 # read by upload_run_logs (lib/logs.sh)
   rc=1 FAILURE_FILE=$failure FAILURE_LABEL=$label
-  upload_run_logs final || true
   exit 1
 }
 
