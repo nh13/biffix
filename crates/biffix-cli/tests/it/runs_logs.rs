@@ -126,8 +126,9 @@ async fn an_empty_finished_follow_is_noted_on_stderr() {
 async fn followed_logs_finish_successfully_after_the_source_ends() {
     let calls = Arc::new(AtomicUsize::new(0));
     let counted = calls.clone();
-    let app=Router::new().route("/runs/r1/coordinator-logs",get(move || {
+    let app=Router::new().route("/runs/r1/coordinator-logs",get(move |axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>| {
         let n=counted.fetch_add(1,Ordering::SeqCst);
+        assert_eq!(query.get("cursor").map(String::as_str), if n == 0 { None } else { Some("f1") });
         async move {
             Json(json!({"log_stream":"s","events":if n==0 {json!([{"ts_ms":1,"message":"failed run's log"}])} else {json!([])},"next_forward_token":"f1","ended":true}))
         }
@@ -148,8 +149,9 @@ async fn followed_json_is_flushed_live_and_ctrl_c_terminates_an_older_server_fol
     let polled = Arc::new(tokio::sync::Notify::new());
     let notify = polled.clone();
     let calls = Arc::new(AtomicUsize::new(0));
-    let app=Router::new().route("/runs/r1/coordinator-logs",get(move || {
+    let app=Router::new().route("/runs/r1/coordinator-logs",get(move |axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>| {
         let n=calls.fetch_add(1,Ordering::SeqCst);
+        assert_eq!(query.get("cursor").map(String::as_str), if n == 0 { None } else { Some("f1") });
         if n>=2 {notify.notify_one();}
         async move {
             Json(json!({"log_stream":"s","events":if n==0 {json!([{"ts_ms":1,"message":"live"}])} else {json!([])},"next_forward_token":"f1"}))
