@@ -471,6 +471,50 @@ async fn e2e_refresh_submit_and_follow() {
         workflows::list(&mut session, None).await.expect("workflows list");
     }
 
+    // Log reads exercise the real router and its server-derived stream, not a canned API shape.
+    {
+        let mut detail = finished_run("run-logs", "failed", Some("nextflow"), json!({}));
+        detail.coordinator_log_stream = Some("e2e-coordinator".into());
+        let mut task: biffix_api::Task = serde_json::from_value(json!({
+            "task_key": "align:sample=A", "state": "failed", "attempts": 1,
+            "log_stream": "e2e-task", "batch_job_id": "job-logs",
+        }))
+        .unwrap();
+        task.group = Some("align".into());
+        detail.tasks = vec![task];
+        server.store.insert(detail);
+        server
+            .cloud
+            .logs
+            .lock()
+            .unwrap()
+            .insert("e2e-coordinator".into(), vec!["validation failed".into()]);
+        server.cloud.logs.lock().unwrap().insert("e2e-task".into(), vec!["task failed".into()]);
+        server.cloud.log_reads.lock().unwrap().clear();
+        let mut session = Session::resolve(&args()).unwrap();
+        biffix_cli::commands::runs_logs::logs(&mut session, "run-logs", None, false).await.unwrap();
+        biffix_cli::commands::runs_logs::logs(
+            &mut session,
+            "run-logs",
+            Some("align:sample=A"),
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *server.cloud.log_reads.lock().unwrap(),
+            vec![
+                (
+                    "e2e-coordinator".into(),
+                    None,
+                    biffix_backend::aws::logs::LogDirection::Forward,
+                    1000
+                ),
+                ("e2e-task".into(), None, biffix_backend::aws::logs::LogDirection::Forward, 1000),
+            ]
+        );
+    }
+
     // submit with valid params, following to SUCCEEDED → Ok. Hits the real get_workflow + submit
     // handlers; the run's coordinator "finishes" by the time the CLI polls it.
     {

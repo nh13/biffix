@@ -428,10 +428,19 @@ Then:
 biffix runs list --state active
 biffix runs show <run-id>          # per-task state
 biffix runs follow <run-id>
+biffix runs logs <run-id>          # coordinator log, from the beginning
+biffix runs logs <run-id> --task 'align:sample=A'   # task's display-attempt log
 biffix runs cancel <run-id>
 biffix runs rename <run-id> "new name"     # or --clear
 biffix runs experiment <run-id> <experiment-id>   # or --none
 ```
+
+`runs logs` reads through biffix with your normal login; it does not need AWS credentials for the
+deployment account. It reads every forward page to the current end. With `--task`, it reads that
+task's display attempt, not earlier attempts. An empty log produces no stdout records. A missing
+run or task, or a log no longer in CloudWatch, exits 5; this command does not read archived S3 logs.
+With `--output json` (also the default when piped), it emits one compact JSON object per log event,
+one per line, with `ts_ms` and `message`. For plain text in a pipe, use `--output human`.
 
 For a failed run, `runs show` and `runs follow` (and `runs submit --follow`) also print why it
 failed: each of the first failed steps (or the workflow engine, when it failed before any step) with

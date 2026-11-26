@@ -4,6 +4,7 @@ pub mod health;
 pub(crate) mod inspect;
 pub(crate) mod login;
 pub mod runs;
+pub mod runs_logs;
 pub mod workflows;
 
 use std::sync::Arc;

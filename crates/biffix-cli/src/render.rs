@@ -120,6 +120,40 @@ fn terminal_json(serialized: &str) -> String {
     escaped
 }
 
+/// One compact JSON record with its line ending, escaping terminal controls without changing data.
+pub(crate) fn json_line<T: Serialize>(value: &T) -> Result<String, serde_json::Error> {
+    let mut line = terminal_json(&serde_json::to_string(value)?);
+    line.push('\n');
+    Ok(line)
+}
+
+/// Write and flush one page of log events without holding an output lock across a network await.
+pub(crate) fn write_log_page<W: Write>(
+    out: &mut W,
+    mode: OutputMode,
+    events: &[biffix_api::LogLine],
+) -> crate::error::CliResult<()> {
+    let mut page = Vec::new();
+    for event in events {
+        match mode {
+            OutputMode::Human => {
+                let text = terminal_text(&event.message);
+                write_terminal(&mut page, format_args!("{text}"), !text.ends_with('\n'));
+            }
+            OutputMode::Json => page.extend_from_slice(
+                json_line(event)
+                    .map_err(|e| {
+                        CliError::Unclassified(format!("could not serialize log output: {e}"))
+                    })?
+                    .as_bytes(),
+            ),
+        }
+    }
+    out.write_all(&page)
+        .and_then(|()| out.flush())
+        .map_err(|e| CliError::Unclassified(format!("could not write log output: {e}")))
+}
+
 /// Print a value as pretty JSON to stdout, escaping terminal controls without changing its data.
 pub(crate) fn print_json<T: Serialize>(value: &T) {
     match serde_json::to_string_pretty(value) {
@@ -148,6 +182,25 @@ pub fn print_error(err: &CliError, mode: OutputMode) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_messages_end_with_one_newline_after_controls_are_removed() {
+        let events = ["a\n\r", "b\n", "c"]
+            .map(|message| biffix_api::LogLine { ts_ms: 1, message: message.into() });
+        let mut out = Vec::new();
+        write_log_page(&mut out, OutputMode::Human, &events).unwrap();
+        assert_eq!(out, b"a\nb\nc\n");
+    }
+
+    #[test]
+    fn json_lines_escape_terminal_controls_without_changing_decoded_values() {
+        let value = serde_json::json!({"ts_ms": 1, "message": "a\u{7f}\u{9b}2J\n\tvalue"});
+        let line = json_line(&value).unwrap();
+        assert_eq!(line.lines().count(), 1);
+        assert!(line.ends_with('\n'));
+        assert!(line.chars().all(|c| !c.is_control() || c == '\n'));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap(), value);
+    }
 
     #[test]
     fn terminal_safe_text_drops_control_characters() {
