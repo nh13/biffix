@@ -6,7 +6,8 @@
 #          run's status, and whether and when a signal stopped it; lib/signals.sh), FAILURE_FILE and
 #          FAILURE_LABEL (what failure.txt quotes, default the engine's output, and what it says
 #          failed, default the engine), LOCAL_WORK_DIR (a Nextflow work dir on this host, when it is
-#          one).
+#          one), CAPTURE_DIR (coordinator segments), AWS_BATCH_JOB_ATTEMPT, RUN_LOGS_STATE_FILE
+#          (optional upload-state path independent of WORK), ENGINE_DONE (an engine actually ran).
 #   Sets:  ENGINE_OUTPUT (the engine's output, which run_engine copies there), LOGS_PID, LOGS_CMD.
 
 # What is uploaded, when it exists (run_logs.py): the engine's log (.nextflow.log, Snakemake's
@@ -29,14 +30,27 @@
 # growing log whole, held in memory), the final one up to run_logs.py's MAX_FILE_BYTES.
 logs_command() {
   local deadline=60 batch_stop_secs=30 replay_reserve_secs=4
-  local -a ARGS=(
-    --file "nextflow.log=$WORK/.nextflow.log"
-    --newest "trace.txt=$SRC/trace*.txt"
-    --file "nextflow.config=$WORK/nextflow.config"
-    --newest "snakemake.log=$SRC/.snakemake/log/*.snakemake.log"
-    --file "snakemake.args=$WORK/snakemake.args"
-    --file "Snakefile.biffix=$WORK/Snakefile.biffix"
-  )
+  local state="${RUN_LOGS_STATE_FILE:-}"
+  [ -n "$state" ] || [ -z "${WORK:-}" ] || state="$WORK/.biffix-logs-uploaded.json"
+  [ -n "$state" ] || return 1
+  local -a ARGS=()
+  if [ -n "${WORK:-}" ]; then
+    ARGS+=(--file "nextflow.log=$WORK/.nextflow.log"
+      --file "nextflow.config=$WORK/nextflow.config"
+      --file "snakemake.args=$WORK/snakemake.args"
+      --file "Snakefile.biffix=$WORK/Snakefile.biffix")
+  fi
+  if [ -n "${SRC:-}" ]; then
+    ARGS+=(--newest "trace.txt=$SRC/trace*.txt"
+      --newest "snakemake.log=$SRC/.snakemake/log/*.snakemake.log")
+  fi
+  if [ -n "${CAPTURE_DIR:-}" ]; then
+    local attempt="${AWS_BATCH_JOB_ATTEMPT:-1}"
+    if [[ "$attempt" =~ ^[1-9][0-9]*$ ]]; then
+      ARGS+=(--segments "coordinator/attempt-$attempt=$CAPTURE_DIR")
+      [ "${1:-}" != final ] || ARGS+=(--final)
+    fi
+  fi
   [ -z "${NXF_HOME:-}" ] || ARGS+=(--file "nextflow-defaults.config=$NXF_HOME/config")
   [ -z "${LOCAL_WORK_DIR:-}" ] || ARGS+=(--failed-tasks "$LOCAL_WORK_DIR")
   if [ "${1:-}" = final ]; then
@@ -46,21 +60,23 @@ logs_command() {
       [ "$left" -ge 1 ] || left=1
       [ "$left" -ge "$deadline" ] || deadline=$left
     fi
-    if [ "${rc:-0}" != 0 ] && [ -z "${ENGINE_STOPPED_BY:-}" ]; then
+    if [ "${rc:-0}" != 0 ] && [ -z "${ENGINE_STOPPED_BY:-}" ] \
+      && { [ "${ENGINE_DONE:-0}" = 1 ] || [ -n "${FAILURE_LABEL:-}" ]; }; then
       ARGS+=(--failure "${FAILURE_FILE:-${ENGINE_OUTPUT:-}}" "$rc")
       [ -z "${FAILURE_LABEL:-}" ] || ARGS+=(--failure-label "$FAILURE_LABEL")
     fi
   else
     ARGS+=(--max-bytes $((8 * 1024 * 1024)))
   fi
-  LOGS_CMD=("$LIB_DIR/run_logs.py" "s3://$BIFFIX_PROJECT_BUCKET/${BIFFIX_RUN_PREFIX}logs/"
-    "$WORK/.biffix-logs-uploaded.json" "$deadline" "${ARGS[@]}")
+  LOGS_CMD=("$LIB_DIR/run_logs.py" "s3://${BIFFIX_PROJECT_BUCKET:-}/${BIFFIX_RUN_PREFIX:-}logs/"
+    "$state" "$deadline" "${ARGS[@]}")
 }
 
 # upload_run_logs [final]: upload the logs once.
 upload_run_logs() {
   [ -z "${BIFFIX_DRY_RUN:-}" ] || return 0
-  logs_command "$@"
+  [ -n "${BIFFIX_PROJECT_BUCKET:-}" ] && [ -n "${BIFFIX_RUN_PREFIX:-}" ] || return 0
+  logs_command "$@" || return 0
   (run_logs_uploader) || true
 }
 

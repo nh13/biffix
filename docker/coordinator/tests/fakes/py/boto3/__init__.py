@@ -45,14 +45,27 @@ class _S3:
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dest)
 
-    def put_object(self, Bucket: str, Key: str, Body: bytes) -> None:
+    def put_object(
+        self, Bucket: str, Key: str, Body: bytes, IfNoneMatch: str | None = None
+    ) -> None:
         # FAKE_S3_DENY_PUT: refuse every write; FAKE_S3_SLOW_PUT: take that many seconds first.
         if os.environ.get("FAKE_S3_DENY_PUT"):
             raise ClientError({"Error": {"Code": "AccessDenied"}}, "PutObject")
         time.sleep(float(os.environ.get("FAKE_S3_SLOW_PUT") or 0))
         dest = _path(Bucket, Key)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(Body)
+        if IfNoneMatch is not None:
+            assert IfNoneMatch == "*", IfNoneMatch
+            try:
+                with dest.open("xb") as out:
+                    out.write(Body)
+            except FileExistsError as e:
+                raise ClientError({"Error": {"Code": "PreconditionFailed"}}, "PutObject") from e
+        else:
+            dest.write_bytes(Body)
+        # A real remote commit followed by abrupt client death, before local acknowledgement.
+        if os.environ.get("FAKE_S3_EXIT_AFTER_COMMIT") == Key:
+            os._exit(0)
 
     def delete_object(self, Bucket: str, Key: str) -> None:
         # As S3 does, a missing key is no error; FAKE_S3_DENY_PUT refuses this write too.

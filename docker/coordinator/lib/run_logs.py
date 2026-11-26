@@ -4,7 +4,7 @@ CloudWatch stream.
 
 Usage: run_logs.py <s3 prefix> <state file> <deadline secs> [--file NAME=PATH]... \
            [--newest NAME=GLOB]... [--failed-tasks WORK_DIR] [--failure PATH STATUS] \
-           [--failure-label TEXT] [--max-bytes N]
+           [--failure-label TEXT] [--max-bytes N] [--segments NAME=DIR]... [--final]
 
   --file NAME=PATH     upload PATH as <prefix>NAME, when it exists
   --newest NAME=GLOB   upload the most recently modified match of GLOB as <prefix>NAME
@@ -14,14 +14,18 @@ Usage: run_logs.py <s3 prefix> <state file> <deadline secs> [--file NAME=PATH]..
   --failure PATH RC    write failure.txt: the engine's exit status and the end of PATH (its output)
   --failure-label TEXT what failed, when not the engine (failure.txt then says "TEXT (exit status
                        RC).")
-  --max-bytes N        upload at most a file's last N bytes (default MAX_FILE_BYTES)
+  --max-bytes N        upload at most a named/task file's last N bytes (default MAX_FILE_BYTES)
+  --segments NAME=DIR  send sealed coordinator segments last, under NAME/, then remove local copies
+  --final             include frozen open-segment snapshots and send segments newest-first
 
 A file is uploaded only when it changed since the last upload (its identity, size and mtime, and
 whether only its end was sent, recorded in the state file), and at most its last --max-bytes.
 An upload without --failure first removes a failure.txt an earlier attempt of the run left (a
 Batch retry runs under the same prefix), once per attempt (the state file is the attempt's own).
-failure.txt goes first, then the named files, and only then the failed tasks' files, whose scan of
-the work dir stops at half the deadline: a large work dir never keeps the rest from being sent.
+failure.txt goes first, then named files and failed tasks' files (whose scan stops at half the
+deadline), then coordinator segments. Segments are complete, size-bounded producer files, not
+tails: conditional PUTs and exact-body verification make retries safe after an uncertain commit.
+An open segment's final boundary is frozen locally before PUT and reused on retry.
 Best-effort and bounded: a failed upload is logged and skipped, and the whole helper exits 0, at
 the latest after <deadline secs>, so it never changes the run's outcome nor outlasts the time a
 cancel leaves it.
@@ -34,6 +38,7 @@ import glob
 import heapq
 import json
 import os
+import re
 import secrets
 import stat
 import sys
@@ -46,6 +51,9 @@ from pathlib import Path
 from typing import BinaryIO
 
 from s3_uri import split_prefix
+from segment_tee import SEGMENT_BYTES
+
+SEGMENT_NAME = re.compile(r"([0-9]{6,})\.log(?:\.(open|final))?\Z")
 
 # A log's last bytes, when it is longer: what explains an end is at the end. The periodic uploads
 # pass less (lib/logs.sh): each re-sends a growing log whole, from memory.
@@ -111,11 +119,18 @@ def _open_regular(path: Path) -> Iterator[BinaryIO]:
     """
     if ".." in path.parts:
         raise OSError(f"log path contains '..': {path}")
-    with _open_directory(path.parent) as directory, ExitStack() as stack:
-        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    with _open_directory(path.parent) as directory, _open_at(directory, path.name) as fh:
+        yield fh
+
+
+@contextmanager
+def _open_at(directory: int, name: str) -> Iterator[BinaryIO]:
+    """A no-follow regular file inside an already-pinned directory."""
+    with ExitStack() as stack:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
         stack.callback(os.close, fd)
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise OSError(f"not a regular log file: {path}")
+            raise OSError(f"not a regular log file: {name}")
         with os.fdopen(fd, "rb", closefd=False) as fh:
             yield fh
 
@@ -217,6 +232,84 @@ def _tail(fh: BinaryIO, max_bytes: int, size: int | None = None) -> bytes:
     return fh.read(min(size, max_bytes))
 
 
+def _segment_candidates(directory: int, final: bool) -> list[str]:
+    """List once by sequence, preferring a frozen final snapshot over a concurrent rename."""
+    found: dict[int, tuple[int, str]] = {}
+    for name in os.listdir(directory):
+        match = SEGMENT_NAME.fullmatch(name)
+        if match is None:
+            continue
+        kind = match[2]
+        if kind and not final:
+            continue
+        rank = {"open": 0, None: 1, "final": 2}[kind]
+        number = int(match[1])
+        if number not in found or rank > found[number][0]:
+            found[number] = rank, name
+    return [found[n][1] for n in sorted(found, reverse=final)]
+
+
+def _read_segment(fh: BinaryIO, *, stable: bool = True) -> tuple[bytes, os.stat_result]:
+    """Read at most one producer-sized segment, bounded at the initial observation."""
+    before = os.fstat(fh.fileno())
+    if before.st_size > SEGMENT_BYTES:
+        raise OSError("archive segment exceeds its size limit")
+    body = fh.read(before.st_size)
+    after = os.fstat(fh.fileno())
+    if len(body) != before.st_size or (
+        stable
+        and (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+    ):
+        raise OSError("archive segment changed while reading")
+    return body, before
+
+
+def _freeze_open(directory: int, name: str) -> str:
+    """Persist the final boundary before PUT, so a retry never publishes a later append."""
+    frozen = name.removesuffix(".open") + ".final"
+    try:
+        with _open_at(directory, frozen):
+            return frozen
+    except FileNotFoundError:
+        pass
+    try:
+        with _open_at(directory, name) as fh:
+            body, _ = _read_segment(fh, stable=False)
+    except FileNotFoundError:
+        # The copier may have sealed it since listing. It is now immutable without a snapshot.
+        return name.removesuffix(".open")
+    temporary = f".{frozen}.{secrets.token_hex(16)}.tmp"
+    fd = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory
+    )
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(body)
+        os.replace(temporary, frozen, src_dir_fd=directory, dst_dir_fd=directory)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+    return frozen
+
+
+def _remove_segment(directory: int, name: str, sent: os.stat_result) -> None:
+    """Remove only the same regular file that was acknowledged; pruning may already remove it."""
+    try:
+        current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) == (
+            sent.st_dev,
+            sent.st_ino,
+            sent.st_size,
+            sent.st_mtime_ns,
+        ):
+            os.unlink(name, dir_fd=directory)
+    except FileNotFoundError:
+        pass
+
+
 class Uploader:
     """Uploads under the prefix, skipping what is unchanged since the last call (the state file)."""
 
@@ -309,6 +402,54 @@ class Uploader:
             # short.
             self._record()
 
+    def send_segments(self, name: str, path: Path, *, final: bool = False) -> None:
+        """Conditionally publish sealed segments last, acknowledging retries without overwrites."""
+        try:
+            if any(part in ("", ".", "..") for part in name.split("/")):
+                raise OSError(f"invalid archive prefix: {name}")
+            with _open_directory(path) as directory:
+                for candidate in _segment_candidates(directory, final):
+                    try:
+                        source = (
+                            _freeze_open(directory, candidate)
+                            if candidate.endswith(".open")
+                            else candidate
+                        )
+                        match = SEGMENT_NAME.fullmatch(source)
+                        assert match is not None
+                        key = f"{name}/{match[1]}.log"
+                        with _open_at(directory, source) as fh:
+                            body, sent = _read_segment(fh)
+                        self._put_segment(key, body)
+                        _remove_segment(directory, source, sent)
+                        self.sent += 1
+                    except FileNotFoundError:
+                        pass  # The producer's local cap can prune between listing and opening.
+                    except Exception as e:
+                        print(
+                            f"biffix-coordinator: segment upload of {candidate} "
+                            f"failed (skipped): {e}",
+                            file=sys.stderr,
+                        )
+        except OSError as e:
+            print(f"biffix-coordinator: segment directory {path} skipped: {e}", file=sys.stderr)
+
+    def _put_segment(self, name: str, body: bytes) -> None:
+        """A committed PUT with a lost response must never create another S3 version."""
+        from botocore.exceptions import ClientError
+
+        key = self.prefix + name
+        try:
+            self.s3.put_object(Bucket=self.bucket, Key=key, Body=body, IfNoneMatch="*")
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") not in ("PreconditionFailed", "412"):
+                raise
+            # The only legitimate existing object is the exact payload this producer reserved.
+            # ETags can be opaque (including KMS-encrypted objects); bound the verification read.
+            with self.s3.get_object(Bucket=self.bucket, Key=key)["Body"] as existing:
+                if existing.read(len(body) + 1) != body:
+                    raise OSError(f"archive segment collision at {name}") from e
+
     def _record(self) -> None:
         """Write the state file. One that cannot be written only means a later call sends again."""
         try:
@@ -362,6 +503,8 @@ def parse(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("deadline", type=float)
     parser.add_argument("--file", type=_pair, action="append", default=[])
     parser.add_argument("--newest", type=_pair, action="append", default=[])
+    parser.add_argument("--segments", type=_pair, action="append", default=[])
+    parser.add_argument("--final", action="store_true")
     parser.add_argument("--failed-tasks")
     parser.add_argument("--failure", nargs=2, metavar=("PATH", "STATUS"))
     parser.add_argument("--failure-label")
@@ -405,6 +548,8 @@ def main(argv: list[str]) -> int:
         if args.failed_tasks:
             stop_at = started + args.deadline / 2
             uploader.send(failed_tasks(Path(args.failed_tasks), stop_at))
+        for name, directory in args.segments:
+            uploader.send_segments(name, Path(directory), final=args.final)
         uploader.report()
     except Exception as e:  # never fail the run on its logs
         print(f"biffix-coordinator: log upload failed (swallowed): {e}", file=sys.stderr)
