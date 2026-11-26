@@ -166,6 +166,8 @@ LIB_DIR="${BIFFIX_LIB_DIR:-/usr/local/lib/biffix}"
 . "$LIB_DIR/events.sh"
 # shellcheck source=lib/logs.sh
 . "$LIB_DIR/logs.sh"
+# shellcheck source=lib/capture.sh
+. "$LIB_DIR/capture.sh"
 # shellcheck source=lib/single_job.sh
 . "$LIB_DIR/single_job.sh"
 # shellcheck source=lib/snakemake.sh
