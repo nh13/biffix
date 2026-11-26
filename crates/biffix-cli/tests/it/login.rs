@@ -3,31 +3,11 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::common::biffix;
+use crate::common::{biffix, log_in};
 
 /// The config directory the docs name: `~/.config/biffix` (macOS included).
 fn config_dir(home: &Path) -> PathBuf {
     home.join(".config").join("biffix")
-}
-
-/// A credential for `base` under `profile`, unexpired, in `home`'s credential store.
-fn log_in(home: &Path, profile: &str, base: &str) {
-    let dir = config_dir(home);
-    std::fs::create_dir_all(&dir).unwrap();
-    let creds = serde_json::json!({"profiles": {profile: {
-        "access_token": "tok", "expires_at_unix": u64::MAX / 2, "subject": "user-1",
-        "email": "bio@lab.example.org", "api_base_url": base,
-    }}});
-    std::fs::write(dir.join("credentials.json"), creds.to_string()).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            dir.join("credentials.json"),
-            std::fs::Permissions::from_mode(0o600),
-        )
-        .unwrap();
-    }
 }
 
 /// A deployment's `/auth/config`, advertising a CLI client.
