@@ -361,6 +361,8 @@ fn cost(usd: f64) -> biffix_api::RunCost {
         coordinator_usd: 0.0,
         winning_usd: usd,
         priced_jobs: 1,
+        priced_executions: 0,
+        lost_usd: 0.0,
         pending_jobs: 0,
         price_sources: vec![],
         by_instance_type: vec![],

@@ -114,6 +114,11 @@ fn attempt_view(job: &str, attempt: i64, state: &str, log_stream: &str) -> biffi
         requested_vcpus: None,
         requested_memory_mib: None,
         cost: None,
+        executions: vec![],
+        run_seconds: None,
+        lost_seconds: None,
+        wait_seconds: None,
+        awaiting_host: false,
     }
 }
 

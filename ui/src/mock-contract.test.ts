@@ -249,13 +249,17 @@ const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
  * `cost` is one the backend's `store::run_cost` can produce: present only with a priced or pending
  * job; the estimate is compute + root volume, every share of it no more than it, and its breakdown
  * by instance type adds up to it (a job Batch ran on two types is in both groups, so the groups'
- * jobs are at least the priced jobs); nothing priced means nothing estimated.
+ * jobs are at least the priced jobs); the cost lost with a host is outside the winning cost and
+ * needs a priced execution; nothing priced means nothing estimated.
  */
 function expectPossibleCost(cost: RunCost, id: string) {
   const { estimated_usd: usd, by_instance_type: types } = cost;
   expect(cost.priced_jobs > 0 || cost.pending_jobs > 0, id).toBe(true);
   expect(near(usd, cost.compute_usd + cost.ebs_usd), `${id}: estimate is compute + ebs`).toBe(true);
   expect(cost.coordinator_usd <= usd + 1e-9 && cost.winning_usd <= usd + 1e-9, id).toBe(true);
+  // What was lost with a host is never part of the winning cost.
+  expect(cost.winning_usd + (cost.lost_usd ?? 0) <= usd + 1e-9, `${id}: winning + lost`).toBe(true);
+  if (!cost.priced_executions) expect(cost.lost_usd ?? 0, `${id}: lost without executions`).toBe(0);
   expect(
     types.reduce((n, t) => n + t.jobs, 0),
     `${id}: breakdown jobs`,
@@ -593,6 +597,22 @@ describe('the mock API', () => {
     const align = 'align:sample=HG00096';
     expect(await status(LIVE, { task: align, job: 'job-99' })).toBe(404);
     expect(await status(LIVE, { task: align, direction: 'sideways' })).toBe(400);
+    // One execution's own log, only of this task's attempts (of `job`'s, when given).
+    const DONE = '/runs/run_01HGWDdone';
+    const star = 'STAR_ALIGN (Normal_1) #2';
+    const reclaimed = 'arn:aws:ecs:us-east-1:000000000000:task/biffix/0a1b2c3d';
+    expect(obj(await logs(DONE, { task: star, execution: reclaimed })).log_stream).toBe(
+      'mock/STAR_ALIGN (Normal_1) #2/1',
+    );
+    expect(await status(DONE, { task: star, execution: 'nope' })).toBe(404);
+    expect(await status(DONE, { task: star, job: 'job-99', execution: reclaimed })).toBe(404);
+    // An execution of the task's other attempt than `job` is not `job`'s.
+    const OOM = '/runs/run_01HGWEoom';
+    const tumor = 'STAR_ALIGN (Tumor_4) #8';
+    const first = 'arn:aws:ecs:us-east-1:000000000000:task/biffix/9c8d7e6f';
+    expect(await status(OOM, { task: tumor, job: 'job-1', execution: first })).toBe(200);
+    expect(await status(OOM, { task: tumor, job: 'job-2', execution: first })).toBe(404);
+    expect(await status(LIVE, { task: align, execution: reclaimed })).toBe(404);
     const log = obj(await logs(LIVE, { task: align }));
     expect([log.log_stream, (log.events as Json[]).length]).toEqual([
       'mock/align:sample=HG00096',

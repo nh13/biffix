@@ -535,15 +535,30 @@ fn detail_json(detail: &RunDetail, why: Option<&FailureSummary>) -> serde_json::
     out
 }
 
-/// The human rendering of a run's detail: its state, its tasks, and why it failed when it did.
+/// The human rendering of a run's detail: its state, the executions it lost with their host, its
+/// tasks, and why it failed when it did.
 fn detail_text(detail: &RunDetail, why: Option<&FailureSummary>, asked: Asked) -> String {
     let s = &detail.summary;
     let mut out = terminal_safe(&format!("{}  {}", s.run_id, s.state), true) + "\n";
+    if let Some(lost) = &detail.interruptions {
+        out.push_str(&interruptions_line(lost));
+    }
     for t in &detail.tasks {
-        let attempts =
-            if t.attempts > 0 { format!(" (attempt {})", t.attempts) } else { String::new() };
-        let line =
-            terminal_safe(&format!("  {}  {}{attempts}", t.task_key.as_str(), t.state), true);
+        let mut notes = Vec::new();
+        if t.attempts > 0 {
+            notes.push(format!("attempt {}", t.attempts));
+        }
+        // AWS Batch ran its attempt more than once, or lost the host of its only run.
+        if t.executions > 1 || t.lost_executions > 0 {
+            notes.push(count(t.executions, "execution", "executions"));
+            if t.lost_executions > 0 {
+                let hosts = if t.lost_executions == 1 { "its host" } else { "their hosts" };
+                notes.push(format!("{} lost with {hosts}", t.lost_executions));
+            }
+        }
+        let notes =
+            if notes.is_empty() { String::new() } else { format!(" ({})", notes.join(", ")) };
+        let line = terminal_safe(&format!("  {}  {}{notes}", t.task_key.as_str(), t.state), true);
         out.push_str(&line);
         out.push('\n');
     }
@@ -551,6 +566,37 @@ fn detail_text(detail: &RunDetail, why: Option<&FailureSummary>, asked: Asked) -
         out.push_str(&failure_text(why, s.run_id.as_str(), asked));
     }
     out
+}
+
+/// `n` and the noun for it, singular or plural.
+fn count(n: i64, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// A run's interruptions as one line (ends with a newline), e.g.
+/// `interruptions: 3 executions lost (2 spot reclaims, 1 host lost), 26 min lost`. No time is
+/// given when none is known (AWS reported no start for any of them).
+fn interruptions_line(lost: &biffix_api::RunInterruptions) -> String {
+    let hosts = (lost.lost_executions - lost.spot_reclaims).max(0);
+    let mut why = Vec::new();
+    if lost.spot_reclaims > 0 {
+        why.push(count(lost.spot_reclaims, "spot reclaim", "spot reclaims"));
+    }
+    if hosts > 0 {
+        why.push(count(hosts, "host lost", "hosts lost"));
+    }
+    let why = if why.is_empty() { String::new() } else { format!(" ({})", why.join(", ")) };
+    let time = if lost.lost_seconds <= 0.0 {
+        String::new()
+    } else if lost.lost_seconds < 60.0 {
+        ", under a minute lost".to_string()
+    } else {
+        format!(", {} min lost", (lost.lost_seconds / 60.0).round())
+    };
+    format!(
+        "interruptions: {} lost{why}{time}\n",
+        count(lost.lost_executions, "execution", "executions")
+    )
 }
 
 /// The human rendering of run `run_id`'s failure summary, as the run page words it (ends with a
@@ -1151,6 +1197,48 @@ mod tests {
             "outputs_reused": 0, "input_uris": [], "tasks": [], "params": {},
             "dag": {"nodes": [], "edges": []},
         })
+    }
+
+    #[test]
+    fn a_run_s_text_counts_the_executions_aws_batch_ran_again() {
+        let mut run = run_json("succeeded");
+        run["interruptions"] =
+            serde_json::json!({"lost_executions": 3, "spot_reclaims": 2, "lost_seconds": 1559.0});
+        run["tasks"] = serde_json::json!([
+            {"task_key": "align", "state": "succeeded", "attempts": 1, "executions": 2,
+             "lost_executions": 1},
+            {"task_key": "sort", "state": "running", "attempts": 2, "executions": 3,
+             "lost_executions": 2},
+            {"task_key": "index", "state": "succeeded", "attempts": 1, "executions": 1},
+            {"task_key": "stats", "state": "succeeded", "attempts": 1},
+        ]);
+        let detail: RunDetail = serde_json::from_value(run).unwrap();
+        assert_eq!(
+            detail_text(&detail, None, Asked::Once),
+            "run-x  succeeded\n\
+             interruptions: 3 executions lost (2 spot reclaims, 1 host lost), 26 min lost\n\
+             \x20 align  succeeded (attempt 1, 2 executions, 1 lost with its host)\n\
+             \x20 sort  running (attempt 2, 3 executions, 2 lost with their hosts)\n\
+             \x20 index  succeeded (attempt 1)\n\
+             \x20 stats  succeeded (attempt 1)\n"
+        );
+        let line = |lost, spot, seconds| {
+            interruptions_line(&biffix_api::RunInterruptions {
+                lost_executions: lost,
+                spot_reclaims: spot,
+                lost_seconds: seconds,
+            })
+        };
+        assert_eq!(
+            line(1, 1, 12.0),
+            "interruptions: 1 execution lost (1 spot reclaim), under a minute lost\n"
+        );
+        assert_eq!(
+            line(2, 0, 90.0),
+            "interruptions: 2 executions lost (2 hosts lost), 2 min lost\n"
+        );
+        // No start reported for any: no time.
+        assert_eq!(line(1, 0, 0.0), "interruptions: 1 execution lost (1 host lost)\n");
     }
 
     #[test]

@@ -133,8 +133,78 @@ export const LAB_REPORTS = {
 
 // Tries as the attempts endpoint records them beyond what it makes up from a task's count, by
 // run id and task key: the OOM analysis's failed alignment was first lost to a spot reclaim after
-// 40 min, then its retry ran out of memory after 1 h 10 min.
+// 40 min, then its retry ran out of memory after 1 h 10 min. The finished analysis's first
+// alignment ran once as far as the engine knows, but AWS Batch ran it twice: its spot host was
+// reclaimed after 11 min, and it ran again on another host 2 min later for 23 min.
+const RECLAIMED_AT = now - 99 * h;
+// The task row of that alignment (its display attempt's counts and split; ATTEMPT_VIEWS has it).
+export const RECLAIMED_TASK = {
+  started_at: now - 99 * h,
+  finished_at: now - 99 * h + 36 * 60,
+  executions: 2,
+  lost_executions: 1,
+  run_seconds: 34 * 60,
+  lost_seconds: 11 * 60,
+  wait_seconds: 2 * 60,
+};
 export const ATTEMPT_VIEWS = new Map([
+  [
+    'run_01HGWDdone\u0000STAR_ALIGN (Normal_1) #2',
+    [
+      {
+        started_at: RECLAIMED_TASK.started_at,
+        finished_at: RECLAIMED_TASK.finished_at,
+        exit_code: 0,
+        run_seconds: RECLAIMED_TASK.run_seconds,
+        lost_seconds: RECLAIMED_TASK.lost_seconds,
+        wait_seconds: RECLAIMED_TASK.wait_seconds,
+        host: { instance_type: 'c6a.4xlarge', capacity: 'spot', capacity_source: 'instance' },
+        executions: [
+          {
+            execution_id: 'arn:aws:ecs:us-east-1:000000000000:task/biffix/0a1b2c3d',
+            ordinal: 1,
+            ended: true,
+            final_execution: false,
+            termination_category: 'spot',
+            status_reason: 'Host EC2 (instance i-0123456789abcdef0) terminated.',
+            log_stream: 'mock/STAR_ALIGN (Normal_1) #2/1',
+            started_at: RECLAIMED_AT,
+            stopped_at: RECLAIMED_AT + 11 * 60,
+            spot_warned_at: RECLAIMED_AT + 9 * 60,
+            interruption: 'spot_reclaimed',
+            host: { instance_type: 'c6a.4xlarge', capacity: 'spot', capacity_source: 'instance' },
+            cost: {
+              usd: 0.06,
+              compute_usd: 0.055,
+              ebs_usd: 0.005,
+              hours: 11 / 60,
+              price_per_hour: 0.3,
+              price_source: 'spot_history',
+            },
+          },
+          {
+            execution_id: 'arn:aws:ecs:us-east-1:000000000000:task/biffix/4e5f6a7b',
+            ordinal: 2,
+            ended: true,
+            final_execution: true,
+            exit_code: 0,
+            log_stream: 'mock/STAR_ALIGN (Normal_1) #2/2',
+            started_at: RECLAIMED_AT + 13 * 60,
+            stopped_at: RECLAIMED_AT + 36 * 60,
+            host: { instance_type: 'c6a.4xlarge', capacity: 'spot', capacity_source: 'instance' },
+            cost: {
+              usd: 0.125,
+              compute_usd: 0.115,
+              ebs_usd: 0.01,
+              hours: 23 / 60,
+              price_per_hour: 0.3,
+              price_source: 'spot_history',
+            },
+          },
+        ],
+      },
+    ],
+  ],
   [
     'run_01HGWEoom\u0000STAR_ALIGN (Tumor_4) #8',
     [
@@ -144,6 +214,20 @@ export const ATTEMPT_VIEWS = new Map([
         spot_warned_at: now - 98.5 * h + 38 * 60,
         termination_category: 'spot',
         host: { capacity: 'spot', capacity_source: 'instance' },
+        executions: [
+          {
+            execution_id: 'arn:aws:ecs:us-east-1:000000000000:task/biffix/9c8d7e6f',
+            ordinal: 1,
+            ended: true,
+            final_execution: true,
+            termination_category: 'spot',
+            log_stream: 'mock/STAR_ALIGN (Tumor_4) #8/1',
+            started_at: now - 98.5 * h,
+            stopped_at: now - 98.5 * h + 40 * 60,
+            spot_warned_at: now - 98.5 * h + 38 * 60,
+            interruption: 'spot_reclaimed',
+          },
+        ],
       },
       {
         started_at: now - 97.7 * h,

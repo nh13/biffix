@@ -50,7 +50,33 @@ uses these `propertyID`s.
 
 ### attempts
 
-How many AWS Batch attempts the task took (retries included).
+How many attempts the workflow engine made at the task (retries included). In task-per-job mode,
+each attempt is a separate AWS Batch job. In a single-job run, the engine retries the task inside
+the run's one Batch job.
+
+### executions
+
+How many times AWS Batch ran the task's winning attempt on a host. More than one when Batch ran
+it again after losing a host. Absent for a run recorded before executions were.
+
+### hostinterruptions
+
+How many of the winning attempt's executions lost their host (a spot reclaim, or a host lost
+otherwise). Absent when none did. Its `propertyID` is
+`https://github.com/nh13/biffix/blob/main/docs/provenance.md#hostinterruptions`.
+
+### runseconds
+
+The time the winning attempt's containers ran, over all its executions (`unitCode` QUDT `SEC`).
+The task's `startTime` to `endTime` is the attempt's whole span: this, plus the time it waited for
+a new host after losing one. Its `propertyID` is
+`https://github.com/nh13/biffix/blob/main/docs/provenance.md#runseconds`.
+
+### lostseconds
+
+The part of `runSeconds` spent in executions that lost their host: work AWS Batch ran again
+(`unitCode` QUDT `SEC`). Its `propertyID` is
+`https://github.com/nh13/biffix/blob/main/docs/provenance.md#lostseconds`.
 
 ### instancetype
 
@@ -62,12 +88,16 @@ queue-class, of the same size).
 
 The AWS Batch job queue the task's winning attempt ran on, as AWS reported it. A biffix queue is
 named `biffix-<tenant>-<queue-class>`, so this is the queue-class the version's `queues:` (or its
-default) sent the task to. Its `propertyID` is `jobQueue`.
+default) sent the task to. Its `propertyID` is
+`https://github.com/nh13/biffix/blob/main/docs/provenance.md#jobqueue`.
 
 ### estimatedcost
 
 The task's estimated cost in US dollars (`unitCode` QUDT `USD`): instance time at the on-demand or
-spot rate, plus its EBS share. An estimate, not a bill.
+spot rate, plus its EBS share, summed from the available cost lines across all its attempts (not
+only the winning attempt's, as the terms above are). For jobs priced per execution, only priced
+executions contribute; unpriced executions are omitted without a completeness marker. An estimate,
+not a bill.
 
 ### cached
 

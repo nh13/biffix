@@ -271,7 +271,10 @@ pub(crate) async fn failure_summary(
                         } else {
                             a.status_reason.clone()
                         },
-                        spot_warned: a.spot_warned_at.is_some(),
+                        // The attempt's end: a warning on its host, or its last execution's own
+                        // account of a reclaimed spot host (the registry's lifecycle included).
+                        spot_warned: a.spot_warned_at.is_some()
+                            || ended_by_spot_reclaim(&a.executions),
                     }
                 })
                 .collect()
@@ -315,6 +318,11 @@ pub(crate) async fn failure_summary(
             message: d.message,
             advice: d.advice,
             attempts: task.attempts.max(recorded.len() as i64),
+            lost_executions: attempts
+                .iter()
+                .flat_map(|a| &a.executions)
+                .filter(|x| x.interruption.is_some())
+                .count() as i64,
             log_tail: tail,
             reason,
             stage: None,
@@ -350,6 +358,7 @@ pub(crate) async fn failure_summary(
                 message: reason.clone(),
                 advice: advice.into(),
                 attempts: 0,
+                lost_executions: 0,
                 log_tail: vec![],
                 reason: Some(reason),
                 // The recorded stage as is (an open value), `launch` when none was recorded.
@@ -359,6 +368,17 @@ pub(crate) async fn failure_summary(
             });
             return Ok(FailureSummary { failed_steps, items, support, pending: false });
         }
+        // The coordinator's executions (a display nicety: a read that fails is logged, and none are
+        // counted).
+        let coordinator_job =
+            run.coordinator_job_id.as_ref().map(biffix_core::ids::CoordinatorJobId::as_str);
+        let executions = match state.store.run_executions(rid, coordinator_job).await {
+            Ok(executions) => executions.coordinator,
+            Err(e) => {
+                tracing::warn!(error = %e, "failure_summary: reading the coordinator's executions failed");
+                vec![]
+            }
+        };
         // Batch's account of the coordinator's stop outranks its output (which a coordinator that
         // never started does not have). Coordinators always log to the shared group.
         let stop = &run.coordinator_stop;
@@ -412,6 +432,7 @@ pub(crate) async fn failure_summary(
             message: d.message,
             advice: d.advice,
             attempts: 1,
+            lost_executions: executions.iter().filter(|x| x.interruption.is_some()).count() as i64,
             log_tail: tail,
             reason: stop.status_reason.clone(),
             stage: None,
@@ -431,4 +452,11 @@ pub(crate) async fn failure_summary(
         return Ok(FailureSummary { failed_steps, items, support, pending });
     }
     Ok(FailureSummary { failed_steps, items, support, pending: false })
+}
+
+/// Whether a job's last execution (of `executions`, in order) ended with its spot host reclaimed,
+/// by the rule `JobExecution.interruption` uses.
+fn ended_by_spot_reclaim(executions: &[biffix_api::JobExecution]) -> bool {
+    executions.last().and_then(|x| x.interruption.as_deref())
+        == Some(crate::runs::executions::SPOT_RECLAIMED)
 }

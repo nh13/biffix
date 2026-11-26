@@ -261,6 +261,17 @@ async fn a_failure_summary_reads_the_recorded_attempts_and_shows_only_the_first_
     let mut last = attempt_view("job-A1", 2, "failed", "s-a1");
     last.exit_code = Some(1);
     last.status_reason = Some("Essential container in task exited".into());
+    // AWS Batch ran the last attempt twice: its first host was reclaimed, then it failed.
+    let execution = |id: &str, ordinal: i64, interruption: Option<&str>| {
+        serde_json::from_value::<biffix_api::JobExecution>(serde_json::json!({
+            "execution_id": id, "ordinal": ordinal, "ended": true,
+            "final_execution": interruption.is_none(), "interruption": interruption,
+        }))
+        .unwrap()
+    };
+    last.executions = vec![execution("x1", 1, Some("spot_reclaimed")), execution("x2", 2, None)];
+    // And the reclaimed first attempt lost its only host.
+    reclaimed.executions = vec![execution("x0", 1, Some("host_lost"))];
     store.insert_attempts("r1", "A", vec![reclaimed, last]);
     let mut state = summary_state(
         testing::run_detail("unused", "failed"),
@@ -280,6 +291,11 @@ async fn a_failure_summary_reads_the_recorded_attempts_and_shows_only_the_first_
     assert_eq!(items[0]["log_tail"], serde_json::json!(["the last attempt's stream"]));
     assert_eq!(items[0]["reason"], "Essential container in task exited");
     assert_eq!(items[0]["attempts"], 2);
+    // The reclaimed execution is counted beside the attempts, not as one, and does not make
+    // the step's failure a spot reclaim.
+    assert_eq!(items[0]["lost_executions"], 2);
+    assert_eq!(items[0]["cause"], "step_error");
+    assert!(items[1].get("lost_executions").is_none(), "{}", items[1]);
     // The last attempt's exit code and Batch job, for the support report.
     assert_eq!(items[0]["exit_code"], 1);
     assert_eq!(items[0]["batch_job_id"], "job-A1");
@@ -337,6 +353,38 @@ async fn a_coordinator_that_never_started_is_explained_from_batch_s_reason() {
     let (_, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
     assert_eq!(v["items"][0]["cause"], "out_of_memory");
     assert_eq!(v["items"][0]["exit_code"], 137);
+}
+
+#[tokio::test]
+async fn a_coordinator_that_lost_its_hosts_counts_them() {
+    // Batch lost the coordinator's first host, ran it again, and gave up when that host went too.
+    let mut detail = testing::run_detail("r1", "failed");
+    detail.coordinator_job_id = Some("coord".into());
+    detail.coordinator_stop.status_reason = Some("Host EC2 (instance i-2) terminated.".into());
+    detail.coordinator_stop.termination_category = Some("host_terminated".into());
+    let store = MemStore::new();
+    store.insert(detail);
+    let execution = |id: &str, ordinal: i64, interruption: &str| {
+        serde_json::from_value::<biffix_api::JobExecution>(serde_json::json!({
+            "execution_id": id, "ordinal": ordinal, "ended": true,
+            "final_execution": ordinal == 2, "interruption": interruption,
+        }))
+        .unwrap()
+    };
+    store.insert_coordinator_executions(
+        "r1",
+        vec![execution("c1", 1, "host_lost"), execution("c2", 2, "host_lost")],
+    );
+    let state = TestState::new()
+        .with_store(Arc::new(store))
+        .with_projects(testing::bucket_project("b"))
+        .build();
+    let (status, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let item = &v["items"][0];
+    assert_eq!((&item["step"], &item["cause"]), (&"workflow engine".into(), &"host_lost".into()));
+    assert_eq!(item["lost_executions"], 2);
+    assert_eq!(item["attempts"], 1);
 }
 
 #[tokio::test]
@@ -662,4 +710,28 @@ async fn a_coordinator_batch_stopped_is_never_explained_from_failure_txt() {
     assert_eq!(v["items"][0]["cause"], "host_lost");
     assert_eq!(log_tail_of(&v), ["the coordinator's last line"]);
     assert!(cloud.ranges.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_step_whose_last_execution_lost_a_spot_host_was_reclaimed() {
+    // AWS says only that the host terminated, with no warning on record, but the host registry
+    // says the host was spot: the execution and the failure summary agree it was a reclaim.
+    let mut detail = testing::run_detail("r1", "failed");
+    detail.tasks = vec![failed_task("A", "A", 10.0, 1, "s-a")];
+    let store = MemStore::new();
+    store.insert(detail);
+    let mut attempt = attempt_view("job-A", 1, "failed", "s-a");
+    attempt.termination_category = Some("host_terminated".into());
+    attempt.executions = vec![serde_json::from_value(serde_json::json!({
+        "execution_id": "x1", "ordinal": 1, "ended": true, "final_execution": true,
+        "termination_category": "host_terminated", "interruption": "spot_reclaimed",
+    }))
+    .unwrap()];
+    store.insert_attempts("r1", "A", vec![attempt]);
+    let mut state = summary_state(testing::run_detail("unused", "failed"), &[]);
+    state.store = Arc::new(store);
+    let (status, v) = get_json(api::router(state), "/runs/r1/failure-summary").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["items"][0]["cause"], "spot_reclaimed");
+    assert_eq!(v["items"][0]["lost_executions"], 1);
 }

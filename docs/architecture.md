@@ -56,8 +56,10 @@ per execution) and their executions (each run of the job on a host: AWS Batch re
 the same id when it loses the host). It also asks about each job that finished in the last 7 days
 whose log holds no execution end, fewer execution ends than starts, or fewer Batch starts of the job
 than execution ends (a start the live stream lost while the terminal arrived), until one answer's
-events are all enqueued or Batch no longer returns the job. The Lambda also refreshes prices, runs
-the status probe, and deletes intermediate files whose retention has passed.
+events are all enqueued or Batch no longer returns the job. What it cannot recover is a start AWS
+no longer reports: an execution known only by its end has no run time, so it is shown but neither
+priced nor counted as pending. The Lambda also refreshes prices, runs the status probe, and deletes
+intermediate files whose retention has passed.
 
 A run can also execute as **one** Batch job on one host ([single-job runs](#single-job-runs)): the
 engine runs every task on that host, each in the image its Batch job would run, and AWS reports
@@ -89,6 +91,9 @@ are joined on a few keys:
 - **`task_key`** names a logical task and stays stable across retries: `rule:sorted(wildcards)`
   for Snakemake, the process and tag for Nextflow. A retry is a new attempt under the same
   `task_key`.
+- **The execution id** (the ECS task ARN) names one run of a Batch job on a host. AWS Batch runs
+  a job again under the same `batch_job_id` when it loses the host, so one attempt can have
+  several executions, each with its own host, times, log stream and cost.
 - **`run_id`** is nullable. An AWS event can arrive before biffix has seen the `task_submitted`
   that says which run the job belongs to; it is stored unattributed and stitched in when the
   binding arrives.
@@ -243,7 +248,9 @@ does: a head job that runs for hours must not be reclaimed. Retries are split so
 twice:
 
 - **Infrastructure interruptions** (a spot reclaim, a lost host) are retried by AWS Batch's own
-  `retryStrategy`. That is invisible to the engine and keeps the same `batch_job_id`.
+  `retryStrategy`. That is invisible to the engine and keeps the same `batch_job_id`: biffix shows
+  it as another execution of the same attempt, prices each execution on its own host, and counts
+  the executions a run lost and the time they had run.
 - **Application failures** are retried by the engine (`retries:` in Snakemake, `errorStrategy` in
   Nextflow). In a run of one Batch job per task, each retry is a new Batch job, which biffix shows
   as a new attempt of the same task. In a single-job run, the engine retries the task inside the

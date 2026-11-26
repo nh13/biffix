@@ -28,16 +28,22 @@ impl PgStore {
     ) -> Result<(Option<biffix_api::RunCost>, Vec<crate::store::cost::CostRow>), StoreError> {
         // Every cost line of the run, with its role and (for a task job) its task, in job id then
         // execution id order: `run_cost` adds them up in this order, as `run_costs` does, so the
-        // run page's estimate and the list's are the same float.
-        let rows = sqlx::query(
-            "SELECT c.batch_job_id, a.task_key, c.role, c.instance_type, c.lifecycle, c.hours, \
-             c.price_per_hour, c.price_source, c.compute_usd, c.ebs_usd \
+        // run page's estimate and the list's are the same float. A line whose execution row a
+        // refold removed (cost lines are written once) is neither final nor lost.
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "SELECT c.batch_job_id, a.task_key, c.role, c.execution_id, c.instance_type, \
+             c.lifecycle, c.hours, c.price_per_hour, c.price_source, c.compute_usd, c.ebs_usd, \
+             COALESCE(x.is_final, c.execution_id IS NULL) AS final_execution, \
+             COALESCE({}, false) AS host_lost \
              FROM cost_line c \
              LEFT JOIN attempt_projection a \
                ON a.run_id = c.run_id AND a.batch_job_id = c.batch_job_id \
+             LEFT JOIN execution_projection x \
+               ON x.run_id = c.run_id AND x.execution_id = c.execution_id \
              WHERE c.run_id = $1 \
              ORDER BY c.batch_job_id COLLATE \"C\", c.execution_id COLLATE \"C\"",
-        )
+            super::tasks::host_lost_sql("x")
+        )))
         .bind(run_id.as_str())
         .fetch_all(&self.pool);
         let pending_sql = pending_jobs_sql();
@@ -57,6 +63,9 @@ impl PgStore {
                     coordinator,
                     // NULL for a task job whose attempt row is gone: see `CostRow::task_key`.
                     task_key: if coordinator { None } else { r.get("task_key") },
+                    execution_id: r.get("execution_id"),
+                    final_execution: r.get("final_execution"),
+                    host_lost: r.get("host_lost"),
                     instance_type: r.get("instance_type"),
                     lifecycle: r.get("lifecycle"),
                     hours: r.get("hours"),

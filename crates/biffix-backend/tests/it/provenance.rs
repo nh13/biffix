@@ -970,3 +970,37 @@ fn samplesheets_shared_files_and_files_of_two_params_are_each_one_entity() {
     both.sort();
     assert_eq!(both, ["#param/reads", "#param/reads_again"]);
 }
+
+#[test]
+fn a_task_batch_ran_again_records_its_executions_and_lost_time() {
+    let mut d = detail();
+    let task = d.tasks.iter_mut().find(|t| t.task_key.as_str() == "align:sample=A").unwrap();
+    (task.executions, task.lost_executions) = (2, 1);
+    (task.run_seconds, task.lost_seconds, task.wait_seconds) =
+        (Some(2067.0), Some(681.0), Some(147.0));
+    let c = build(&d, Some(&version()), Some(&anchor()), &outputs());
+    let task = entity(&c, "#task/align%3Asample%3DA");
+    // The span stays the attempt's whole span.
+    assert_eq!(task["startTime"], "2026-09-21T14:13:30+00:00");
+    let usage: Vec<(String, Value, Value)> = ids(&task["resourceUsage"])
+        .iter()
+        .map(|id| {
+            let pv = entity(&c, id);
+            (pv["name"].as_str().unwrap().to_string(), pv["value"].clone(), pv["unitCode"].clone())
+        })
+        .collect();
+    let sec = Value::from("https://qudt.org/vocab/unit/SEC");
+    assert_eq!(
+        usage[1..5],
+        [
+            ("executions".into(), "2".into(), Value::Null),
+            ("hostInterruptions".into(), "1".into(), Value::Null),
+            ("runSeconds".into(), "2067.000".into(), sec.clone()),
+            ("lostSeconds".into(), "681.000".into(), sec),
+        ]
+    );
+    assert_eq!(
+        entity(&c, "#usage/align%3Asample%3DA/hostInterruptions")["propertyID"],
+        "https://github.com/nh13/biffix/blob/main/docs/provenance.md#hostinterruptions"
+    );
+}

@@ -7,7 +7,7 @@ use biffix_api::{
     RuntimeUse, SubmittedImage,
 };
 use biffix_core::event::{EventData, Kind, RunEvent, SubmitImage};
-use biffix_core::ids::RunId;
+use biffix_core::ids::{CoordinatorJobId, RunId};
 use biffix_core::state::RunState;
 
 use crate::config::queue_capacity::fill_queue_capacity;
@@ -127,6 +127,9 @@ impl From<RunDetailView> for RunDetail {
             coordinator_job_id: d.coordinator_job_id,
             coordinator_log_stream: d.coordinator_log_stream,
             coordinator_host: d.coordinator_host,
+            // Filled by `run_detail`, which reads them.
+            coordinator_executions: vec![],
+            interruptions: None,
             engine_session_id: d.engine_session_id,
             session_mismatch: d.session_mismatch,
             resumed_from: d.resumed_from,
@@ -282,7 +285,8 @@ fn grid(
 /// A loaded run as `GET /runs/{id}` serves it: its detail with what the projection does not hold
 /// filled in (whether a submit can resume it, its submit provenance and images, where a run waiting
 /// for its images stands, its output prefix and how it relates to the run, its Nextflow resume
-/// cache, and each host's queue capacity). `with_tasks: false` leaves out the task table.
+/// cache, the coordinator's executions and the run's interruptions, and each host's queue
+/// capacity). `with_tasks: false` leaves out the task table.
 pub(crate) async fn run_detail(state: &AppState, d: RunDetailView, with_tasks: bool) -> RunDetail {
     let rid = d.run.run_id.clone();
     // The submit path's own resume check, so the page offers resume exactly when a submit takes it.
@@ -297,7 +301,14 @@ pub(crate) async fn run_detail(state: &AppState, d: RunDetailView, with_tasks: b
     // failing the page. A run that never launched has no anchor (nor provenance): its
     // `run_preparing` says what images the submit gave.
     let preparing = detail.summary.state == RunState::PreparingImages.as_str();
-    let accepted = match state.store.run_anchor(&rid).await {
+    // The run's anchor and its executions are independent reads.
+    let coordinator_job = detail.coordinator_job_id.clone();
+    let coordinator_job = coordinator_job.as_ref().map(CoordinatorJobId::as_str);
+    let (anchor, executions) = tokio::join!(
+        state.store.run_anchor(&rid),
+        state.store.run_executions(&rid, coordinator_job)
+    );
+    let accepted = match anchor {
         Ok(Some(anchor)) => Some(anchor),
         Ok(None) => state.store.run_event(&rid, &Kind::RunPreparing).await.unwrap_or_else(|e| {
             tracing::warn!(error = %e, "get_run: reading the run's run_preparing failed");
@@ -356,6 +367,18 @@ pub(crate) async fn run_detail(state: &AppState, d: RunDetailView, with_tasks: b
             host.queue.get_or_insert_with(|| name.to_string());
         }
         fill_queue_capacity(host, &state.deploy.queue_capacities);
+    }
+    // The coordinator's executions and the run's lost ones: a display nicety too.
+    match executions {
+        Ok(executions) => {
+            detail.interruptions = crate::runs::executions::run_interruptions(&executions.lost);
+            detail.coordinator_executions = executions.coordinator;
+            let hosts = detail.coordinator_executions.iter_mut().filter_map(|x| x.host.as_mut());
+            for host in hosts {
+                fill_queue_capacity(host, &state.deploy.queue_capacities);
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "get_run: reading the run's executions failed"),
     }
     detail
 }

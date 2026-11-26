@@ -34,6 +34,9 @@ pub struct MemStore {
     /// Attempts keyed by (run id, task key), any order (`get_attempts` sorts them as Postgres
     /// does).
     pub attempts: Mutex<BTreeMap<(String, String), Vec<biffix_api::TaskAttempt>>>,
+    /// The coordinator's executions, in order, by run id: the run's coordinator job's (the double
+    /// keeps one coordinator job per run).
+    pub coordinator_executions: Mutex<BTreeMap<String, Vec<biffix_api::JobExecution>>>,
     /// Outputs keyed by run id (any order; `list_outputs` sorts by `s3_uri`).
     pub outputs: Mutex<BTreeMap<String, Vec<OutputRow>>>,
     /// The `s3_object_meta` cache, keyed by URI; joined onto output rows as they are read.
@@ -174,6 +177,13 @@ impl MemStore {
         attempts: Vec<biffix_api::TaskAttempt>,
     ) {
         self.attempts.lock().unwrap().insert((run_id.to_string(), task_key.to_string()), attempts);
+    }
+    pub fn insert_coordinator_executions(
+        &self,
+        run_id: &str,
+        executions: Vec<biffix_api::JobExecution>,
+    ) {
+        self.coordinator_executions.lock().unwrap().insert(run_id.to_string(), executions);
     }
     /// Seed the notification run `run_id` reaching `kind` at `at_micros` gives `user` (as the fold
     /// would: its id is `<run>:<kind>`).
@@ -525,6 +535,30 @@ impl TaskReads for MemStore {
         // Like Postgres: `ORDER BY attempt NULLS LAST, batch_job_id`.
         attempts.sort_by_key(|a| (a.attempt.is_none(), a.attempt, a.batch_job_id.0.clone()));
         Ok(attempts)
+    }
+
+    async fn run_executions(
+        &self,
+        run_id: &RunId,
+        coordinator_job: Option<&str>,
+    ) -> Result<crate::store::tasks::RunExecutions, StoreError> {
+        // As Postgres reads them: the coordinator job's (none without one), and every lost one of
+        // the run's attempts and coordinator.
+        let stored = self
+            .coordinator_executions
+            .lock()
+            .unwrap()
+            .get(run_id.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let coordinator = if coordinator_job.is_some() { stored.clone() } else { vec![] };
+        let attempts = self.attempts.lock().unwrap();
+        let tasks = attempts
+            .iter()
+            .filter(|((run, _), _)| run == run_id.as_str())
+            .flat_map(|(_, attempts)| attempts.iter().flat_map(|a| a.executions.iter()));
+        let lost = tasks.chain(&stored).filter(|x| x.interruption.is_some()).cloned().collect();
+        Ok(crate::store::tasks::RunExecutions { coordinator, lost })
     }
 }
 

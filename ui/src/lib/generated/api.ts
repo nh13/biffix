@@ -1590,7 +1590,10 @@ export interface components {
       /** Format: double */
       hours: number;
       instance_type: string;
-      /** Format: int64 */
+      /**
+       * Format: int64
+       * @description Distinct jobs with a line in this group: a job AWS Batch ran on two types is in both.
+       */
       jobs: number;
       lifecycle?: string | null;
       /** Format: double */
@@ -1892,7 +1895,8 @@ export interface components {
       advice: string;
       /**
        * Format: int64
-       * @description Attempts the step made.
+       * @description Attempts the step made (engine tries; AWS Batch running one again on a new host is not
+       *     another).
        */
       attempts: number;
       /** @description The AWS Batch job of the failed task's last attempt (for a support report). */
@@ -1917,6 +1921,12 @@ export interface components {
        *     names a step other than the engine or quotes no output.
        */
       log_tail: string[];
+      /**
+       * Format: int64
+       * @description Executions of the step's attempts that lost their host (a spot reclaim or a lost host), in
+       *     all its attempts. Omitted at 0.
+       */
+      lost_executions?: number;
       /** @description Completes "`<step>` failed: …". */
       message: string;
       /**
@@ -2218,13 +2228,15 @@ export interface components {
       hours: number;
       /**
        * Format: double
-       * @description The average compute price over the job, USD/hour.
+       * @description The average compute price over the job, USD/hour (for an attempt AWS Batch ran more than
+       *     once, averaged over its executions' run time).
        */
       price_per_hour: number;
       /**
        * @description Where the compute price came from: `on_demand` (list price), `spot_history` (EC2 spot price
        *     history for the host's type and AZ — what spot bills), `spot_at_on_demand` (spot, history
-       *     unavailable: an upper bound), `unknown_at_on_demand` (lifecycle unknown).
+       *     unavailable: an upper bound), `unknown_at_on_demand` (lifecycle unknown), or `mixed` (an
+       *     attempt whose executions were priced from different sources; see each execution's).
        */
       price_source: string;
       /**
@@ -2232,6 +2244,59 @@ export interface components {
        * @description Compute + root volume, USD.
        */
       usd: number;
+    };
+    /**
+     * @description One execution of a Batch job (a task's attempt, or the coordinator): one time AWS Batch ran
+     *     the job on a host (one ECS task). An execution that ended because its host went away is a spot
+     *     reclaim or a lost host (`interruption`), and Batch runs the job again while its retries last.
+     */
+    JobExecution: {
+      cost?: components['schemas']['JobCost'] | null;
+      /** @description Whether the execution has ended. */
+      ended: boolean;
+      /** @description The ECS task ARN. */
+      execution_id: string;
+      /** Format: int64 */
+      exit_code?: number | null;
+      /** @description Whether this is the job's last execution so far. */
+      final_execution: boolean;
+      host?: components['schemas']['Host'] | null;
+      /** @description The ECS container-instance id of the host (not an EC2 instance id). */
+      instance_id?: string | null;
+      /**
+       * @description Why the execution ended early, when its host went away: `spot_reclaimed` (the host was
+       *     spot, by the host registry, AWS's reason or an EC2 warning while it ran) or `host_lost`
+       *     (otherwise, including a spot host biffix has no record of). Open: a reader treats a value
+       *     it does not know as `host_lost`. Omitted for an execution that did not lose its host.
+       */
+      interruption?: string | null;
+      /**
+       * @description The execution's own CloudWatch log stream. A task execution's log is read through
+       *     `POST /runs/{id}/task-logs/query` with `execution`; a coordinator execution's only while it
+       *     is the coordinator's current stream (`GET /runs/{id}/coordinator-logs`).
+       */
+      log_stream?: string | null;
+      /**
+       * Format: int64
+       * @description 1-based position among the job's executions.
+       */
+      ordinal: number;
+      /**
+       * Format: double
+       * @description When EC2 warned that the execution's spot host would be reclaimed (epoch seconds), if it
+       *     did while the execution ran.
+       */
+      spot_warned_at?: number | null;
+      /**
+       * Format: double
+       * @description Start / stop as epoch seconds. A start can be missing when AWS reported only the end.
+       */
+      started_at?: number | null;
+      /** @description AWS Batch's reason the execution stopped (e.g. `Host EC2 (instance i-…) terminated.`). */
+      status_reason?: string | null;
+      /** Format: double */
+      stopped_at?: number | null;
+      termination_category?: string | null;
     };
     /** @description USD for the samples asked for (median, and the 25th–75th percentile range), and median hours. */
     LaunchEstimate: {
@@ -2710,22 +2775,46 @@ export interface components {
       ebs_usd: number;
       /**
        * Format: double
-       * @description Every priced job — all task attempts (retries and spot-lost ones too) and the coordinator.
+       * @description Every priced job — all task attempts (engine retries too), each execution AWS Batch ran
+       *     (including ones lost with their host), and the coordinator.
        */
       estimated_usd: number;
       /**
+       * Format: double
+       * @description The part of `estimated_usd` spent on executions that lost their host (a spot reclaim or a
+       *     lost host): work AWS Batch ran again, or, for a job whose last execution lost its host
+       *     (Batch has yet to run it again, or gave up), work that was lost. Never part of
+       *     `winning_usd`.
+       */
+      lost_usd?: number;
+      /**
        * Format: int64
-       * @description Jobs not priced yet (still running, or priced on the next reconcile tick).
+       * @description Jobs not priced yet, in whole or in part (still running, or priced on the next reconcile
+       *     tick).
        */
       pending_jobs: number;
       /** @description The distinct price sources behind the estimate (see [`JobCost::price_source`]). */
       price_sources: string[];
-      /** Format: int64 */
+      /**
+       * Format: int64
+       * @description Execution lines priced (each time AWS Batch ran a job on a host, priced on that host). A
+       *     job priced before executions were has one line for the whole job, not counted here. An
+       *     execution AWS reported only the end of has no run time, so it is neither priced nor
+       *     pending.
+       */
+      priced_executions?: number;
+      /**
+       * Format: int64
+       * @description Jobs with a cost line. A job AWS Batch ran more than once counts once, and counts here
+       *     while some of its executions are still pending, so it can be in both counts.
+       */
       priced_jobs: number;
       /**
        * Format: double
-       * @description Only each task's final attempt, plus the coordinator: what the run would have cost without
-       *     retries.
+       * @description Only each task's final attempt, plus the coordinator, each by its last execution (or, for a
+       *     job priced before executions were, the whole job), unless that execution lost its host
+       *     (then the job adds nothing; it is in `lost_usd`): what the run would have cost without
+       *     retries, the engine's or AWS Batch's.
        */
       winning_usd: number;
     };
@@ -2745,6 +2834,11 @@ export interface components {
        *     known: never an opaque user id.
        */
       cancelled_by?: string | null;
+      /**
+       * @description Each time AWS Batch ran the coordinator's job on a host, in order. More than one when Batch
+       *     ran it again after losing a host. Omitted when none is recorded.
+       */
+      coordinator_executions?: components['schemas']['JobExecution'][];
       coordinator_host?: components['schemas']['Host'] | null;
       /**
        * @description The coordinator (head) job's Batch id — links to the coordinator job/logs, the only visible
@@ -2772,6 +2866,7 @@ export interface components {
        *     `{uri, etag, rows: [{column: value}]}`. Absent when none were.
        */
       input_tables?: Record<string, never> | null;
+      interruptions?: components['schemas']['RunInterruptions'] | null;
       /**
        * Format: int64
        * @description When the run's coordinator was launched (its first launch), epoch microseconds: where its
@@ -2855,6 +2950,29 @@ export interface components {
      * @enum {string}
      */
     RunFilter: 'all' | 'active' | 'submitted' | 'completed' | 'succeeded' | 'failed';
+    /**
+     * @description The run's executions that lost their host (`RunDetail.interruptions`): each AWS Batch ran again
+     *     on a new host.
+     */
+    RunInterruptions: {
+      /**
+       * Format: int64
+       * @description Executions that lost their host, every task's and the coordinator's.
+       */
+      lost_executions: number;
+      /**
+       * Format: double
+       * @description The time those executions ran before they were lost, in seconds (0 for one whose start AWS
+       *     did not report).
+       */
+      lost_seconds: number;
+      /**
+       * Format: int64
+       * @description How many of them were spot reclaims (`JobExecution.interruption`); the rest lost their
+       *     host otherwise.
+       */
+      spot_reclaims: number;
+    };
     /** @description One object a run produced (`POST /runs/{id}/outputs/query`). */
     RunOutput: {
       /** Format: int64 */
@@ -3540,8 +3658,8 @@ export interface components {
       cached?: boolean;
       /**
        * Format: double
-       * @description Estimated cost of every priced attempt of this task (USD), retries and spot-lost attempts
-       *     included; absent until one is priced.
+       * @description Estimated cost of every priced attempt of this task (USD), retries and executions lost
+       *     with their host included; absent until one is priced.
        */
       cost_usd?: number | null;
       /**
@@ -3550,6 +3668,14 @@ export interface components {
        *     `GET /runs/{id}`'s whole task list derives it from the list.
        */
       deps?: string[];
+      /**
+       * Format: int64
+       * @description How many times AWS Batch ran the display attempt's job on a host (the length of its
+       *     `TaskAttempt.executions`), and how many of those lost their host (their
+       *     `JobExecution.interruption` is set). Each omitted at 0: a run recorded before executions
+       *     were has none.
+       */
+      executions?: number;
       /**
        * Format: int64
        * @description Per-task display detail from the task's display attempt; omitted when absent (a local rule,
@@ -3574,6 +3700,10 @@ export interface components {
       image?: string | null;
       instance_id?: string | null;
       log_stream?: string | null;
+      /** Format: int64 */
+      lost_executions?: number;
+      /** Format: double */
+      lost_seconds?: number | null;
       /**
        * Format: int64
        * @description The memory (MiB) the display attempt's Batch job requested; absent when unknown.
@@ -3587,13 +3717,20 @@ export interface components {
       requested_vcpus?: number | null;
       /**
        * Format: double
+       * @description The display attempt's split of its span, in seconds (`TaskAttempt.run_seconds`,
+       *     `lost_seconds`, `wait_seconds`); omitted without execution facts.
+       */
+      run_seconds?: number | null;
+      /**
+       * Format: double
        * @description When EC2 warned that the display attempt's spot host would be reclaimed (epoch seconds), if
        *     it did while the attempt was running.
        */
       spot_warned_at?: number | null;
       /**
        * Format: double
-       * @description Attempt start / finish as epoch seconds.
+       * @description The display attempt's start / finish as epoch seconds: its whole span, including time on a
+       *     lost host and the wait for a new one (see `run_seconds`, `lost_seconds`, `wait_seconds`).
        */
       started_at?: number | null;
       state: string;
@@ -3604,10 +3741,14 @@ export interface components {
        *     did not write its declared outputs); absent otherwise.
        */
       verdict_reason?: string | null;
+      /** Format: double */
+      wait_seconds?: number | null;
     };
     /**
-     * @description One AWS Batch attempt of a task. A task retried after a spot reclaim has several; `Task`
-     *     summarizes only the display attempt (the succeeded one, else the highest-numbered).
+     * @description One attempt of a task: one try by the workflow engine, run as one AWS Batch job. A task the
+     *     engine retried has several; `Task` summarizes only the display attempt (the succeeded one, else
+     *     the highest-numbered). AWS Batch may itself run an attempt's job more than once (after a spot
+     *     reclaim or a lost host): those runs are its `executions`, under the one attempt.
      */
     TaskAttempt: {
       /**
@@ -3615,10 +3756,22 @@ export interface components {
        * @description The engine's attempt number (1-based); absent until the engine's submit is observed.
        */
       attempt?: number | null;
+      /**
+       * @description AWS Batch lost the attempt's host and is finding another to run it again on: the attempt
+       *     has not ended, every execution so far has, and the last one lost its host. Omitted when
+       *     false.
+       */
+      awaiting_host?: boolean;
       batch_job_id: string;
       cost?: components['schemas']['JobCost'] | null;
       /** @description Whether this is the task's display attempt (the one `Task` summarizes). */
       display?: boolean;
+      /**
+       * @description Each time AWS Batch ran the attempt's job on a host, in order. More than one when Batch
+       *     ran it again after losing a host. Omitted when none is recorded (a run recorded before
+       *     executions were, or a job that has not started).
+       */
+      executions?: components['schemas']['JobExecution'][];
       /** Format: int64 */
       exit_code?: number | null;
       /** Format: double */
@@ -3627,6 +3780,8 @@ export interface components {
       /** @description The ECS container-instance id of the host (not an EC2 instance id). */
       instance_id?: string | null;
       log_stream?: string | null;
+      /** Format: double */
+      lost_seconds?: number | null;
       /** @description The Batch job queue (name) the attempt ran on. */
       queue?: string | null;
       /**
@@ -3642,13 +3797,22 @@ export interface components {
       requested_vcpus?: number | null;
       /**
        * Format: double
+       * @description What the span (`started_at` to `finished_at`) was made of, in seconds: the time the
+       *     attempt's containers ran, the part of that spent in executions lost with their host, and
+       *     the time it waited for a host between executions. Omitted without execution facts.
+       */
+      run_seconds?: number | null;
+      /**
+       * Format: double
        * @description When EC2 warned that the attempt's spot host would be reclaimed (epoch seconds), if it did
        *     while the attempt was running — i.e. the attempt was lost to a spot reclaim.
        */
       spot_warned_at?: number | null;
       /**
        * Format: double
-       * @description Attempt start / finish as epoch seconds.
+       * @description Attempt start / finish as epoch seconds: the whole span, from its first execution's start
+       *     to its last one's end, so it includes time on a lost host and the wait for a new one (see
+       *     `run_seconds`, `lost_seconds` and `wait_seconds`).
        */
       started_at?: number | null;
       /**
@@ -3659,6 +3823,8 @@ export interface components {
       /** @description Batch's human-readable reason for a failed attempt. */
       status_reason?: string | null;
       termination_category?: string | null;
+      /** Format: double */
+      wait_seconds?: number | null;
     };
     /**
      * @description `POST /runs/{id}/attempts/query`: every attempt of one task, ordered by attempt number
@@ -3700,6 +3866,13 @@ export interface components {
       cursor?: string | null;
       /** @description `forward` (live-tail toward newer events) or `backward`/absent (tail — newest first). */
       direction?: string | null;
+      /**
+       * @description One execution's id (`JobExecution.execution_id`, from the task's attempts): its own log.
+       *     Must be an execution of an attempt of this task of this run (of `job`'s, when both are
+       *     given), else 404. An older server ignores it and answers the attempt's log: compare the
+       *     page's `log_stream` with the execution's.
+       */
+      execution?: string | null;
       /**
        * @description One attempt's Batch job id (from the task's attempts); absent ⇒ the task's display attempt.
        *     Must be an attempt of this task of this run, else 404.

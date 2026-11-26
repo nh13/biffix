@@ -505,6 +505,11 @@ fn run_list_and_detail_round_trip_minimal() {
             instance_id: None,
             started_at: None,
             finished_at: None,
+            executions: 0,
+            lost_executions: 0,
+            run_seconds: None,
+            lost_seconds: None,
+            wait_seconds: None,
             cached: false,
             group: None,
             deps: vec!["t0".into()],
@@ -522,6 +527,8 @@ fn run_list_and_detail_round_trip_minimal() {
         coordinator_job_id: None,
         coordinator_log_stream: None,
         coordinator_host: None,
+        coordinator_executions: vec![],
+        interruptions: None,
         engine_session_id: Some("3f6c2a1e-0000-4000-8000-000000000000".into()),
         session_mismatch: true,
         resumed_from: Some(RunId::new("run-0")),
@@ -541,6 +548,8 @@ fn run_list_and_detail_round_trip_minimal() {
             coordinator_usd: 0.5,
             winning_usd: 1.0,
             priced_jobs: 3,
+            priced_executions: 0,
+            lost_usd: 0.0,
             pending_jobs: 1,
             price_sources: vec!["on_demand".into(), "spot_history".into()],
             by_instance_type: vec![CostByInstanceType {
@@ -635,6 +644,8 @@ fn run_detail_flatten_puts_summary_fields_at_top_level() {
         coordinator_job_id: Some(CoordinatorJobId::new("job-9")),
         coordinator_log_stream: None,
         coordinator_host: None,
+        coordinator_executions: vec![],
+        interruptions: None,
         engine_session_id: None,
         session_mismatch: false,
         resumed_from: None,
@@ -976,6 +987,11 @@ fn attempt_view_round_trips_its_requested_resources() {
         cost: None,
         requested_vcpus: Some(0.25),
         requested_memory_mib: Some(512),
+        executions: vec![],
+        run_seconds: None,
+        lost_seconds: None,
+        wait_seconds: None,
+        awaiting_host: false,
     };
     rt(attempt.clone());
     let json = serde_json::to_value(&attempt).unwrap();
@@ -986,7 +1002,40 @@ fn attempt_view_round_trips_its_requested_resources() {
     let json = serde_json::to_value(&unknown).unwrap();
     assert!(json.get("requested_vcpus").is_none());
     assert!(json.get("requested_memory_mib").is_none());
-    rt(unknown);
+    rt(unknown.clone());
+    // An older backend's attempt (no execution fields) reads back with none.
+    let mut old = serde_json::to_value(&unknown).unwrap();
+    for key in ["executions", "run_seconds", "lost_seconds", "wait_seconds", "awaiting_host"] {
+        assert!(old.as_object_mut().unwrap().remove(key).is_none(), "{key} is omitted");
+    }
+    assert_eq!(serde_json::from_value::<TaskAttempt>(old).unwrap(), unknown);
+    // An attempt AWS Batch ran twice: a lost execution, then the one that finished.
+    let lost = JobExecution {
+        execution_id: "arn:aws:ecs:us-east-1:000000000000:task/c/1".into(),
+        ordinal: 1,
+        ended: true,
+        final_execution: false,
+        exit_code: None,
+        termination_category: Some("spot".into()),
+        status_reason: Some("Host EC2 (instance i-0123456789abcdef0) terminated.".into()),
+        log_stream: Some("s/1".into()),
+        instance_id: Some("ci-1".into()),
+        started_at: Some(3.0),
+        stopped_at: Some(684.0),
+        host: None,
+        spot_warned_at: Some(560.0),
+        interruption: Some("spot_reclaimed".into()),
+        cost: None,
+    };
+    let retried = TaskAttempt {
+        executions: vec![lost.clone(), JobExecution { ordinal: 2, final_execution: true, ..lost }],
+        run_seconds: Some(2067.0),
+        lost_seconds: Some(681.0),
+        wait_seconds: Some(147.0),
+        awaiting_host: true,
+        ..unknown
+    };
+    rt(retried);
 }
 
 /// The minimal form of each response the CLI or the UI reads that no case above covers.
@@ -1030,6 +1079,7 @@ fn minimal_responses_round_trip() {
             message: "it failed".into(),
             advice: "look".into(),
             attempts: 1,
+            lost_executions: 0,
             log_tail: vec![],
             reason: None,
             stage: None,
@@ -1111,4 +1161,28 @@ fn minimal_responses_round_trip() {
         updated_at_micros: 0,
         created_by: None,
     });
+}
+
+#[test]
+fn an_older_server_s_cost_without_execution_fields_reads_as_none_priced_or_lost() {
+    let cost = RunCost {
+        estimated_usd: 1.5,
+        compute_usd: 1.25,
+        ebs_usd: 0.25,
+        coordinator_usd: 0.5,
+        winning_usd: 1.0,
+        priced_jobs: 3,
+        priced_executions: 2,
+        lost_usd: 0.25,
+        pending_jobs: 1,
+        price_sources: vec!["spot_history".into()],
+        by_instance_type: vec![],
+    };
+    rt(cost.clone());
+    let mut old = serde_json::to_value(&cost).unwrap();
+    for key in ["priced_executions", "lost_usd"] {
+        assert!(old.as_object_mut().unwrap().remove(key).is_some(), "{key} is sent");
+    }
+    let read: RunCost = serde_json::from_value(old).unwrap();
+    assert_eq!(read, RunCost { priced_executions: 0, lost_usd: 0.0, ..cost });
 }

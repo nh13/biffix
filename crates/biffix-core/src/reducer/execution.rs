@@ -113,10 +113,7 @@ impl ExecutionProjection {
     /// `host_terminated`). A fact of the execution itself, so it holds whether or not the job's
     /// own terminal has arrived, and whatever that terminal says.
     pub fn is_host_lost(&self) -> bool {
-        matches!(
-            self.termination_category(),
-            Some(TerminationCategory::Spot | TerminationCategory::HostTerminated)
-        )
+        self.termination_category().is_some_and(TerminationCategory::is_host_lost)
     }
 
     /// One execution from two partial projections of it (`other`'s id is `self`'s): each slot

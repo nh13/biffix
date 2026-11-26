@@ -208,6 +208,11 @@ pub struct RunRenameRequest {
     pub run_name: Option<String>,
 }
 
+/// For `skip_serializing_if`: a count omitted at 0.
+fn is_zero(n: &i64) -> bool {
+    *n == 0
+}
+
 /// A task row within a run's detail.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -229,11 +234,28 @@ pub struct Task {
     pub termination_category: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_id: Option<String>,
-    /// Attempt start / finish as epoch seconds.
+    /// The display attempt's start / finish as epoch seconds: its whole span, including time on a
+    /// lost host and the wait for a new one (see `run_seconds`, `lost_seconds`, `wait_seconds`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<f64>,
+    /// How many times AWS Batch ran the display attempt's job on a host (the length of its
+    /// `TaskAttempt.executions`), and how many of those lost their host (their
+    /// `JobExecution.interruption` is set). Each omitted at 0: a run recorded before executions
+    /// were has none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub executions: i64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub lost_executions: i64,
+    /// The display attempt's split of its span, in seconds (`TaskAttempt.run_seconds`,
+    /// `lost_seconds`, `wait_seconds`); omitted without execution facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_seconds: Option<f64>,
     /// Whether this (succeeded) task was an engine cache-hit rather than work run this time.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cached: bool,
@@ -250,8 +272,8 @@ pub struct Task {
     /// client; empty in `GET /runs/{id}`'s task list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub feeds: Vec<String>,
-    /// Estimated cost of every priced attempt of this task (USD), retries and spot-lost attempts
-    /// included; absent until one is priced.
+    /// Estimated cost of every priced attempt of this task (USD), retries and executions lost
+    /// with their host included; absent until one is priced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
     /// The host the display attempt ran on, when anything about it is known.
@@ -413,8 +435,13 @@ pub struct FailureItem {
     /// Completes "`<step>` failed: …".
     pub message: String,
     pub advice: String,
-    /// Attempts the step made.
+    /// Attempts the step made (engine tries; AWS Batch running one again on a new host is not
+    /// another).
     pub attempts: i64,
+    /// Executions of the step's attempts that lost their host (a spot reclaim or a lost host), in
+    /// all its attempts. Omitted at 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub lost_executions: i64,
     /// The last lines of its log, oldest first; or the engine's, from the run's `failure.txt` when
     /// it has one (else the end of the coordinator's log), under that file's first line when it
     /// names a step other than the engine or quotes no output.
@@ -440,8 +467,10 @@ pub struct FailureItem {
     pub batch_job_id: Option<BatchJobId>,
 }
 
-/// One AWS Batch attempt of a task. A task retried after a spot reclaim has several; `Task`
-/// summarizes only the display attempt (the succeeded one, else the highest-numbered).
+/// One attempt of a task: one try by the workflow engine, run as one AWS Batch job. A task the
+/// engine retried has several; `Task` summarizes only the display attempt (the succeeded one, else
+/// the highest-numbered). AWS Batch may itself run an attempt's job more than once (after a spot
+/// reclaim or a lost host): those runs are its `executions`, under the one attempt.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TaskAttempt {
@@ -468,7 +497,9 @@ pub struct TaskAttempt {
     /// The ECS container-instance id of the host (not an EC2 instance id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_id: Option<String>,
-    /// Attempt start / finish as epoch seconds.
+    /// Attempt start / finish as epoch seconds: the whole span, from its first execution's start
+    /// to its last one's end, so it includes time on a lost host and the wait for a new one (see
+    /// `run_seconds`, `lost_seconds` and `wait_seconds`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -493,6 +524,78 @@ pub struct TaskAttempt {
     /// The memory (MiB) the attempt's Batch job requested; absent when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_memory_mib: Option<i64>,
+    /// Each time AWS Batch ran the attempt's job on a host, in order. More than one when Batch
+    /// ran it again after losing a host. Omitted when none is recorded (a run recorded before
+    /// executions were, or a job that has not started).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub executions: Vec<JobExecution>,
+    /// What the span (`started_at` to `finished_at`) was made of, in seconds: the time the
+    /// attempt's containers ran, the part of that spent in executions lost with their host, and
+    /// the time it waited for a host between executions. Omitted without execution facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_seconds: Option<f64>,
+    /// AWS Batch lost the attempt's host and is finding another to run it again on: the attempt
+    /// has not ended, every execution so far has, and the last one lost its host. Omitted when
+    /// false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub awaiting_host: bool,
+}
+
+/// One execution of a Batch job (a task's attempt, or the coordinator): one time AWS Batch ran
+/// the job on a host (one ECS task). An execution that ended because its host went away is a spot
+/// reclaim or a lost host (`interruption`), and Batch runs the job again while its retries last.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct JobExecution {
+    /// The ECS task ARN.
+    pub execution_id: String,
+    /// 1-based position among the job's executions.
+    pub ordinal: i64,
+    /// Whether the execution has ended.
+    pub ended: bool,
+    /// Whether this is the job's last execution so far.
+    pub final_execution: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub termination_category: Option<String>,
+    /// AWS Batch's reason the execution stopped (e.g. `Host EC2 (instance i-…) terminated.`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<String>,
+    /// The execution's own CloudWatch log stream. A task execution's log is read through
+    /// `POST /runs/{id}/task-logs/query` with `execution`; a coordinator execution's only while it
+    /// is the coordinator's current stream (`GET /runs/{id}/coordinator-logs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_stream: Option<String>,
+    /// The ECS container-instance id of the host (not an EC2 instance id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+    /// Start / stop as epoch seconds. A start can be missing when AWS reported only the end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_at: Option<f64>,
+    /// The host the execution ran on, when anything about it is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<Host>,
+    /// When EC2 warned that the execution's spot host would be reclaimed (epoch seconds), if it
+    /// did while the execution ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spot_warned_at: Option<f64>,
+    /// Why the execution ended early, when its host went away: `spot_reclaimed` (the host was
+    /// spot, by the host registry, AWS's reason or an EC2 warning while it ran) or `host_lost`
+    /// (otherwise, including a spot host biffix has no record of). Open: a reader treats a value
+    /// it does not know as `host_lost`. Omitted for an execution that did not lose its host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interruption: Option<String>,
+    /// The execution's estimated cost, once priced (a run priced before executions were has
+    /// only its attempts' costs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<JobCost>,
 }
 
 /// One job's estimated cost (an attempt, or the coordinator).
@@ -504,11 +607,13 @@ pub struct JobCost {
     pub compute_usd: f64,
     pub ebs_usd: f64,
     pub hours: f64,
-    /// The average compute price over the job, USD/hour.
+    /// The average compute price over the job, USD/hour (for an attempt AWS Batch ran more than
+    /// once, averaged over its executions' run time).
     pub price_per_hour: f64,
     /// Where the compute price came from: `on_demand` (list price), `spot_history` (EC2 spot price
     /// history for the host's type and AZ — what spot bills), `spot_at_on_demand` (spot, history
-    /// unavailable: an upper bound), `unknown_at_on_demand` (lifecycle unknown).
+    /// unavailable: an upper bound), `unknown_at_on_demand` (lifecycle unknown), or `mixed` (an
+    /// attempt whose executions were priced from different sources; see each execution's).
     pub price_source: String,
 }
 
@@ -518,17 +623,35 @@ pub struct JobCost {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RunCost {
-    /// Every priced job — all task attempts (retries and spot-lost ones too) and the coordinator.
+    /// Every priced job — all task attempts (engine retries too), each execution AWS Batch ran
+    /// (including ones lost with their host), and the coordinator.
     pub estimated_usd: f64,
     pub compute_usd: f64,
     pub ebs_usd: f64,
     /// The coordinator's share of `estimated_usd`.
     pub coordinator_usd: f64,
-    /// Only each task's final attempt, plus the coordinator: what the run would have cost without
-    /// retries.
+    /// Only each task's final attempt, plus the coordinator, each by its last execution (or, for a
+    /// job priced before executions were, the whole job), unless that execution lost its host
+    /// (then the job adds nothing; it is in `lost_usd`): what the run would have cost without
+    /// retries, the engine's or AWS Batch's.
     pub winning_usd: f64,
+    /// Jobs with a cost line. A job AWS Batch ran more than once counts once, and counts here
+    /// while some of its executions are still pending, so it can be in both counts.
     pub priced_jobs: i64,
-    /// Jobs not priced yet (still running, or priced on the next reconcile tick).
+    /// Execution lines priced (each time AWS Batch ran a job on a host, priced on that host). A
+    /// job priced before executions were has one line for the whole job, not counted here. An
+    /// execution AWS reported only the end of has no run time, so it is neither priced nor
+    /// pending.
+    #[serde(default)]
+    pub priced_executions: i64,
+    /// The part of `estimated_usd` spent on executions that lost their host (a spot reclaim or a
+    /// lost host): work AWS Batch ran again, or, for a job whose last execution lost its host
+    /// (Batch has yet to run it again, or gave up), work that was lost. Never part of
+    /// `winning_usd`.
+    #[serde(default)]
+    pub lost_usd: f64,
+    /// Jobs not priced yet, in whole or in part (still running, or priced on the next reconcile
+    /// tick).
     pub pending_jobs: i64,
     /// The distinct price sources behind the estimate (see [`JobCost::price_source`]).
     pub price_sources: Vec<String>,
@@ -551,6 +674,7 @@ pub struct CostByInstanceType {
     pub instance_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<String>,
+    /// Distinct jobs with a line in this group: a job AWS Batch ran on two types is in both.
     pub jobs: i64,
     pub hours: f64,
     pub usd: f64,
@@ -919,6 +1043,12 @@ pub struct TaskLogsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub job: Option<BatchJobId>,
+    /// One execution's id (`JobExecution.execution_id`, from the task's attempts): its own log.
+    /// Must be an execution of an attempt of this task of this run (of `job`'s, when both are
+    /// given), else 404. An older server ignores it and answers the attempt's log: compare the
+    /// page's `log_stream` with the execution's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<String>,
 }
 
 /// `GET /runs/{id}/coordinator-logs` query: which page of the coordinator's log.
@@ -1014,6 +1144,21 @@ pub struct RunDetailQuery {
     pub tasks: Option<bool>,
 }
 
+/// The run's executions that lost their host (`RunDetail.interruptions`): each AWS Batch ran again
+/// on a new host.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RunInterruptions {
+    /// Executions that lost their host, every task's and the coordinator's.
+    pub lost_executions: i64,
+    /// How many of them were spot reclaims (`JobExecution.interruption`); the rest lost their
+    /// host otherwise.
+    pub spot_reclaims: i64,
+    /// The time those executions ran before they were lost, in seconds (0 for one whose start AWS
+    /// did not report).
+    pub lost_seconds: f64,
+}
+
 /// How a single-job run executed (`RunDetail.single_job`): its queue-class, the instance type its
 /// size was taken from, and the vCPUs and memory its one job was given.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1062,6 +1207,14 @@ pub struct RunDetail {
     /// The host the coordinator ran on, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordinator_host: Option<Host>,
+    /// Each time AWS Batch ran the coordinator's job on a host, in order. More than one when Batch
+    /// ran it again after losing a host. Omitted when none is recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coordinator_executions: Vec<JobExecution>,
+    /// The run's executions that lost their host, over every attempt of every task and the
+    /// coordinator. Absent when none did (or none is recorded).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interruptions: Option<RunInterruptions>,
     /// The engine session the run executed as — for Nextflow, the key of its resume cache under
     /// `<output_prefix>.nextflow/cache/<engine_session_id>/`. Absent for Snakemake runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
