@@ -141,10 +141,12 @@ set -euo pipefail
 #   BIFFIX_OOM_SCORE_ADJ_FILE (where a single-job task writes its oom score,
 #   /proc/self/oom_score_adj).
 #
-# Logs (both modes): the engine's log, a Nextflow trace the pipeline itself turned on, the engine
-# config biffix generated, failed local tasks' files and, for a failed run, failure.txt, at
-# s3://$BIFFIX_PROJECT_BUCKET/${BIFFIX_RUN_PREFIX}logs/, while the engine runs and at exit
-# (lib/logs.sh).
+# Logs (both modes): engine logs/configs, failed local task files, failure.txt, and combined
+# coordinator output at s3://$BIFFIX_PROJECT_BUCKET/${BIFFIX_RUN_PREFIX}logs/ (lib/logs.sh).
+# Coordinator segments: coordinator/attempt-<AWS_BATCH_JOB_ATTEMPT>/<sequence>.log, at most 4 MiB
+# each, sealed after 60 s or EOF, uploaded conditionally once then removed locally. Keep at most 64
+# sealed segments locally (oldest drop when full), no total S3 cap. Capture covers setup through
+# events archival, not the final uploader, replay or cleanup. Best-effort: never changes exit status.
 
 WORK="${BIFFIX_WORK_ROOT:-/work}"
 LIB_DIR="${BIFFIX_LIB_DIR:-/usr/local/lib/biffix}"
@@ -166,12 +168,47 @@ LIB_DIR="${BIFFIX_LIB_DIR:-/usr/local/lib/biffix}"
 . "$LIB_DIR/events.sh"
 # shellcheck source=lib/logs.sh
 . "$LIB_DIR/logs.sh"
+# shellcheck source=lib/capture.sh
+. "$LIB_DIR/capture.sh"
 # shellcheck source=lib/single_job.sh
 . "$LIB_DIR/single_job.sh"
 # shellcheck source=lib/snakemake.sh
 . "$LIB_DIR/snakemake.sh"
 # shellcheck source=lib/nextflow.sh
 . "$LIB_DIR/nextflow.sh"
+
+# One EXIT owner, including failures before an engine is launched. Save the outcome and latch
+# finalization in one command: a signal must not slip between those two operations.
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
+finalize_coordinator() {
+  COORDINATOR_EXIT_STATUS=$? FINALIZING=1
+  trap - EXIT
+  set +e
+  archive_coordinator_logs
+  if [ "${COORDINATOR_SCRATCH_PREPARED:-0}" = 1 ]; then
+    clear_scratch_at_exit
+  fi
+  if [ -n "${CAPTURE_DIR:-}" ] && [ -n "${CAPTURE_PID:-}" ]; then
+    local tmp
+    tmp=$(canonical_path /tmp)
+    case "$CAPTURE_DIR" in
+      "$tmp"/biffix-coordinator-logs.*) rm -rf -- "$CAPTURE_DIR" ;;
+    esac
+  fi
+  exit "$COORDINATOR_EXIT_STATUS"
+}
+
+FINALIZING=0
+COORDINATOR_SCRATCH_PREPARED=0
+COORDINATOR_LOGS_ARCHIVED=0
+# These are owned by this invocation, never accepted from a runtime's environment.
+unset CAPTURE_DIR CAPTURE_PID CAPTURE_FINISHED ORIG_STDOUT_FD ORIG_STDERR_FD RUN_LOGS_STATE_FILE
+start_coordinator_capture
+trap finalize_coordinator EXIT
+install_signal_traps
+if [ -n "${CAPTURE_DIR:-}" ]; then
+  RUN_LOGS_STATE_FILE="$CAPTURE_DIR/.biffix-logs-uploaded.json"
+fi
 
 # The contract's required variables: a run without one is misconfigured (EX_CONFIG, 78).
 require_env BIFFIX_RUN_ID
@@ -218,7 +255,6 @@ RUNTIME_ROOT="${BIFFIX_RUNTIME_ROOT:-/opt/biffix}"
 # A single-job run's work root is elsewhere (lib/single_job.sh), and is checked and cleared
 # before the runtime check writes anything under it (Nextflow's NXF_HOME).
 select_execution
-install_signal_traps
 prepare_scratch
 select_runtime
 # The engine's settings, and a runtime layer that cannot run this run (one without biffix's
@@ -236,6 +272,8 @@ mkdir -p "$SRC"
 cd "$WORK"
 
 echo "biffix-coordinator: run=$BIFFIX_RUN_ID engine=$ENGINE execution=$EXECUTION" >&2
+# Staging and conversion can be long: archive even before an engine is ready to run.
+start_logs_sync
 
 stage_workflow_source
 materialize_params
@@ -271,8 +309,8 @@ SM_META_FINGERPRINT="$WORK/.biffix-metadata-synced"
 # here is traced (no `set -x`): the job log would carry the run's parameters; run_engine logs the
 # engine's command line, which names only files.
 rc=0
-# Each engine starts the periodic logs upload (start_logs_sync) just before it runs the engine,
-# once nothing can exit the script before stop_logs_sync below.
+# Each engine restarts the periodic loop with its final settings (local work dir included) and
+# initializes the separate engine-output copy used by failure.txt.
 case "$ENGINE" in
   snakemake) run_snakemake ;;
   nextflow)  run_nextflow ;;
@@ -284,6 +322,6 @@ stop_logs_sync
 # own try/except) can never abort the script under `set -e` and overwrite the engine's real exit
 # code. The logs come before the replay, which may take the rest of a cancel's grace.
 upload_events_jsonl || true
-upload_run_logs final || true
+archive_coordinator_logs
 replay_events_jsonl || true
 exit "$rc"

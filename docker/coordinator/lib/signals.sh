@@ -3,11 +3,12 @@
 # as a child that a cancel reaches. Sourced by entrypoint.sh; defines functions only.
 #   Reads: LIB_DIR, BIFFIX_STOP_GRACE_SECS (how long a stopping child has before it is killed;
 #          default 20), ENGINE_OUTPUT (a file the engine's output is also copied to, when set),
-#          SJ_LOCK_FD (a single-job run's scratch lock, lib/single_job.sh, which run_in closes).
+#          SJ_LOCK_FD (a single-job run's scratch lock, lib/single_job.sh, which run_in closes),
+#          FINALIZING (the EXIT owner), ORIG_STDOUT_FD and ORIG_STDERR_FD (background diagnostics).
 #   Sets:  ENGINE_PID, ENGINE_STOP_SIGNAL, CHILD_WHAT and GOT_SIGNAL (the running child),
 #          ENGINE_KILLER (its stop deadline), ENGINE_STOPPED_BY (the status a signal ends the run
 #          with) and STOPPED_AT (the script's SECONDS when that signal came), ENGINE_DONE (the
-#          engine has exited), rc (the run's exit status).
+#          engine has exited), rc (the run's exit status), COORDINATOR_SIGNAL_SEEN (cleanup latch).
 
 # Cancel (Batch TerminateJob) and the job timeout reach this script as SIGTERM (then SIGKILL after
 # the stop timeout, 30 s): as PID 1 of a tasks run's job, and in a single-job run's through Docker's
@@ -32,8 +33,10 @@
 # the run still exits with the engine's own status.
 # shellcheck disable=SC2329 # invoked by the traps below
 on_signal() {
+  # shellcheck disable=SC2034 # skip scratch cleanup even when the workflow outcome is preserved
+  COORDINATOR_SIGNAL_SEEN=1
   echo "biffix-coordinator: received SIG$1" >&2
-  if [ "$ENGINE_DONE" = 1 ]; then
+  if [ "${FINALIZING:-0}" = 1 ] || [ "${ENGINE_DONE:-0}" = 1 ]; then
     return 0
   fi
   if [ -z "$ENGINE_STOPPED_BY" ]; then
@@ -51,10 +54,14 @@ on_signal() {
     # The sleep holds none of the job's output open: a killer stopped early (the child exited in
     # time) leaves nothing behind that a reader of that output would wait on.
     (
+      # Stdio already points at the original job log. Do not let an orphaned sleep retain
+      # the saved duplicates after this killer shell is stopped early.
+      [ -z "${ORIG_STDOUT_FD:-}" ] || exec {ORIG_STDOUT_FD}>&-
+      [ -z "${ORIG_STDERR_FD:-}" ] || exec {ORIG_STDERR_FD}>&-
       sleep "$grace" >/dev/null 2>&1
       echo "biffix-coordinator: $what did not stop within ${grace}s; killing it" >&2
       kill -KILL "$pid" 2>/dev/null
-    ) &
+    ) 1>&"${ORIG_STDOUT_FD:-1}" 2>&"${ORIG_STDERR_FD:-2}" &
     ENGINE_KILLER=$!
   fi
 }
@@ -70,9 +77,11 @@ install_signal_traps() {
   STOPPED_AT=""
   ENGINE_DONE=0
   GOT_SIGNAL=0
-  require_count BIFFIX_STOP_GRACE_SECS "${BIFFIX_STOP_GRACE_SECS:-20}"
+  # shellcheck disable=SC2034 # consumed by scratch cleanup, including signals during finalization
+  COORDINATOR_SIGNAL_SEEN=0
   trap 'on_signal TERM 143' TERM
   trap 'on_signal INT 130' INT
+  require_count BIFFIX_STOP_GRACE_SECS "${BIFFIX_STOP_GRACE_SECS:-20}"
 }
 
 # run_in <dir> <command…>: run the command from <dir> (exec, so run_engine's signal goes to it).

@@ -89,6 +89,8 @@ COPY docker/coordinator/lib/common.sh \
      docker/coordinator/lib/single_job.py \
      docker/coordinator/lib/run_logs.py \
      docker/coordinator/lib/capped_tee.py \
+     docker/coordinator/lib/segment_tee.py \
+     docker/coordinator/lib/capture.sh \
      docker/coordinator/lib/s3_uri.py \
      /usr/local/lib/biffix/
 RUN chmod +x /usr/local/bin/biffix-coordinator

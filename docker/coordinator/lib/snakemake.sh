@@ -3,7 +3,8 @@
 #   Reads: WORK, SRC, CONFIG, STORE, LIB_DIR, SM_META_URI, SM_META_FINGERPRINT, the run's BIFFIX_*
 #          env, the resolved SNAKEMAKE_AWS_BATCH_JOB_QUEUE / _ROLE, BIFFIX_JOB_DEFINITION_MAP_FILE
 #          and QUEUE_SELECTORS_FILE; for a single-job run (lib/single_job.sh) SCRATCH, SJ_CPUS,
-#          SJ_TASK_MEMORY_MIB, SJ_IMAGES, SJ_BIN and BIFFIX_DRY_RUN.
+#          SJ_TASK_MEMORY_MIB, SJ_IMAGES, SJ_BIN and BIFFIX_DRY_RUN; ORIG_STDOUT_FD and
+#          ORIG_STDERR_FD (background diagnostics).
 #   Sets:  rc (Snakemake's exit status), SNAKEMAKE_AWS_BATCH_JOB_TAGS, SNAKEMAKE_OUTPUT_CACHE,
 #          SM_META_RESTORE_FAILED; for a single-job run PATH and XDG_CACHE_HOME.
 
@@ -51,7 +52,7 @@ start_metadata_sync() {
       sleeper=""
       sync_snakemake_metadata
     done
-  ) &
+  ) 1>&"${ORIG_STDOUT_FD:-1}" 2>&"${ORIG_STDERR_FD:-2}" &
   SYNC_PID=$!
 }
 stop_metadata_sync() {
@@ -166,6 +167,7 @@ run_snakemake() {
   [ -z "${BIFFIX_TARGET:-}" ] || ARGS+=("$BIFFIX_TARGET")
   # The command line, for the run's logs (lib/logs.sh): it names files, not their contents.
   printf '%s\n' "${ARGS[@]}" > "$WORK/snakemake.args"
+  init_engine_output
   start_logs_sync
   restore_snakemake_metadata
   start_metadata_sync
