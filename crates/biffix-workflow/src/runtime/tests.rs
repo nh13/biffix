@@ -255,7 +255,7 @@ fn the_runtime_names_its_own_plugin_versions() {
     let nf = recipe("nextflow", "25.10.4").unwrap();
     assert_eq!(nf.runtime_plugin_version("nf-amazon"), Some("3.4.4"));
     assert_eq!(nf.runtime_plugin_version("nf-cloudcache"), Some("0.5.0"));
-    assert_eq!(nf.runtime_plugin_version("nf-biffix"), Some("0.8.0"));
+    assert_eq!(nf.runtime_plugin_version("nf-biffix"), Some("0.8.1"));
     assert_eq!(nf.runtime_plugin_version("nf-schema"), None);
     let sm = recipe("snakemake", "9.27.0").unwrap();
     assert_eq!(sm.runtime_plugin_version("nf-biffix"), None);
@@ -505,7 +505,7 @@ fn the_build_env_carries_the_key_and_every_pin() {
         ("BIFFIX_RT_ENGINE", "nextflow".into()),
         ("BIFFIX_RT_ENGINE_VERSION", "25.10.4".into()),
         ("BIFFIX_RT_COORDINATOR_CONTRACT", "0".into()),
-        ("BIFFIX_RT_NF_BIFFIX_VERSION", "0.8.0".into()),
+        ("BIFFIX_RT_NF_BIFFIX_VERSION", "0.8.1".into()),
         (
             "BIFFIX_RT_NF_SHA256",
             "60db869a7618783e3ee60183a2b0c6c50ffc67221eabec60800b904991786aaa".into(),
