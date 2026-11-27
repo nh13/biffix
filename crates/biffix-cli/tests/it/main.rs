@@ -10,3 +10,4 @@ mod inspect_memory;
 mod login;
 mod properties;
 mod refusals;
+mod runs_logs;

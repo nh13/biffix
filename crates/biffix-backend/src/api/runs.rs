@@ -227,11 +227,12 @@ pub(crate) async fn coordinator_logs(
     Query(q): Query<CoordinatorLogsQuery>,
 ) -> Result<Json<LogPage>, ApiError> {
     let detail = load_visible_run(&state, &actor, &run_id).await?;
-    // Coordinators always log to the shared group.
+    // Coordinators always log to the shared group; engine completion can precede their cleanup.
+    let source = crate::runs::logs::coordinator_source(&state, &detail).await?;
     let page = crate::runs::logs::log_page(
         &state,
         None,
-        detail.coordinator_log_stream,
+        source,
         q.cursor.as_deref(),
         q.direction.as_deref(),
         q.limit,

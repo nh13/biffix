@@ -766,7 +766,9 @@ async fn follow_with(
                 }
             }
             Err(e) => {
-                if let Some(stop) = poll_failed(run_id, e, &mut transient) {
+                if let Some(stop) =
+                    poll_failed(run_id, e, &mut transient, &format!("biffix runs follow {run_id}"))
+                {
                     return Err(stop);
                 }
             }
@@ -791,8 +793,13 @@ fn say_state(run_id: &str, state: &str, last_state: &mut String, mode: OutputMod
 /// `None` to poll again, or the error to stop with. A transient blip is polled through (within
 /// [`TRANSIENT_BUDGET`]), not reported as the run failing; the first says so. Once the budget is
 /// spent the run is likely still going, so the error says how to pick it up again. A refusal is
-/// returned as it is.
-fn poll_failed(run_id: &str, e: CliError, transient: &mut u32) -> Option<CliError> {
+/// returned as it is. `resume` is the caller's command to continue the run or log follow.
+pub(super) fn poll_failed(
+    run_id: &str,
+    e: CliError,
+    transient: &mut u32,
+    resume: &str,
+) -> Option<CliError> {
     if !e.is_transient() {
         return Some(e);
     }
@@ -806,7 +813,7 @@ fn poll_failed(run_id: &str, e: CliError, transient: &mut u32) -> Option<CliErro
     Some(e.map_message(|m| {
         format!(
             "stopped following {run_id}, which may still be running: {m}; follow it again with \
-             `biffix runs follow {run_id}`"
+             `{resume}`"
         )
     }))
 }
@@ -1009,12 +1016,21 @@ mod tests {
     fn a_follow_that_runs_out_of_retries_says_how_to_follow_again() {
         let mut transient = 0;
         for _ in 0..TRANSIENT_BUDGET {
-            assert!(
-                poll_failed("run-x", CliError::Unavailable("503".into()), &mut transient).is_none()
-            );
+            assert!(poll_failed(
+                "run-x",
+                CliError::Unavailable("503".into()),
+                &mut transient,
+                "biffix runs follow run-x"
+            )
+            .is_none());
         }
-        let err =
-            poll_failed("run-x", CliError::Unavailable("503".into()), &mut transient).unwrap();
+        let err = poll_failed(
+            "run-x",
+            CliError::Unavailable("503".into()),
+            &mut transient,
+            "biffix runs follow run-x",
+        )
+        .unwrap();
         assert!(
             matches!(&err, CliError::Unavailable(m)
                 if m.contains("may still be running") && m.contains("biffix runs follow run-x")),
@@ -1022,7 +1038,12 @@ mod tests {
         );
         // A refusal stops at once, as it is.
         let mut transient = 0;
-        let err = poll_failed("run-x", CliError::NotFound("unknown run".into()), &mut transient);
+        let err = poll_failed(
+            "run-x",
+            CliError::NotFound("unknown run".into()),
+            &mut transient,
+            "biffix runs follow run-x",
+        );
         assert!(matches!(err, Some(CliError::NotFound(m)) if m == "unknown run"));
     }
 

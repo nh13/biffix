@@ -120,3 +120,23 @@ fn git_env() -> Vec<std::ffi::OsString> {
         .filter(|key| key.to_string_lossy().starts_with("GIT_"))
         .collect()
 }
+
+/// A credential for `base` under `profile`, unexpired, in `home`'s credential store.
+pub(crate) fn log_in(home: &Path, profile: &str, base: &str) {
+    let dir = home.join(".config").join("biffix");
+    std::fs::create_dir_all(&dir).unwrap();
+    let creds = serde_json::json!({"profiles": {profile: {
+        "access_token": "tok", "expires_at_unix": u64::MAX / 2, "subject": "user-1",
+        "email": "bio@lab.example.org", "api_base_url": base,
+    }}});
+    std::fs::write(dir.join("credentials.json"), creds.to_string()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            dir.join("credentials.json"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
+}

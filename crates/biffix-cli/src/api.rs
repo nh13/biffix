@@ -132,6 +132,45 @@ impl ApiClient {
         Ok(discovered)
     }
 
+    /// Read the coordinator's log forward, using an opaque cursor from its preceding page.
+    pub(crate) async fn coordinator_logs(
+        &self,
+        run: &str,
+        cursor: Option<&str>,
+    ) -> CliResult<biffix_api::LogPage> {
+        let mut path = format!(
+            "/runs/{}/coordinator-logs?direction=forward&limit=1000",
+            urlencoding::encode(run)
+        );
+        if let Some(cursor) = cursor {
+            path.push_str("&cursor=");
+            path.push_str(&urlencoding::encode(cursor));
+        }
+        self.get_json(&path).await
+    }
+
+    /// Read a task's display attempt without exposing its key in request URLs/access logs.
+    pub(crate) async fn task_logs(
+        &self,
+        run: &str,
+        task: &str,
+        cursor: Option<&str>,
+    ) -> CliResult<biffix_api::LogPage> {
+        self.post_json(
+            &format!("/runs/{}/task-logs/query", urlencoding::encode(run)),
+            &biffix_api::TaskLogsRequest {
+                task: biffix_core::ids::TaskKey::new(task),
+                cursor: cursor.map(String::from),
+                direction: Some("forward".into()),
+                limit: Some(1000),
+                job: None,
+                execution: None,
+            },
+            Retry::Always,
+        )
+        .await
+    }
+
     /// GET a JSON resource.
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> CliResult<T> {
         self.request_json::<(), T>(reqwest::Method::GET, path, None, Retry::Always).await
@@ -805,5 +844,37 @@ mod tests {
         let _ = client.get_workflow("git123:hash-_.~").await;
         let _ = client.get_run("a b/c?d").await;
         assert_eq!(*seen.lock().unwrap(), ["/workflows/git123%3Ahash-_.~", "/runs/a%20b%2Fc%3Fd"]);
+    }
+    #[tokio::test]
+    async fn log_queries_encode_only_run_and_cursor_in_urls_and_keep_task_in_body() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = seen.clone();
+        let app = axum::Router::new().fallback(move |req: axum::extract::Request| {
+            let record = record.clone();
+            async move {
+                assert_eq!(req.headers()["authorization"], "Bearer tok");
+                let target = req.uri().to_string();
+                let method = req.method().to_string();
+                let bytes = axum::body::to_bytes(req.into_body(), 4096).await.unwrap();
+                let body = if bytes.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_slice(&bytes).unwrap()
+                };
+                record.lock().unwrap().push((method, target, body));
+                axum::Json(serde_json::json!({"events":[],"ended":false}))
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client =
+            ApiClient::new(reqwest::Client::new(), &base, Secret::new("tok".into()), false);
+        client.coordinator_logs("a b/c?d", Some("f/next:a+b")).await.unwrap();
+        client.task_logs("r1", "sample=a/b?c&d", Some("f/next:a+b")).await.unwrap();
+        assert_eq!(*seen.lock().unwrap(),vec![
+            ("GET".into(),"/runs/a%20b%2Fc%3Fd/coordinator-logs?direction=forward&limit=1000&cursor=f%2Fnext%3Aa%2Bb".into(),serde_json::Value::Null),
+            ("POST".into(),"/runs/r1/task-logs/query".into(),serde_json::json!({"task":"sample=a/b?c&d","cursor":"f/next:a+b","direction":"forward","limit":1000})),
+        ]);
     }
 }

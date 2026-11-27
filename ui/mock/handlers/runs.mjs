@@ -1031,7 +1031,7 @@ export function listTasks(c) {
  * same token back, which is how CloudWatch says "caught up" (forward) and "start of stream"
  * (backward).
  */
-function logPage(stream, who, query, send) {
+function logPage(stream, who, query, send, ended) {
   const direction = query.get('direction');
   if (direction != null && direction !== 'forward' && direction !== 'backward')
     return send(400, `unknown direction ${JSON.stringify(direction)}: \`forward\` or \`backward\``);
@@ -1041,6 +1041,7 @@ function logPage(stream, who, query, send) {
       events,
       next_forward_token: forward,
       next_backward_token: backward,
+      ended,
     });
   if (!stream) return page([], null, null);
   const cursor = query.get('cursor');
@@ -1083,11 +1084,13 @@ function taskLogs(c) {
       .flatMap((v) => v.executions ?? [])
       .find((e) => e.execution_id === execution);
     if (!x) return send(404);
-    return logPage(x.log_stream ?? null, key, query, send);
+    return logPage(x.log_stream ?? null, key, query, send, x.ended);
   }
   // A queued task's job has no host yet, so no stream.
   const ranOnBatch = t.log_stream != null || (t.batch_job_id != null && t.state !== 'queued');
-  logPage(ranOnBatch ? (t.log_stream ?? `mock/${key}`) : null, key, query, send);
+  const ended = ['succeeded', 'failed', 'cancelled'].includes(t.state);
+  const attemptEnded = job != null && job !== t.batch_job_id ? true : ended;
+  logPage(ranOnBatch ? (t.log_stream ?? `mock/${key}`) : null, key, query, send, attemptEnded);
 }
 
 /** `GET /runs/{run_id}/coordinator-logs`: the run's coordinator's log, which has no stream until
@@ -1096,7 +1099,17 @@ function coordinatorLogs(c) {
   const r = namedRun(c);
   if (!r) return;
   const started = r.coordinator_job_id && !['preparing_images', 'submitted'].includes(r.state);
-  logPage(started ? `mock/coordinator/${r.run_id}` : null, 'coordinator', c.query, c.send);
+  const current = r.coordinator_executions?.at(-1);
+  const stream = current?.log_stream ?? (started ? `mock/coordinator/${r.run_id}` : null);
+  const ended =
+    TERMINAL.has(r.state) &&
+    (current
+      ? current.log_stream != null &&
+        current.ended &&
+        current.exit_code === 0 &&
+        current.interruption == null
+      : !r.coordinator_job_id);
+  logPage(stream, 'coordinator', c.query, c.send, ended);
 }
 
 /** `POST /runs/{run_id}/attempts/query`: a task's tries. */
