@@ -77,5 +77,5 @@ pub(super) fn nextflow(release: &str) -> Option<NextflowPins> {
         ),
         _ => return None,
     };
-    Some(NextflowPins { nf_biffix_version: "0.8.0".into(), release, workflow_plugins: Vec::new() })
+    Some(NextflowPins { nf_biffix_version: "0.8.1".into(), release, workflow_plugins: Vec::new() })
 }
