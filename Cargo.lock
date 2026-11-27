@@ -1064,7 +1064,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "biffix"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1096,7 +1096,7 @@ dependencies = [
 
 [[package]]
 name = "biffix-api"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "biffix-core",
  "biffix-workflow",
@@ -1110,7 +1110,7 @@ dependencies = [
 
 [[package]]
 name = "biffix-backend"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -1158,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "biffix-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "biffix-core",
  "chrono",
@@ -1176,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "biffix-db"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aws-config",
  "aws-sdk-batch",
@@ -1197,7 +1197,7 @@ dependencies = [
 
 [[package]]
 name = "biffix-ingest"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aws-config",
  "aws-sdk-batch",
@@ -1220,7 +1220,7 @@ dependencies = [
 
 [[package]]
 name = "biffix-workflow"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "biffix-core",
  "hex",
@@ -4977,7 +4977,7 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xtask"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "biffix-api",
  "biffix-core",
