@@ -187,6 +187,8 @@ pub struct FakeCloud {
     /// The instance types `describe_instance_types` knows (others are unknown to EC2): by default
     /// [`fake_instance_types`].
     pub instance_types: Mutex<BTreeMap<String, crate::aws::ec2::InstanceTypeInfo>>,
+    /// The next EC2 instance-type description fails with this error, when set.
+    pub fail_describe_instance_types: Mutex<Option<AwsError>>,
 }
 
 /// The instance types a [`FakeCloud`] knows by default, at EC2's sizes: plain x86_64 types, with no
@@ -311,6 +313,7 @@ impl FakeCloud {
             build_event_asks: Mutex::new(Vec::new()),
             fail_build_event: std::sync::atomic::AtomicBool::new(false),
             instance_types: Mutex::new(fake_instance_types()),
+            fail_describe_instance_types: Mutex::new(None),
         }
     }
 
@@ -424,6 +427,9 @@ impl crate::aws::ec2::InstanceTypes for FakeCloud {
         &self,
         instance_types: &[String],
     ) -> Result<BTreeMap<String, crate::aws::ec2::InstanceTypeInfo>, AwsError> {
+        if let Some(error) = self.fail_describe_instance_types.lock().unwrap().take() {
+            return Err(error);
+        }
         let known = self.instance_types.lock().unwrap();
         Ok(instance_types
             .iter()

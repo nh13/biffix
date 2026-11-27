@@ -493,6 +493,13 @@ earlier processes may already have run and published outputs. Either way no imag
 the run runs. Each task's image is recorded, as in a run of one job per task (a task that runs
 without one records none).
 
+Task images must support the host's architecture. biffix rejects a run at submit when a runnable
+image's recorded architectures exclude that host. An incompatible image discovered while the run
+waits in `preparing_images` fails the run before launch. Older image records without architecture
+metadata still reach conversion, where biffix checks each SIF before starting the engine. It also
+refuses Apptainer's native-architecture fallback when the image contains no recognizable binary.
+Choose a compatible image and re-register or resubmit; biffix does not emulate another architecture.
+
 To allow it, add `single_job:` to the version's `biffix.yaml` (and register a new version). A run
 then opts in with `--single-job` (`single_job` in `POST /runs`) and gets a whole host of one of the
 deployment's single-job queue-classes:

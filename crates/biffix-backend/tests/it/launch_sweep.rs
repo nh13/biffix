@@ -219,6 +219,16 @@ impl Harness {
         artifacts.insert(derived.content_key.clone(), derived);
     }
 
+    /// Change the prepared task image's architecture metadata without changing its base.
+    fn prepared_architectures(&self, architectures: &[&str]) {
+        let image = self.image();
+        let runtime_key =
+            self.registry.versions.lock().unwrap()["abc:hash:0"].version.runtime_key.clone();
+        let derived = testing::fake_derived_artifact(&image, &runtime_key);
+        self.registry.artifacts.lock().unwrap().get_mut(&derived.content_key).unwrap().archs =
+            architectures.iter().map(ToString::to_string).collect();
+    }
+
     fn parked(&self) -> bool {
         self.store.pending.lock().unwrap().contains_key(self.run_id.as_str())
     }
@@ -439,6 +449,51 @@ async fn a_parked_single_job_run_whose_queue_class_has_an_undescribed_type_fails
     assert!(h.cloud.launched.lock().unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn a_parked_single_job_run_with_ambiguous_host_architecture_fails() {
+    let h = parked_with(None, true).await;
+    h.images_ready();
+    h.cloud.instance_types.lock().unwrap().get_mut("c6id.8xlarge").unwrap().architectures =
+        vec!["x86_64".into(), "arm64".into()];
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+    let (reason, _) = h.failure().unwrap();
+    assert!(reason.contains("c6id.8xlarge") && reason.contains("architecture"), "{reason}");
+    assert!(h.cloud.launched.lock().unwrap().is_empty());
+    assert!(!h.parked());
+}
+
+#[tokio::test]
+async fn a_parked_single_job_run_rejects_an_incompatible_prepared_image() {
+    let h = parked_with(None, true).await;
+    h.images_ready();
+    let image = h.image();
+    let runtime_key = h.registry.versions.lock().unwrap()["abc:hash:0"].version.runtime_key.clone();
+    let derived = testing::fake_derived_artifact(&image, &runtime_key);
+    h.registry.artifacts.lock().unwrap().get_mut(&derived.content_key).unwrap().archs =
+        vec!["arm64".into()];
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+    let (reason, _) = h.failure().unwrap();
+    assert!(reason.contains("amd64") && reason.contains(&derived.image), "{reason}");
+    assert!(h.cloud.launched.lock().unwrap().is_empty());
+    assert!(!h.parked());
+}
+
+#[tokio::test]
+async fn a_single_job_architecture_recheck_retries_a_transient_ec2_error() {
+    let h = parked_with(None, true).await;
+    h.images_ready();
+    *h.cloud.fail_describe_instance_types.lock().unwrap() =
+        Some(AwsError::Ec2("temporarily unavailable".into()));
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!((report.waiting, report.failed, report.launched), (1, 0, 0), "{report:?}");
+    assert!(h.parked());
+    assert!(h.failure().is_none());
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.launched, 1, "{report:?}");
+}
+
 /// A parked single-job run whose project lost its single-job template (a deploy removed the
 /// project's single-job queue-classes while it waited) fails at launch, before any variant.
 #[tokio::test]
@@ -459,7 +514,7 @@ type Refusal = (fn(&mut Harness), &'static str);
 /// Every refusal a deploy change can make of a parked run after a launch of it whose answer was
 /// lost: the run's queue-class removed, given a host its job no longer fills or one EC2 does not
 /// describe, its project's single-job template removed, or its version deleted.
-const REFUSALS: [Refusal; 5] = [
+const REFUSALS: [Refusal; 6] = [
     (|h| h.state.deploy.single_job_queues.clear(), "`single` is no longer configured"),
     (
         |h| {
@@ -480,6 +535,7 @@ const REFUSALS: [Refusal; 5] = [
         "has no single-job job definition",
     ),
     (|h| h.registry.versions.lock().unwrap().clear(), "no longer exists"),
+    (|h| h.prepared_architectures(&["arm64"]), "incompatible task images"),
 ];
 
 /// A parked single-job run whose launch's answer was lost before Batch listed the job it made: it

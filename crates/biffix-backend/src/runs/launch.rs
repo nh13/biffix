@@ -988,7 +988,24 @@ async fn launch_ready(
     // A deploy may also have given the queue-class hosts the run's whole-host job no longer fills.
     if let Some(single) = &plan.single_job {
         match crate::runs::single_job::recheck(state, single).await {
-            Ok(Ok(())) => {}
+            Ok(Ok(architecture)) => {
+                let worker = crate::aws::batch::worker_image(
+                    &version.image_digest,
+                    crate::runs::submit::worker_image_repo_uri(&version).as_deref(),
+                    &state.deploy.worker_image_repo,
+                    version.engine,
+                    "",
+                    true,
+                );
+                if let Err(reason) = crate::runs::single_job::check_images(
+                    architecture,
+                    &images,
+                    submit_images,
+                    worker.as_deref(),
+                ) {
+                    return refused(state, run_id, plan, Stage::Launch, &reason).await;
+                }
+            }
             Ok(Err(reason)) => return refused(state, run_id, plan, Stage::Launch, &reason).await,
             Err(e) => return wait(format!("describing the single-job hosts failed: {e}")),
         }

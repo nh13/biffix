@@ -124,12 +124,27 @@ def test_login_credentials_only_reach_matching_registry_pulls(tmp_path: Path) ->
     python_executable(
         apptainer,
         "import json, os, pathlib, sys\n"
-        "image = sys.argv[3]\n"
         "credentials = {k: v for k, v in os.environ.items() "
         "if 'DOCKER_USERNAME' in k or 'DOCKER_PASSWORD' in k}\n"
+        "if sys.argv[1:3] == ['sif', 'header']:\n"
+        "    target = pathlib.Path(sys.argv[3])\n"
+        "    assert target.is_file()\n"
+        "    assert pathlib.Path(os.environ['RECORDS'], 'pulled-' + target.name)"
+        ".read_text() == str(target)\n"
+        "    pathlib.Path(os.environ['RECORDS'], 'target-' + target.name)"
+        ".write_text(str(target))\n"
+        "    pathlib.Path(os.environ['RECORDS'], 'inspect-' + pathlib.Path(sys.argv[3]).name)"
+        ".write_text(json.dumps(credentials))\n"
+        "    arch = 'amd64' if os.uname().machine == 'x86_64' else 'arm64'\n"
+        "    print('Primary Architecture: ' + arch)\n"
+        "    sys.exit(0)\n"
+        "assert sys.argv[1:3] == ['pull', '--disable-cache']\n"
+        "image = sys.argv[4]\n"
         "pathlib.Path(os.environ['RECORDS'], image.rsplit('/', 1)[0].replace('/', '_'))"
         ".write_text(json.dumps(credentials))\n"
-        "pathlib.Path(sys.argv[2]).touch()\n",
+        "pathlib.Path(sys.argv[3]).touch()\n"
+        "pathlib.Path(os.environ['RECORDS'], 'pulled-' + pathlib.Path(sys.argv[3]).name)"
+        ".write_text(sys.argv[3])\n",
     )
     records = tmp_path / "records"
     records.mkdir()
@@ -168,6 +183,12 @@ def test_login_credentials_only_reach_matching_registry_pulls(tmp_path: Path) ->
         "APPTAINER_DOCKER_PASSWORD": "private-ecr-token",
     }
     assert json.loads((records / "docker:__quay.io").read_text()) == {}
+    inspected = list(records.glob("inspect-*"))
+    assert len(inspected) == 2
+    assert all(json.loads(path.read_text()) == {} for path in inspected)
+    pulled_paths = sorted(path.read_text() for path in records.glob("pulled-*"))
+    inspected_paths = sorted(path.read_text() for path in records.glob("target-*"))
+    assert inspected_paths == pulled_paths
     output = result.stdout + result.stderr + "".join(p.read_text() for p in logs.iterdir())
     assert "private-ecr-token" not in output
     assert "inherited-token" not in output
@@ -331,7 +352,7 @@ def test_a_failed_pull_stops_another_pull_s_children(tmp_path: Path) -> None:
     apptainer = tmp_path / "apptainer"
     apptainer.write_text(
         "#!/bin/sh\n"
-        'case "$3" in\n'
+        'case "$4" in\n'
         '  *slow*) echo $$ > "$PIDFILE.pgid.tmp"; mv "$PIDFILE.pgid.tmp" "$PIDFILE.pgid"\n'
         '    sleep 30 & echo $! > "$PIDFILE.tmp"; mv "$PIDFILE.tmp" "$PIDFILE"; wait ;;\n'
         '  *) while [ ! -f "$PIDFILE" ]; do sleep 0.01; done; exit 1 ;;\n'
@@ -394,7 +415,7 @@ def test_a_failed_pull_kills_another_pull_s_child_that_ignores_sigterm(tmp_path:
     apptainer = tmp_path / "apptainer"
     apptainer.write_text(
         "#!/bin/sh\n"
-        'case "$3" in\n'
+        'case "$4" in\n'
         # The child publishes its pid once its trap is in place, so the failure's SIGTERM can
         # only reach it ignored.
         '  *slow*) sh -c \'trap "" TERM; echo $$ > "$PIDFILE.tmp"\n'
@@ -551,7 +572,7 @@ def test_a_failed_pull_kills_another_pull_whose_apptainer_ignores_sigterm(tmp_pa
     apptainer = tmp_path / "apptainer"
     apptainer.write_text(
         "#!/bin/sh\n"
-        'case "$3" in\n'
+        'case "$4" in\n'
         '  *slow*) trap \'\' TERM; echo $$ > "$PIDFILE.tmp"; mv "$PIDFILE.tmp" "$PIDFILE"\n'
         "    while :; do sleep 0.1; done ;;\n"
         '  *) while [ ! -f "$PIDFILE" ]; do sleep 0.01; done; exit 1 ;;\n'
@@ -620,7 +641,7 @@ def test_the_main_thread_never_takes_the_conversion_s_lock(
     apptainer = tmp_path / "apptainer"
     apptainer.write_text(
         "#!/bin/sh\n"
-        'case "$3" in\n'
+        'case "$4" in\n'
         # The child publishes its pid once its trap is in place, so the failure's SIGTERM can
         # only reach it ignored.
         '  *slow*) sh -c \'trap "" TERM; echo $$ > "$PIDFILE.tmp"\n'
@@ -695,7 +716,7 @@ def test_a_cancel_after_a_pull_s_wait_still_kills_its_child_that_ignores_sigterm
         'sh -c \'trap "" TERM; echo $$ > "$PIDFILE.tmp"\n'
         '  mv "$PIDFILE.tmp" "$PIDFILE"; while :; do sleep 0.1; done\' &\n'
         'while [ ! -f "$PIDFILE" ]; do sleep 0.01; done\n'
-        'echo image > "$2"\n'
+        'echo image > "$3"\n'
     )
     apptainer.chmod(0o755)
     images, logs = tmp_path / "images", tmp_path / "logs"
@@ -737,7 +758,7 @@ def test_a_pull_whose_log_cannot_be_read_still_fails_the_conversion_and_cleans_u
 
     monkeypatch.setattr(run_logs, "tail_bytes", unreadable)
     apptainer = tmp_path / "apptainer"
-    apptainer.write_text('#!/bin/sh\necho partial > "$2"\nexit 1\n')
+    apptainer.write_text('#!/bin/sh\necho partial > "$3"\nexit 1\n')
     apptainer.chmod(0o755)
     images, logs = tmp_path / "images", tmp_path / "logs"
     images.mkdir()

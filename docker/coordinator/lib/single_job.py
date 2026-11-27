@@ -39,6 +39,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import platform
 import re
 import shutil
 import signal
@@ -118,6 +119,42 @@ def ecr_login(region: str) -> tuple[str, str]:
     return user, password
 
 
+def host_architecture(machine: str) -> str:
+    """Normalize a supported host machine name to its OCI architecture, or refuse it."""
+    names = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+    if machine not in names:
+        raise ValueError(f"unsupported host architecture {machine!r}")
+    return names[machine]
+
+
+def sif_architecture(header: str) -> str:
+    """Read the one primary architecture in Apptainer 1.5.5/1.6.0's SIF header output."""
+    values = [
+        match.group(1)
+        for match in re.finditer(r"^Primary Architecture:([^\r\n]*)$", header, re.MULTILINE)
+    ]
+    if (
+        len(values) != 1
+        or not values[0].startswith((" ", "\t"))
+        or values[0].strip() not in ("amd64", "arm64")
+    ):
+        raise ValueError("SIF header has no unambiguous supported primary architecture")
+    return values[0].strip()
+
+
+def architecture_fallback(log: Path) -> bool:
+    """Scan the complete pull log for Apptainer's native fallback, with bounded memory."""
+    notice = b"Architecture not recognized"
+    overlap = b""
+    with log.open("rb") as stream:
+        while chunk := stream.read(64 * 1024):
+            data = overlap + chunk
+            if notice in data:
+                return True
+            overlap = data[-(len(notice) - 1) :]
+    return False
+
+
 class Conversion:
     """Pulls images into image files, several at once, stopping every pull at the first failure."""
 
@@ -180,49 +217,118 @@ class Conversion:
         dest = self.images_dir / name
         partial = self.images_dir / f".{name}.pulling"
         log = self.log_dir / f"{name}.log"
-        with open(log, "wb") as out:
+        try:
+            with open(log, "wb") as out:
+                with self._lock:
+                    if self.failed.is_set():
+                        return
+                    proc = subprocess.Popen(
+                        # A cached SIF skips architecture recognition and its fallback notice.
+                        [
+                            self.apptainer,
+                            "pull",
+                            "--disable-cache",
+                            str(partial),
+                            f"docker://{image}",
+                        ],
+                        stdout=out,
+                        stderr=subprocess.STDOUT,
+                        stdin=subprocess.DEVNULL,
+                        env=self.env | credentials,
+                        # Its own process group, which fail() stops whole: Apptainer's children
+                        # (mksquashfs) would outlive a signal to the apptainer process alone.
+                        start_new_session=True,
+                    )
+                    self._running.add(proc)
+                produced = False
+                try:
+                    self._supervise(proc)
+                    produced = proc.returncode == 0 and partial.is_file()
+                finally:
+                    status = proc.returncode
+
+                    def why() -> str:
+                        # A missing diagnostic must not cut short process-group cleanup.
+                        try:
+                            tail = tail_bytes(log, FAILURE_TAIL_BYTES).decode(errors="replace")
+                        except OSError as e:
+                            tail = f"(its log {log} could not be read: {e})"
+                        return (
+                            f"could not convert the task image {image} (apptainer pull exited "
+                            f"{status}):\n{tail.rstrip()}"
+                        )
+
+                    # A pull that ended without its image is the conversion's failure, recorded
+                    # while its group is still tracked (so the failure stops it too).
+                    self._retire(proc, None if produced or status is None else why)
+            if not produced or self.failed.is_set():
+                return
+            if architecture_fallback(log):
+                raise ValueError(
+                    "Apptainer did not recognize the image architecture (used native fallback)"
+                )
+            architecture = self.inspect_architecture(image, partial)
+            if self.failed.is_set():
+                return
+            required = host_architecture(platform.machine())
+            if architecture != required:
+                raise ValueError(
+                    f"image architecture {architecture} does not match host {required}"
+                )
+            # Publication must not race a peer's failure or a cancellation.
             with self._lock:
                 if self.failed.is_set():
                     return
+                os.replace(partial, dest)
+            print(f"biffix-coordinator: converted {image} -> {dest}", file=sys.stderr)
+        except (ValueError, OSError) as error:
+            self.fail(f"could not convert the task image {image}: {error}")
+        finally:
+            partial.unlink(missing_ok=True)
+
+    def inspect_architecture(self, image: str, path: Path) -> str:
+        """Inspect a SIF in a supervised group; return empty when conversion has stopped."""
+        from run_logs import tail_bytes
+
+        log = self.log_dir / f"{image_file_name(image)}.sif.log"
+        # Preserve stderr without mixing diagnostics into the header parser or buffering a pipe.
+        with log.open("wb") as diagnostics:
+            with self._lock:
+                if self.failed.is_set():
+                    return ""
                 proc = subprocess.Popen(
-                    [self.apptainer, "pull", str(partial), f"docker://{image}"],
-                    stdout=out,
-                    stderr=subprocess.STDOUT,
+                    [self.apptainer, "sif", "header", str(path)],
                     stdin=subprocess.DEVNULL,
-                    env=self.env | credentials,
-                    # Its own process group, which fail() stops whole: Apptainer's children
-                    # (mksquashfs) would outlive a signal to the apptainer process alone.
+                    stdout=subprocess.PIPE,
+                    stderr=diagnostics,
+                    env=self.env,
                     start_new_session=True,
                 )
                 self._running.add(proc)
-            produced = False
+            architecture = ""
+            reason = None
             try:
-                self._supervise(proc)
-                produced = proc.returncode == 0 and partial.is_file()
+                output = self._supervise(proc)
+                if not self.failed.is_set():
+                    if proc.returncode != 0:
+                        try:
+                            tail = tail_bytes(log, FAILURE_TAIL_BYTES).decode(errors="replace")
+                        except OSError as error:
+                            tail = f"(its log {log} could not be read: {error})"
+                        reason = f"apptainer sif header exited {proc.returncode}:\n{tail.rstrip()}"
+                    else:
+                        try:
+                            architecture = sif_architecture(output.decode())
+                        except (ValueError, UnicodeError) as error:
+                            reason = str(error)
             finally:
-                status = proc.returncode
-
-                def why() -> str:
-                    # Run by _retire under the lock: a read error must not cut short its cleanup
-                    # (the group's kill, the partial image's removal) nor the failure itself.
-                    try:
-                        tail = tail_bytes(log, FAILURE_TAIL_BYTES).decode(errors="replace")
-                    except OSError as e:
-                        tail = f"(its log {log} could not be read: {e})"
-                    tail = tail.rstrip()
-                    return (
-                        f"could not convert the task image {image} (apptainer pull exited "
-                        f"{status}):\n{tail}"
-                    )
-
-                # A pull that ended without its image is the conversion's failure, recorded while
-                # its group is still tracked (so the failure stops it too).
-                self._retire(proc, None if produced or status is None else why)
-        if produced:
-            os.replace(partial, dest)
-            print(f"biffix-coordinator: converted {image} -> {dest}", file=sys.stderr)
-            return
-        partial.unlink(missing_ok=True)
+                self._retire(
+                    proc,
+                    (lambda: f"could not inspect the task image {image}: {reason}")
+                    if reason is not None
+                    else None,
+                )
+        return architecture
 
     def fail(self, why: str) -> None:
         """Record the first failure and stop every pull still running (SIGTERM; each worker kills
@@ -320,10 +426,23 @@ REGISTRY_LOGIN_ENV = tuple(
 )
 
 
+CONVERSION_LOG_ENV = tuple(
+    f"{prefix}{flag}"
+    for prefix in ("APPTAINER_", "SINGULARITY_")
+    for flag in ("QUIET", "SILENT", "MESSAGELEVEL")
+)
+
+
 def pull_env(environ: Mapping[str, str]) -> dict[str, str]:
-    """The environment of a pull: the caller's, less any registry login it had, which must never
-    reach a registry it was not meant for (an image's own login is added per pull)."""
-    return {k: v for k, v in environ.items() if k not in REGISTRY_LOGIN_ENV}
+    """Drop inherited registry logins and force Info output for architecture fallback detection.
+
+    An image's own registry credentials are added only to its pull, never SIF inspection.
+    """
+    return {
+        k: v
+        for k, v in environ.items()
+        if k not in REGISTRY_LOGIN_ENV and k not in CONVERSION_LOG_ENV
+    } | {"APPTAINER_MESSAGELEVEL": "1"}
 
 
 def convert(

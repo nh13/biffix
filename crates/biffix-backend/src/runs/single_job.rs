@@ -11,10 +11,14 @@
 //! config's (`check_single_job` in `infra/biffix_infra/config/compute.py`), its single source of
 //! truth; the backend does not check it again.
 
-use std::collections::BTreeMap;
+mod images;
+pub(crate) use images::check_images;
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use biffix_core::event::SingleJobUse;
 use biffix_workflow::engines::Engine;
+use biffix_workflow::images::Arch;
 use biffix_workflow::single_job::{SingleJobSize, SingleJobSpec};
 
 use crate::aws::ec2::{InstanceTypeInfo, Resources};
@@ -109,7 +113,7 @@ pub(crate) async fn resolve(
     allowed: Option<&SingleJobSpec>,
     request: &SingleJobSpec,
     engine: Engine,
-) -> Result<SingleJobUse, ServiceError> {
+) -> Result<(SingleJobUse, Arch), ServiceError> {
     let Some(version) = allowed else {
         return Err(ServiceError::Invalid(
             "this workflow version does not allow single-job runs (its biffix.yaml has no \
@@ -168,10 +172,10 @@ pub(crate) fn choose(
     queue: &SingleJobQueue,
     described: &BTreeMap<String, InstanceTypeInfo>,
     engine: Engine,
-) -> Result<SingleJobUse, String> {
+) -> Result<(SingleJobUse, Arch), String> {
     let types = described_types(queue, described)?;
     let listed = || queue.instance_types.join(", ");
-    check_hosts(queue, &types)?;
+    let architecture = check_hosts(queue, &types)?;
     let (instance_type, size) = match spec.size()? {
         // `types` is every type of the queue-class (described_types).
         Some(SingleJobSize::Instance(want)) => {
@@ -204,12 +208,15 @@ pub(crate) fn choose(
         None => (types[0].0, types[0].1.size),
     };
     let job = whole_host(size);
-    Ok(SingleJobUse {
-        queue_class: queue.name.clone(),
-        instance_type: instance_type.to_string(),
-        vcpus: job.vcpus,
-        memory_mib: job.memory_mib,
-    })
+    Ok((
+        SingleJobUse {
+            queue_class: queue.name.clone(),
+            instance_type: instance_type.to_string(),
+            vcpus: job.vcpus,
+            memory_mib: job.memory_mib,
+        },
+        architecture,
+    ))
 }
 
 /// `queue`'s instance types as EC2 `described` them, smallest first; refused unless EC2 describes
@@ -246,9 +253,16 @@ fn described_types<'a>(
 /// leave room for another run beside it; EC2's counts decide, as a type's name (its size suffix,
 /// which the deploy config checks) does not always (`hpc6id.32xlarge` has 64, `x2idn.32xlarge`
 /// 128). Types with equal vCPUs and different memory are fine: one job still fills the host.
-fn check_hosts(queue: &SingleJobQueue, types: &[(&str, &InstanceTypeInfo)]) -> Result<(), String> {
+fn check_hosts(
+    queue: &SingleJobQueue,
+    types: &[(&str, &InstanceTypeInfo)],
+) -> Result<Arch, String> {
+    let mut architecture = None;
     for (name, info) in types {
-        if !info.architectures.iter().any(|a| a == "x86_64") {
+        let host = host_architecture(&info.architectures).map_err(|reason| {
+            format!("instance type `{name}` of single-job queue-class `{}`: {reason}", queue.name)
+        })?;
+        if host != Arch::Amd64 {
             return Err(format!(
                 "instance type `{name}` of single-job queue-class `{}` is not x86_64 (EC2 says: \
                  {}); single-job runs need x86_64 hosts",
@@ -256,6 +270,15 @@ fn check_hosts(queue: &SingleJobQueue, types: &[(&str, &InstanceTypeInfo)]) -> R
                 info.architectures.join(", ")
             ));
         }
+        // The x86-only policy currently implies homogeneity. Keep the fleet invariant explicit
+        // so lifting that policy cannot admit a mixed-architecture queue.
+        if architecture.is_some_and(|previous| previous != host) {
+            return Err(format!(
+                "single-job queue-class `{}` mixes host architectures",
+                queue.name
+            ));
+        }
+        architecture = Some(host);
         if !info.accelerators.is_empty() {
             return Err(format!(
                 "instance type `{name}` of single-job queue-class `{}` carries an accelerator \
@@ -278,7 +301,27 @@ fn check_hosts(queue: &SingleJobQueue, types: &[(&str, &InstanceTypeInfo)]) -> R
             queue.name
         ));
     }
-    Ok(())
+    architecture
+        .ok_or_else(|| format!("single-job queue-class `{}` has no instance types", queue.name))
+}
+
+/// Resolve EC2's list to one supported Linux architecture, ignoring legacy i386.
+fn host_architecture(architectures: &[String]) -> Result<Arch, String> {
+    let supported: BTreeSet<_> = architectures
+        .iter()
+        .filter_map(|value| match value.as_str() {
+            "x86_64" => Some(Arch::Amd64),
+            "arm64" => Some(Arch::Arm64),
+            _ => None,
+        })
+        .collect();
+    match supported.len() {
+        1 => Ok(*supported.first().expect("one architecture")),
+        0 => {
+            Err(format!("no supported host architecture (EC2 says: {})", architectures.join(", ")))
+        }
+        _ => Err(format!("ambiguous host architectures (EC2 says: {})", architectures.join(", "))),
+    }
 }
 
 /// Recheck, at launch, the hosts of a parked single-job run's queue-class as EC2 describes them
@@ -287,11 +330,13 @@ fn check_hosts(queue: &SingleJobQueue, types: &[(&str, &InstanceTypeInfo)]) -> R
 pub(crate) async fn recheck(
     state: &AppState,
     single: &SingleJobUse,
-) -> Result<Result<(), String>, crate::aws::AwsError> {
+) -> Result<Result<Arch, String>, crate::aws::AwsError> {
     let Some(queue) = state.deploy.single_job_queues.iter().find(|q| q.name == single.queue_class)
     else {
-        // [`queue`] names this case.
-        return Ok(Ok(()));
+        return Ok(Err(format!(
+            "the single-job queue-class `{}` is no longer configured on this deploy",
+            single.queue_class
+        )));
     };
     let described = state.cloud.describe_instance_types(&queue.instance_types).await?;
     Ok(described_types(queue, &described).and_then(|types| check_hosts(queue, &types)))
@@ -327,7 +372,35 @@ mod tests {
         queue: &SingleJobQueue,
         described: &BTreeMap<String, InstanceTypeInfo>,
     ) -> Result<SingleJobUse, String> {
-        choose(spec, queue, described, Engine::Snakemake)
+        choose(spec, queue, described, Engine::Snakemake).map(|(allocation, _)| allocation)
+    }
+
+    #[test]
+    fn ec2_architectures_resolve_to_one_supported_linux_platform() {
+        for (values, expected) in [
+            (vec!["x86_64"], Some(Arch::Amd64)),
+            (vec!["i386", "x86_64"], Some(Arch::Amd64)),
+            (vec!["x86_64", "x86_64"], Some(Arch::Amd64)),
+            (vec!["arm64"], Some(Arch::Arm64)),
+            (vec![], None),
+            (vec!["i386"], None),
+            (vec!["arm64_mac"], None),
+            (vec!["x86_64_mac"], None),
+            (vec!["riscv64"], None),
+            (vec!["x86_64", "arm64"], None),
+        ] {
+            let values: Vec<String> = values.into_iter().map(String::from).collect();
+            assert_eq!(host_architecture(&values).ok(), expected, "{values:?}");
+        }
+    }
+
+    #[test]
+    fn the_allocation_carries_its_queue_architecture_without_changing_its_size() {
+        let q = queue_class("single", &["c6id.8xlarge"]);
+        let (allocation, architecture) =
+            choose(&SingleJobSpec::default(), &q, &described(), Engine::Snakemake).unwrap();
+        assert_eq!(architecture, Arch::Amd64);
+        assert_eq!((allocation.vcpus, allocation.memory_mib), (32, 61_184));
     }
 
     #[test]
@@ -391,7 +464,7 @@ mod tests {
         // A Nextflow run's engine keeps less (no Snakemake per job): a c6id.8xlarge leaves its
         // tasks 55448 MiB.
         let nf = |gib| {
-            choose(&spec(None, Some(32), Some(gib)), &q, &described(), Engine::Nextflow).unwrap()
+            choose(&spec(None, Some(32), Some(gib)), &q, &described(), Engine::Nextflow).unwrap().0
         };
         assert_eq!(nf(54).instance_type, "c6id.8xlarge");
         assert_eq!(nf(55).instance_type, "m6id.8xlarge");
@@ -439,6 +512,31 @@ mod tests {
         types.get_mut("c6id.8xlarge").unwrap().accelerators = vec!["GPU".into()];
         let err = choose_sm(&SingleJobSpec::default(), &q, &types).unwrap_err();
         assert!(err.contains("`c6id.8xlarge`") && err.contains("accelerator (GPU)"), "{err}");
+    }
+
+    #[test]
+    fn an_ambiguous_host_architecture_is_refused_even_when_it_includes_x86_64() {
+        let q = queue_class("single", &["c6id.8xlarge"]);
+        for architectures in [["x86_64", "arm64"], ["arm64", "x86_64"]] {
+            let mut types = described();
+            types.get_mut("c6id.8xlarge").unwrap().architectures =
+                architectures.into_iter().map(String::from).collect();
+            let result = choose_sm(&SingleJobSpec::default(), &q, &types);
+            assert!(result.is_err(), "ambiguous host was admitted: {result:?}");
+            let reason = result.unwrap_err();
+            assert!(reason.contains("c6id.8xlarge") && reason.contains("architecture"), "{reason}");
+        }
+    }
+
+    #[test]
+    fn legacy_i386_does_not_prevent_x86_64_host_admission() {
+        let q = queue_class("single", &["c6id.8xlarge"]);
+        let mut types = described();
+        types.get_mut("c6id.8xlarge").unwrap().architectures = vec!["i386".into(), "x86_64".into()];
+        assert_eq!(
+            choose_sm(&SingleJobSpec::default(), &q, &types).unwrap().instance_type,
+            "c6id.8xlarge"
+        );
     }
 
     /// Same size suffix, different machines: a job sized for the smaller host's vCPUs fits twice
