@@ -1,13 +1,15 @@
 engine: snakemake
-engine_version: "9.27.0"
+engine_version: "9.27.2"
 entrypoint: Snakefile
 schema: config.schema.json
 single_job: {}
 images:
-  ubuntu:
-    ref: public.ecr.aws/docker/library/ubuntu:24.04
+  first: {dockerfile: images/Dockerfile, build_args: {ACCEPTANCE_IMAGE: first}}
+  second: {dockerfile: images/Dockerfile, build_args: {ACCEPTANCE_IMAGE: second}}
+  third: {dockerfile: images/Dockerfile, build_args: {ACCEPTANCE_IMAGE: third}}
+params:
+  input_uri: {format: s3-file}
 form:
   title: Single-job Snakemake acceptance
 reports:
-  - {name: Greeting, path: hello.txt, kind: file}
-  - {name: Result, path: world.txt, kind: file}
+  - {name: Result, path: second.txt, kind: file}
