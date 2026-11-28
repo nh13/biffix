@@ -90,11 +90,11 @@ queue_classes:
   # A single-job queue-class: a run submitted in single-job mode runs entirely in one job on one
   # whole host (the engine and every task, in apptainer), its intermediates on the host's NVMe
   # instance-store disks (mounted at /scratch): the types must have NVMe instance store (c6id, m6id,
-  # r6id, i4i, ...), as on a type without it every single-job run fails at start. Its own compute environment, never shared with tasks-mode work: ON_DEMAND, exact
+  # r6id, i4i, or Graviton c7gd, m7gd, ...; all of one architecture), as on a type without it every single-job run fails at start. Its own compute environment, never shared with tasks-mode work: ON_DEMAND, exact
   # instance types only, and not the coordinator. Give each single-job queue-class ONE size
   # (c6id.8xlarge with m6id.8xlarge, not with c6id.16xlarge; the loader refuses mixed sizes): a
   # job asks for its type's whole host, so a host that could hold two smaller ones would run two
-  # runs side by side. Add one queue-class per size.
+  # runs side by side. Add one queue-class per size and architecture.
   # Its hosts allow containers to create user namespaces and mount in them (infra/README.md,
   # "Single-job queue-classes").
   #   - name: single-c6id-8xl

@@ -568,8 +568,11 @@ Things to know:
   process's memory use too): it can still pick the engine, which ends the run. A task with no
   image (a Snakemake local rule or a rule with no image, a Nextflow `exec:` process) runs in the
   engine's own environment, at the engine's score.
-- **x86_64 hosts only, for now.** Apptainer publishes no arm64 package, so single-job
-  queue-classes are x86_64 instance types.
+- **x86_64 or Graviton hosts.** A single-job queue-class is all x86_64 or all Graviton (arm64),
+  and a run gets its queue-class's architecture: the one `--single-job-queue-class` names, else
+  the version's `single_job.queue_class`, else the deployment's first single-job queue-class.
+  Every task image must be available for that architecture (see "Task images must support the
+  host's architecture" above for when that is checked); tasks run natively, never emulated.
 - Tasks' `/tmp` is on the host's local disk, like the work directory.
 - **Each Snakemake output is uploaded twice.** A job's own Snakemake publishes its outputs to
   the run's output prefix, as on AWS Batch, and the engine, which shares the job's local copies,
