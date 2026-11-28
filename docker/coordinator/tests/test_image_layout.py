@@ -79,12 +79,46 @@ def test_the_entrypoint_is_still_the_coordinator_command() -> None:
     assert "RUN chmod +x /usr/local/bin/biffix-coordinator" in dockerfile
 
 
+def _apptainer_install(dockerfile: str) -> str:
+    """The Dockerfile's Apptainer RUN instruction, continuation lines joined."""
+    joined = dockerfile.replace("\\\n", " ")
+    runs = [line for line in joined.splitlines() if line.startswith("RUN ") and "apptainer" in line]
+    (run,) = runs
+    return run
+
+
 def test_apptainer_is_the_pinned_non_setuid_package() -> None:
-    # Single-job runs' tasks run through it: never the setuid-root build, never unpinned.
+    # Single-job runs' tasks run through it: never the setuid-root build, never unpinned. Both
+    # architectures get the same release, each package verified by its own checksum.
     dockerfile = (COORDINATOR / "Dockerfile").read_text()
-    assert "apptainer_${APPTAINER_VERSION}-trixie%2B_amd64.deb" in dockerfile
+    pins = dict(re.findall(r"^ARG (APPTAINER_[A-Z0-9_]+)=(\S+)$", dockerfile, re.MULTILINE))
+    assert pins.keys() == {
+        "APPTAINER_VERSION",
+        "APPTAINER_AMD64_SHA256",
+        "APPTAINER_ARM64_SHA256",
+    }
+    for arch in ("AMD64", "ARM64"):
+        assert re.fullmatch(r"[0-9a-f]{64}", pins[f"APPTAINER_{arch}_SHA256"]), arch
+    assert pins["APPTAINER_AMD64_SHA256"] != pins["APPTAINER_ARM64_SHA256"]
+    run = _apptainer_install(dockerfile)
+    # The package and its checksum follow the build's architecture; any other fails the build.
+    assert run.startswith('RUN arch="$(dpkg --print-architecture)"')
+    assert 'case "${arch}" in' in run
+    assert re.search(r'amd64\) sha256="\$\{APPTAINER_AMD64_SHA256\}" ;;', run)
+    assert re.search(r'arm64\) sha256="\$\{APPTAINER_ARM64_SHA256\}" ;;', run)
+    assert re.search(r"\*\) echo [^;]*unsupported architecture[^;]*>&2; exit 1 ;;", run)
+    # The package file spells a prerelease with dots where the release tag has a hyphen
+    # (v1.6.0-rc.2 holds apptainer_1.6.0.rc.2-...); a final release spells both alike.
+    assert 'package_version="$(printf \'%s\' "${APPTAINER_VERSION}" | tr - .)"' in run
+    assert (
+        "releases/download/v${APPTAINER_VERSION}/"
+        "apptainer_${package_version}-trixie%2B_${arch}.deb" in run
+    )
+    # Verified before it is installed, and the installed version is the pinned one, which the
+    # binary reports in the tag's spelling (`apptainer version 1.6.0-rc.2`).
+    assert run.index("| sha256sum -c -") < run.index("apt-get install")
+    assert 'apptainer --version)" = "apptainer version ${APPTAINER_VERSION}"' in run
     assert "apptainer-suid" not in dockerfile.replace("(not apptainer-suid)", "")
-    assert re.search(r"ARG APPTAINER_AMD64_SHA256=[0-9a-f]{64}\n", dockerfile)
     assert "| sha256sum -c -" in dockerfile
     assert "sed -i 's/^allow setuid = yes$/allow setuid = no/' /etc/apptainer/apptainer.conf" in (
         dockerfile

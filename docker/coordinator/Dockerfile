@@ -7,7 +7,7 @@
 # image carries only what every variant shares:
 #   - biffix-coordinator (entrypoint.sh) and its helpers; python3 + boto3 for their S3 calls
 #   - git (git-sourced workflows), a JRE (Nextflow head node), unzip/procps
-#   - apptainer (amd64 only), which a single-job run's tasks run through
+#   - apptainer (amd64 and arm64), which a single-job run's tasks run through
 #   - /opt/biffix/wheels/: the biffix-owned engine plugins the runtime build installs (the AWS
 #     Batch executor fork, the Snakemake logger, the single-job Snakemake executor, nf-biffix) +
 #     manifest.json, which also records the coordinator
@@ -35,23 +35,35 @@ RUN apt-get update \
 # base's Debian (trixie), pinned by sha256: the NON-setuid package (not apptainer-suid), so it runs
 # in user namespaces and never as a setuid-root binary, and apptainer.conf says so too. It brings
 # its own squashfuse_ll, fuse2fs and fuse-overlayfs (libexec/apptainer/bin); the Debian ones beside
-# them match the install single-job mode was tested with. Apptainer publishes no arm64 package, so
-# the arm64 image has none (building it from source would need a newer Go than trixie's and six
-# more pinned dependency sources): a single-job run on Graviton is refused at start (78).
-ARG APPTAINER_VERSION=1.5.5
-ARG APPTAINER_AMD64_SHA256=82a6e5ead21d3e19de522a9e0bbeb59958323e316dc9d019a128b0cc8e99d863
-RUN if [ "$(dpkg --print-architecture)" = amd64 ]; then \
-        curl -fsSL -o /tmp/apptainer.deb \
-            "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VERSION}/apptainer_${APPTAINER_VERSION}-trixie%2B_amd64.deb" \
-        && echo "${APPTAINER_AMD64_SHA256}  /tmp/apptainer.deb" | sha256sum -c - \
-        && apt-get update \
-        && apt-get install -y --no-install-recommends \
-            /tmp/apptainer.deb squashfuse fuse2fs fuse-overlayfs uidmap \
-        && rm -rf /tmp/apptainer.deb /var/lib/apt/lists/* \
-        && sed -i 's/^allow setuid = yes$/allow setuid = no/' /etc/apptainer/apptainer.conf \
-        && grep -qx 'allow setuid = no' /etc/apptainer/apptainer.conf \
-        && apptainer --version; \
-    fi
+# them match the install single-job mode was tested with. Both architectures get the same release,
+# each package checked against its own checksum; the build fails on any other architecture. A
+# prerelease's package file spells its version with dots where the tag has a hyphen (v1.6.0-rc.2
+# holds apptainer_1.6.0.rc.2-...), while the binary reports the tag's spelling.
+#
+# 1.6.0-rc.2 is a DEVELOPMENT pin: 1.6.0 is the first release with an arm64 package, and it is not
+# final yet. Single-job runs on both architectures need one Apptainer, so this moves amd64 off
+# 1.5.5 too. It must be replaced by the final 1.6.0 (new checksums, revalidated on both
+# architectures) before this change ships in a release.
+ARG APPTAINER_VERSION=1.6.0-rc.2
+ARG APPTAINER_AMD64_SHA256=6c690d4e76de36d2ae5de79e3ba2ac189791118a496bd1d3313aabc0bcf2da23
+ARG APPTAINER_ARM64_SHA256=024bb50d3ef70eeb601a281800517e8270cc0060af4c55271f63b14141d89a00
+RUN arch="$(dpkg --print-architecture)" \
+    && case "${arch}" in \
+        amd64) sha256="${APPTAINER_AMD64_SHA256}" ;; \
+        arm64) sha256="${APPTAINER_ARM64_SHA256}" ;; \
+        *) echo "apptainer: unsupported architecture ${arch}" >&2; exit 1 ;; \
+    esac \
+    && package_version="$(printf '%s' "${APPTAINER_VERSION}" | tr - .)" \
+    && curl -fsSL -o /tmp/apptainer.deb \
+        "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VERSION}/apptainer_${package_version}-trixie%2B_${arch}.deb" \
+    && echo "${sha256}  /tmp/apptainer.deb" | sha256sum -c - \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        /tmp/apptainer.deb squashfuse fuse2fs fuse-overlayfs uidmap \
+    && rm -rf /tmp/apptainer.deb /var/lib/apt/lists/* \
+    && sed -i 's/^allow setuid = yes$/allow setuid = no/' /etc/apptainer/apptainer.conf \
+    && grep -qx 'allow setuid = no' /etc/apptainer/apptainer.conf \
+    && test "$(apptainer --version)" = "apptainer version ${APPTAINER_VERSION}"
 
 # The entrypoint's own S3 calls (source staging, events.jsonl upload, Snakemake metadata sync) run on
 # this python3 for a Nextflow variant; a Snakemake variant puts the runtime's Python (which has boto3
