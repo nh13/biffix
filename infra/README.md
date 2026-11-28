@@ -711,9 +711,12 @@ no coordinator may submit to it, and it is never in the task queue-class menu.
 
 - **Config.** `capacity: ON_DEMAND`, exact instance types only (`c6id.8xlarge`, not `c`), not
   `coordinator: true`; the loader refuses anything else. Pick types with NVMe instance store
-  (`c6id`, `m6id`, `r6id`, `i4i`…): their disks become `/scratch`. x86_64 only for now: the
-  coordinator image carries Apptainer on amd64 only, so the loader refuses a Graviton type (and an
-  accelerated one: GPU, FPGA or ML-chip types, as the AMI has no accelerator driver). Give each
+  (`c6id`, `m6id`, `r6id`, `i4i`, or Graviton `c7gd`, `m7gd`, `r7gd`…): their disks become
+  `/scratch`. A queue-class is all x86_64 or all Graviton, as Batch may place a run on any of its
+  types and the run's task images are checked against one architecture; the loader refuses a mix.
+  It also refuses first-generation Graviton `a1`, which the ECS-optimized AL2023 AMI does not
+  support, and accelerated types (GPU, FPGA or ML chip), as the AMI has no accelerator driver.
+  Give each
   single-job queue-class one size (`c6id.8xlarge` with `m6id.8xlarge`, not with `c6id.16xlarge`, nor
   metal types of two families, whose sizes differ; the loader refuses either): a host that could
   hold two of its smaller types' jobs would run two runs side by side, sharing its `/scratch`.
@@ -721,10 +724,10 @@ no coordinator may submit to it, and it is never in the task queue-class menu.
   128), so the backend also refuses, from EC2's description, a queue-class whose types' vCPU counts
   differ, or with a type EC2 does not describe (whose vCPUs it cannot check): at submit, and again
   when it launches a run that waited. EC2 must also report exactly one supported Linux architecture
-  per type (`i386` beside `x86_64` is ignored); an ambiguous or unsupported answer is refused.
-  Task-image architecture metadata is checked before launch, and converted SIFs are checked before
-  the engine starts. These checks do not lift the x86_64 restriction. Several single-job
-  queue-classes may coexist (one per size).
+  per type, the same one for every type of the queue-class (`i386` beside `x86_64` is ignored);
+  anything else is refused. Task-image architecture metadata is checked at submit and again before
+  launch, and converted SIFs are checked before the engine starts (see the user guide's single-job
+  section). Several single-job queue-classes may coexist (one per size and architecture).
 - **Compute.** Its own compute environment and launch template, never shared with tasks-mode work,
   in the coordinator's NAT subnets (the job reports to the API, which `worker_egress: ecr_s3_only`
   subnets cannot reach). Besides the two parts every host runs, its user data starts with a

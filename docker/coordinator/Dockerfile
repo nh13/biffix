@@ -40,10 +40,11 @@ RUN apt-get update \
 # prerelease's package file spells its version with dots where the tag has a hyphen (v1.6.0-rc.2
 # holds apptainer_1.6.0.rc.2-...), while the binary reports the tag's spelling.
 #
-# 1.6.0-rc.2 is a DEVELOPMENT pin: 1.6.0 is the first release with an arm64 package, and it is not
-# final yet. Single-job runs on both architectures need one Apptainer, so this moves amd64 off
-# 1.5.5 too. It must be replaced by the final 1.6.0 (new checksums, revalidated on both
-# architectures) before this change ships in a release.
+# 1.6.0-rc.2 is a pre-release, shipped on purpose: 1.6.0 is the first Apptainer with an arm64
+# package and it is not final yet, and single-job runs on both architectures need one Apptainer
+# (so amd64 moved off 1.5.5 too). It was validated on real Graviton and x86 hosts before v0.5.0.
+# Replace it with the final 1.6.0 once published (new checksums, revalidated on both
+# architectures).
 ARG APPTAINER_VERSION=1.6.0-rc.2
 ARG APPTAINER_AMD64_SHA256=6c690d4e76de36d2ae5de79e3ba2ac189791118a496bd1d3313aabc0bcf2da23
 ARG APPTAINER_ARM64_SHA256=024bb50d3ef70eeb601a281800517e8270cc0060af4c55271f63b14141d89a00

@@ -134,15 +134,15 @@ queue_classes:
 ```
 
 - It must be `ON_DEMAND`, must not also be the coordinator's, and lists **exact instance types
-  with local NVMe instance storage** (`c6id`, `m6id`, `r6id`, `i4i`, …), x86_64 only for now (the
-  coordinator image carries Apptainer on amd64 only, so a Graviton type is refused), and no
-  accelerated (GPU, FPGA or ML chip) type. A host's instance-store disks are striped (when there
+  with local NVMe instance storage** (`c6id`, `m6id`, `r6id`, `i4i`, or Graviton `c7gd`, `m7gd`,
+  `r7gd`, …), all x86_64 or all Graviton (the loader refuses a mix, and first-generation Graviton
+  `a1`; see infra/README.md), and no accelerated (GPU, FPGA or ML chip) type. A host's instance-store disks are striped (when there
   are several), formatted XFS and mounted at `/scratch`, the run's work directory. The loader does
   not check that a type has instance storage: on one without, the boot writes no instance-store
   marker, so every run on it fails at start.
 - **Give each single-job queue-class one size** (the loader refuses mixed sizes). A run asks for
   its whole host, and Batch could place two runs sized for a smaller type on one larger host of
-  the same queue-class. Define one queue-class per size instead (types of the same size but
+  the same queue-class. Define one queue-class per size and architecture instead (types of the same size but
   different families, such as `c6id.8xlarge` and `m6id.8xlarge`, may share one; not metal types,
   whose size differs by family: `z1d.metal` is 48 vCPUs, `r6id.metal` 128).
 - It gets its own compute environment and launch template: never shared with task queue-classes,

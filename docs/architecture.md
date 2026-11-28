@@ -319,8 +319,7 @@ them:
   Missing metadata keeps the normal preparation path. Conversion bypasses Apptainer's cache,
   including shared OCI layers, so a cached SIF cannot hide an unrecognized-architecture fallback,
   and checks each fresh SIF's header
-  before the engine starts. This does not add an isolation boundary or permit ARM single-job
-  queues, which remain refused.
+  before the engine starts. This does not add an isolation boundary.
   Apptainer needs to create a user namespace and mount inside it, which Docker's default seccomp
   profile refuses, so these hosts' Docker daemon uses that profile plus `mount`, `umount2`,
   `unshare` and `setns`. The relaxation grants no host capability, and container root still cannot
