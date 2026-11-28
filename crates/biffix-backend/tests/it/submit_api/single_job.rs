@@ -171,11 +171,12 @@ async fn a_single_job_run_the_version_or_deploy_cannot_serve_is_refused() {
     assert!(body.contains("has no single-job job definition"), "{body}");
     assert!(cloud.launched.lock().unwrap().is_empty());
 
-    // A queue-class whose instance type EC2 describes as Graviton, or with a GPU: Batch could
-    // place the run there.
-    for (arch, accelerator, why) in
-        [("arm64", None, "is not x86_64"), ("x86_64", Some("GPU"), "carries an accelerator")]
-    {
+    // A queue-class one of whose instance types EC2 describes as Graviton beside an x86_64 one,
+    // or with a GPU: Batch could place the run there.
+    for (arch, accelerator, why) in [
+        ("arm64", None, "mixes host architectures"),
+        ("x86_64", Some("GPU"), "carries an accelerator"),
+    ] {
         let (state, _, cloud) = single_job_state(None, true);
         {
             let mut types = cloud.instance_types.lock().unwrap();
@@ -211,6 +212,62 @@ async fn a_single_job_queue_with_ambiguous_architecture_is_refused_before_launch
         .unwrap()
         .iter()
         .any(|event| event.kind() == biffix_core::event::Kind::RunSubmitted));
+}
+
+/// The deploy's one single-job queue-class, of Graviton (arm64) types.
+fn graviton() -> Option<Vec<SingleJobQueue>> {
+    Some(vec![SingleJobQueue {
+        name: "graviton".into(),
+        queue: SINGLE_QUEUE.into(),
+        instance_types: vec!["m7gd.8xlarge".into(), "c7gd.8xlarge".into()],
+    }])
+}
+
+#[tokio::test]
+async fn an_arm_single_job_run_launches_alone_on_its_queue_class() {
+    let (state, events, cloud) = single_job_state(graviton(), true);
+    let (status, body) = submit(state, allowing(json!({})), submit_body(json!({}))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let launches = cloud.launched.lock().unwrap().clone();
+    assert_eq!(launches.len(), 1);
+    assert_eq!(launches[0].coordinator_queue, SINGLE_QUEUE);
+    let resources = launches[0].single_job.expect("a single-job launch");
+    assert_eq!((resources.vcpus, resources.memory_mib), (32, 61_184));
+    assert_eq!(cloud.variant_templates.lock().unwrap().last().unwrap(), SINGLE_TEMPLATE);
+    assert!(cloud.task_job_definitions.lock().unwrap().is_empty());
+    let used = recorded_anchor(&events).single_job.expect("the anchor records the launch");
+    assert_eq!(
+        (used.queue_class.as_str(), used.instance_type.as_str()),
+        ("graviton", "c7gd.8xlarge")
+    );
+}
+
+#[tokio::test]
+async fn a_task_image_is_checked_against_its_queue_classs_architecture_both_ways() {
+    // (queue-class, the only architecture the version's images run on, the one the hosts need)
+    for (queues, image, host) in [(graviton(), "amd64", "arm64"), (None, "arm64", "amd64")] {
+        let (mut state, events, cloud) = single_job_state(queues, true);
+        let registry = Arc::new(MemRegistry::new());
+        state.registry = registry.clone();
+        let app = api::router(state);
+        setup(&app, "/workflows", "developers", &allowing(json!({}))).await;
+        for artifact in registry.artifacts.lock().unwrap().values_mut() {
+            artifact.archs = vec![image.into()];
+        }
+        let response =
+            app.oneshot(post("/runs", Some("operators"), &submit_body(json!({})))).await.unwrap();
+        let status = response.status();
+        let body = text_body(response).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{image} on {host}: {body}");
+        assert!(body.contains(&format!("require {host} images")), "{body}");
+        assert!(cloud.launched.lock().unwrap().is_empty());
+        assert!(!events
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.kind() == biffix_core::event::Kind::RunSubmitted));
+    }
 }
 
 #[tokio::test]

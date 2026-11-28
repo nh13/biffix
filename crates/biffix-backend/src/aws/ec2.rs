@@ -35,6 +35,11 @@ impl InstanceTypeInfo {
     pub fn x86_64(size: Resources) -> Self {
         Self { size, architectures: vec!["x86_64".into()], accelerators: Vec::new() }
     }
+
+    /// A plain arm64 (Graviton) type of `size`, with no accelerator.
+    pub fn arm64(size: Resources) -> Self {
+        Self { size, architectures: vec!["arm64".into()], accelerators: Vec::new() }
+    }
 }
 
 /// The EC2 instance types the deploy's single-job queue-classes run (see the module docs).

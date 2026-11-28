@@ -151,10 +151,13 @@ def check_single_job(qc: QueueClass) -> None:
     the whole host, so the backend must know each type's size, and a family would let Batch place
     it on a larger host beside another run. One size (`c6id.8xlarge` with `m6id.8xlarge`, never
     with `c6id.16xlarge`), for the same reason; for a metal size, one family too, as a metal type
-    is the whole machine, whose size differs by family. A suffix is not always one vCPU count
-    (`hpc6id.32xlarge` has 64, `x2idn.32xlarge` 128); the backend refuses types of different vCPU
-    counts from EC2's description, which this config check cannot see. Never also the coordinator
-    queue-class: that one runs tasks-mode coordinators, which must not land on these hosts."""
+    is the whole machine, whose size differs by family. One architecture, x86_64 or Graviton
+    (arm64), judged by the type's name here; the backend checks EC2's own answer. Not the
+    first-generation Graviton `a1`, which the ECS-optimized AL2023 AMI these hosts run does not
+    support. A suffix is not always one vCPU count (`hpc6id.32xlarge` has 64, `x2idn.32xlarge`
+    128); the backend refuses types of different vCPU counts from EC2's description, which this
+    config check cannot see. Never also the coordinator queue-class: that one runs tasks-mode
+    coordinators, which must not land on these hosts."""
     where = f"single-job queue-class {qc.name!r}"
     if qc.coordinator:
         raise ValueError(f"{where} cannot also be the coordinator queue-class")
@@ -187,11 +190,20 @@ def check_single_job(qc: QueueClass) -> None:
             "128), so give one family: a job sized for the smaller host fits twice on a larger one"
         )
     graviton = [entry for entry in qc.instances if is_graviton(entry)]
-    if graviton:
+    x86_64 = [entry for entry in qc.instances if not is_graviton(entry)]
+    if graviton and x86_64:
         raise ValueError(
-            f"{where} names Graviton (arm64) types {graviton}; single-job runs need x86_64 for "
-            "now (the coordinator image carries apptainer on amd64 only: apptainer publishes no "
-            "arm64 package)"
+            f"{where} mixes Graviton (arm64) types {graviton} with x86_64 types {x86_64}; give "
+            "each single-job queue-class types of one architecture (and a queue-class per "
+            "architecture): Batch may place a run on any of its types, and a run's task images "
+            "are checked against one architecture"
+        )
+    a1 = [entry for entry in qc.instances if entry.split(".", 1)[0] == "a1"]
+    if a1:
+        raise ValueError(
+            f"{where} names first-generation Graviton types {a1}; single-job hosts run the "
+            "ECS-optimized AL2023 AMI, which does not support A1 instances (nor do they have the "
+            "instance store single-job runs work on): use a later Graviton type, such as c7gd"
         )
     accelerated = [entry for entry in qc.instances if is_accelerated(entry)]
     if accelerated:

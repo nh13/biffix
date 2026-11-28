@@ -131,6 +131,11 @@ const SINGLE_TEMPLATE: &str =
 /// [`parked_in`]; with `single_job`, a single-job run on a deploy with one single-job queue-class
 /// (`SINGLE_QUEUE`, c6id.8xlarge) and the project's single-job template (`SINGLE_TEMPLATE`).
 async fn parked_with(experiment: Option<&str>, single_job: bool) -> Harness {
+    parked_on(experiment, single_job, &["c6id.8xlarge"]).await
+}
+
+/// A parked run, as [`parked_with`], whose deploy's single-job queue-class runs `instance_types`.
+async fn parked_on(experiment: Option<&str>, single_job: bool, instance_types: &[&str]) -> Harness {
     let store = Arc::new(MemStore::new());
     let registry = Arc::new(MemRegistry::new());
     let events = Arc::new(MemEventSink::new());
@@ -147,7 +152,7 @@ async fn parked_with(experiment: Option<&str>, single_job: bool) -> Harness {
             single_job_queues: vec![biffix_backend::config::single_job::SingleJobQueue {
                 name: "single".into(),
                 queue: SINGLE_QUEUE.into(),
-                instance_types: vec!["c6id.8xlarge".into()],
+                instance_types: instance_types.iter().map(ToString::to_string).collect(),
             }],
             ..Default::default()
         })
@@ -476,6 +481,52 @@ async fn a_parked_single_job_run_rejects_an_incompatible_prepared_image() {
     assert_eq!(report.failed, 1, "{report:?}");
     let (reason, _) = h.failure().unwrap();
     assert!(reason.contains("amd64") && reason.contains(&derived.image), "{reason}");
+    assert!(h.cloud.launched.lock().unwrap().is_empty());
+    assert!(!h.parked());
+}
+
+#[tokio::test]
+async fn a_parked_arm_single_job_run_launches_once_its_images_are_ready() {
+    let h = parked_on(None, true, &["c7gd.8xlarge"]).await;
+    let plan = h.store.pending.lock().unwrap()[h.run_id.as_str()].plan.clone();
+    assert_eq!(plan["single_job"]["instance_type"], "c7gd.8xlarge");
+    h.images_ready();
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.launched, 1, "{report:?}");
+    let launch = h.cloud.launched.lock().unwrap()[0].clone();
+    assert_eq!(launch.coordinator_queue, SINGLE_QUEUE);
+    assert_eq!(launch.single_job.map(|s| (s.vcpus, s.memory_mib)), Some((32, 61_184)));
+}
+
+#[tokio::test]
+async fn a_parked_arm_single_job_run_rejects_a_prepared_amd64_only_image() {
+    let h = parked_on(None, true, &["c7gd.8xlarge"]).await;
+    h.images_ready();
+    let image = h.image();
+    let runtime_key = h.registry.versions.lock().unwrap()["abc:hash:0"].version.runtime_key.clone();
+    let derived = testing::fake_derived_artifact(&image, &runtime_key);
+    h.registry.artifacts.lock().unwrap().get_mut(&derived.content_key).unwrap().archs =
+        vec!["amd64".into()];
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+    let (reason, _) = h.failure().unwrap();
+    assert!(reason.contains("require arm64 images") && reason.contains(&derived.image), "{reason}");
+    assert!(h.cloud.launched.lock().unwrap().is_empty());
+    assert!(!h.parked());
+}
+
+/// A deploy that added a type of the other architecture to a parked run's queue-class while it
+/// waited makes that queue-class mixed: the run fails at launch, before any coordinator.
+#[tokio::test]
+async fn a_parked_single_job_run_whose_queue_class_became_mixed_fails() {
+    let mut h = parked_on(None, true, &["c7gd.8xlarge"]).await;
+    h.state.deploy.single_job_queues[0].instance_types =
+        vec!["c7gd.8xlarge".into(), "c6id.8xlarge".into()];
+    h.images_ready();
+    let report = launch::sweep(&h.state).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+    let (reason, _) = h.failure().unwrap();
+    assert!(reason.contains("mixes host architectures"), "{reason}");
     assert!(h.cloud.launched.lock().unwrap().is_empty());
     assert!(!h.parked());
 }
