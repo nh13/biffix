@@ -163,10 +163,11 @@ fn queue_for<'a>(
 /// the type `spec` names, else the smallest whose tasks get at least its vCPUs and memory, else
 /// (no size given) the smallest of the queue-class; its whole host ([`whole_host`]). A
 /// `memory_gib` is compared with the memory the run's tasks get there ([`task_memory_mib`] of the
-/// whole host), not the type's nominal memory. Refused when a type of the queue-class is not plain
-/// x86_64 (Batch may place the job on any of them): one that is not x86_64, that carries an
-/// accelerator, or that EC2 does not describe. The deploy config refuses such types by name; EC2's
-/// description is the authoritative check.
+/// whole host), not the type's nominal memory. Refused when the queue-class's types are not plain
+/// types of one architecture (Batch may place the job on any of them): one of no single supported
+/// architecture, that carries an accelerator, or that EC2 does not describe, or types of
+/// different architectures. The deploy config refuses such types by name; EC2's description is the
+/// authoritative check. Also returns the architecture, which the run's task images must support.
 pub(crate) fn choose(
     spec: &SingleJobSpec,
     queue: &SingleJobQueue,
@@ -247,38 +248,24 @@ fn described_types<'a>(
     Ok(types)
 }
 
-/// Refuse `queue`'s described `types` (smallest first) unless each is a plain x86_64 type (Batch
-/// may place the job on any of them): one that is not x86_64 or carries an accelerator, or a set
-/// whose vCPU counts differ. A job takes its host's every vCPU, so on a type with more it would
-/// leave room for another run beside it; EC2's counts decide, as a type's name (its size suffix,
-/// which the deploy config checks) does not always (`hpc6id.32xlarge` has 64, `x2idn.32xlarge`
-/// 128). Types with equal vCPUs and different memory are fine: one job still fills the host.
+/// Refuse `queue`'s described `types` (smallest first) unless they are plain types of one
+/// architecture (Batch may place the job on any of them): a type of no single supported
+/// architecture or that carries an accelerator, types of different architectures (a run's task
+/// images are checked against one), or a set whose vCPU counts differ. A job takes its host's every
+/// vCPU, so on a type with more it would leave room for another run beside it; EC2's counts decide,
+/// as a type's name (its size suffix, which the deploy config checks) does not always
+/// (`hpc6id.32xlarge` has 64, `x2idn.32xlarge` 128). Types with equal vCPUs and different memory
+/// are fine: one job still fills the host. The architecture they share is returned.
 fn check_hosts(
     queue: &SingleJobQueue,
     types: &[(&str, &InstanceTypeInfo)],
 ) -> Result<Arch, String> {
-    let mut architecture = None;
+    let mut hosts = Vec::with_capacity(types.len());
     for (name, info) in types {
         let host = host_architecture(&info.architectures).map_err(|reason| {
             format!("instance type `{name}` of single-job queue-class `{}`: {reason}", queue.name)
         })?;
-        if host != Arch::Amd64 {
-            return Err(format!(
-                "instance type `{name}` of single-job queue-class `{}` is not x86_64 (EC2 says: \
-                 {}); single-job runs need x86_64 hosts",
-                queue.name,
-                info.architectures.join(", ")
-            ));
-        }
-        // The x86-only policy currently implies homogeneity. Keep the fleet invariant explicit
-        // so lifting that policy cannot admit a mixed-architecture queue.
-        if architecture.is_some_and(|previous| previous != host) {
-            return Err(format!(
-                "single-job queue-class `{}` mixes host architectures",
-                queue.name
-            ));
-        }
-        architecture = Some(host);
+        hosts.push((*name, host));
         if !info.accelerators.is_empty() {
             return Err(format!(
                 "instance type `{name}` of single-job queue-class `{}` carries an accelerator \
@@ -301,8 +288,24 @@ fn check_hosts(
             queue.name
         ));
     }
-    architecture
-        .ok_or_else(|| format!("single-job queue-class `{}` has no instance types", queue.name))
+    let architectures: BTreeSet<Arch> = hosts.iter().map(|(_, host)| *host).collect();
+    match architectures.len() {
+        0 => Err(format!("single-job queue-class `{}` has no instance types", queue.name)),
+        1 => Ok(*architectures.first().expect("one architecture")),
+        _ => {
+            let named = hosts
+                .iter()
+                .map(|(name, host)| format!("`{name}` ({host})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(format!(
+                "single-job queue-class `{}` mixes host architectures ({named}); a run's task \
+                 images are checked against one architecture, so each single-job queue-class \
+                 needs types of one",
+                queue.name
+            ))
+        }
+    }
 }
 
 /// Resolve EC2's list to one supported Linux architecture, ignoring legacy i386.
@@ -499,15 +502,42 @@ mod tests {
     }
 
     #[test]
-    fn a_type_that_is_not_plain_x86_64_is_refused_naming_it() {
-        let mut types = described();
-        types.get_mut("m6id.8xlarge").unwrap().architectures = vec!["arm64".into()];
-        let q = queue_class("single", &["c6id.8xlarge", "m6id.8xlarge"]);
-        // Even when the run is sized for another type of the queue-class: Batch may place it on
-        // any of them.
-        let err = choose_sm(&spec(Some("c6id.8xlarge"), None, None), &q, &types).unwrap_err();
-        assert!(err.contains("`m6id.8xlarge`") && err.contains("not x86_64"), "{err}");
+    fn homogeneous_arm_hosts_are_admitted_at_their_whole_size() {
+        let q = queue_class("graviton", &["m7gd.8xlarge", "c7gd.8xlarge"]);
+        let (launch, architecture) =
+            choose(&SingleJobSpec::default(), &q, &described(), Engine::Snakemake).unwrap();
+        assert_eq!(architecture, Arch::Arm64);
+        // The smallest type, the whole host: the same arithmetic as an x86 host of its size
+        // (c6id.8xlarge also has 32 vCPUs and 64 GiB).
+        assert_eq!(launch.instance_type, "c7gd.8xlarge");
+        assert_eq!((launch.vcpus, launch.memory_mib), (32, 61_184));
+        let (x86, x86_architecture) = choose(
+            &SingleJobSpec::default(),
+            &queue_class("single", &["c6id.8xlarge"]),
+            &described(),
+            Engine::Snakemake,
+        )
+        .unwrap();
+        assert_eq!(x86_architecture, Arch::Amd64);
+        assert_eq!((x86.vcpus, x86.memory_mib), (launch.vcpus, launch.memory_mib));
+    }
 
+    #[test]
+    fn a_queue_class_mixing_architectures_is_refused_naming_them() {
+        // Equal vCPUs, so only the architectures differ.
+        let q = queue_class("single", &["c6id.8xlarge", "c7gd.8xlarge"]);
+        // Even when the run is sized for one type of the queue-class: Batch may place it on any.
+        let err = choose_sm(&spec(Some("c6id.8xlarge"), None, None), &q, &described()).unwrap_err();
+        assert!(err.contains("mixes host architectures"), "{err}");
+        assert!(
+            err.contains("`c6id.8xlarge` (amd64)") && err.contains("`c7gd.8xlarge` (arm64)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_type_carrying_an_accelerator_is_refused_naming_it() {
+        let q = queue_class("single", &["c6id.8xlarge", "m6id.8xlarge"]);
         let mut types = described();
         types.get_mut("c6id.8xlarge").unwrap().accelerators = vec!["GPU".into()];
         let err = choose_sm(&SingleJobSpec::default(), &q, &types).unwrap_err();

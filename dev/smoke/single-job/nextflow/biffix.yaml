@@ -4,12 +4,13 @@ entrypoint: main.nf
 single_job: {}
 plugins: [nf-schema@2.7.2]
 images:
-  ubuntu:
-    ref: public.ecr.aws/docker/library/ubuntu:24.04
+  first: {dockerfile: images/Dockerfile, build_args: {ACCEPTANCE_IMAGE: first}}
+  second: {dockerfile: images/Dockerfile, build_args: {ACCEPTANCE_IMAGE: second}}
+  third: {dockerfile: images/Dockerfile, build_args: {ACCEPTANCE_IMAGE: third}}
 params:
+  input_uri: {format: s3-file}
   outdir: {format: s3-dir, output: true}
 form:
   title: Single-job Nextflow acceptance
 reports:
-  - {name: Greeting, path: results/hello.txt, kind: file}
-  - {name: Result, path: results/world.txt, kind: file}
+  - {name: Result, path: results/second.txt, kind: file}

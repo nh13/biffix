@@ -31,8 +31,9 @@ from tests.deploy_config_file import FIXTURE
 
 CONFIG = DeployConfig.load(FIXTURE)
 
-# The frozen config plus two single-job queue-classes (one size each), with workers in the
-# isolated subnets so a single-job host's placement is told apart from a worker's.
+# The frozen config plus three single-job queue-classes (one size each, the last of Graviton
+# types), with workers in the isolated subnets so a single-job host's placement is told apart from
+# a worker's.
 SINGLE_JOB_CLASSES = (
     QueueClass(
         name="single-8xl",
@@ -46,6 +47,13 @@ SINGLE_JOB_CLASSES = (
         capacity="ON_DEMAND",
         single_job=True,
         instances=["m6id.16xlarge"],
+        max_vcpus=128,
+    ),
+    QueueClass(
+        name="single-graviton-8xl",
+        capacity="ON_DEMAND",
+        single_job=True,
+        instances=["c7gd.8xlarge", "m7gd.8xlarge"],
         max_vcpus=128,
     ),
 )

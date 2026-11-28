@@ -1,7 +1,30 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Single-job Snakemake acceptance",
   "type": "object",
-  "properties": {},
+  "properties": {
+    "input_uri": {
+      "type": "string",
+      "pattern": "^s3://[^/]+/.+",
+      "description": "Synthetic S3 input file holding the line `first`"
+    },
+    "expected_machine": {
+      "type": "string",
+      "enum": ["x86_64", "aarch64"],
+      "description": "The `uname -m` every task must report: the queue-class's architecture"
+    },
+    "validation_case": {
+      "type": "string",
+      "enum": ["success", "retry", "fail", "cancel"],
+      "default": "success",
+      "description": "success; retry (the first task fails once with 37); fail (it always does); cancel (it sleeps, to be cancelled)"
+    },
+    "expect_apptainer": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether tasks run nested in Apptainer (a single-job run); false for a run of one Batch job per task"
+    }
+  },
+  "required": ["input_uri", "expected_machine"],
   "additionalProperties": false
 }

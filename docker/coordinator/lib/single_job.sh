@@ -71,10 +71,12 @@ select_execution() {
   single_job_memory
   # Its work dir dies with the job (and the host), so there is nothing to resume from.
   [ "${BIFFIX_RESUME:-}" != 1 ] || runtime_error "a single-job run cannot be resumed (BIFFIX_RESUME=1)"
-  # The arm64 coordinator image has no Apptainer (apptainer publishes no arm64 package; see the
-  # Dockerfile): a single-job queue-class of Graviton instances cannot run.
+  # Both architectures' coordinator images carry Apptainer (see the Dockerfile). One without it was
+  # built on an older base (before arm64 carried it). The backend launches a run on such a base's
+  # variant when the deployed base's is not built yet (just after a deploy of a new base), or when
+  # the deployed base is itself that old.
   command -v apptainer >/dev/null 2>&1 \
-    || runtime_error "this coordinator image ($(uname -m)) has no apptainer: a single-job run needs an x86_64 instance type"
+    || runtime_error "this coordinator image ($(uname -m)) has no apptainer: it was built on a coordinator base older than single-job support on this architecture. If a current coordinator image was just deployed, its variants may still be building: retry once they are; otherwise deploy a current coordinator image"
   # Canonical (no `..`, `//` or symlink in it), as everything under it is removed (clear_scratch).
   local given="${BIFFIX_SCRATCH_ROOT:-/scratch}"
   case "$given" in

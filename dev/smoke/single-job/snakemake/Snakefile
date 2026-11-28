@@ -1,100 +1,209 @@
+"""Single-job acceptance (dev/smoke/single-job/README.md). Every task checks that it runs natively on
+the expected machine, in the image it names, without the run's capability token in its environment
+and, nested in Apptainer, in its container with the run's shared /tmp. The first task reads a
+synthetic S3 input; `validation_case` makes it retry once, fail for good, or wait to be cancelled.
+Three distinct images (first, second, third) are built from one base, for the conversion
+measurement."""
+
+from snakemake.utils import validate
+
+# Checks the run's config against the schema, and fills in its defaults (validation_case,
+# expect_apptainer).
+validate(config, "config.schema.json")
+
+INPUT_URI = config["input_uri"]
+EXPECTED_MACHINE = config["expected_machine"]
+VALIDATION_CASE = config["validation_case"]
+EXPECT_APPTAINER = config["expect_apptainer"]
+# Left by a cancelled first task, in the /tmp a single-job run's tasks share (the host's scratch);
+# the next run on that host wipes the scratch, so its first task must not find it.
+CANCEL_SENTINEL = "/tmp/biffix-acceptance-cancel-sentinel"
+
+
+def task_checks(image):
+    """The bash every task in `image` runs before its work (values the schema constrains)."""
+    checks = [
+        f'test "$(uname -m)" = {EXPECTED_MACHINE}',
+        f'test "$(cat /opt/biffix-acceptance-image)" = {image}',
+        # Checked for, never printed.
+        'test -z "${BIFFIX_INGEST_TOKEN:-}"',
+    ]
+    if EXPECT_APPTAINER:
+        # The /tmp the run's tasks share is writable: a probe file of this task's own (a fixed
+        # name would let a concurrent task's `rm` take it), made and removed by separate commands,
+        # each of which fails the task (in an `a && b` list, errexit ignores a failed `a`).
+        checks += [
+            "test -d /.singularity.d",
+            "probe=$(mktemp /tmp/.biffix-acceptance-probe.XXXXXX)",
+            'rm "$probe"',
+        ]
+    return "\n".join(checks)
+
+
 rule all:
-    """Require the final two-step acceptance result, the group job's and the run: block's."""
+    """Require every task's result: the two dependent steps, the third image, the group job and
+    the Python `run:` block."""
     input:
-        result="world.txt",
+        second="second.txt",
+        third="third.txt",
         grouped="grouped.txt",
         python="python.txt"
     output: []
     log: []
 
-rule ubuntu_hello:
-    """Prove the first task runs inside the Ubuntu Apptainer image."""
+
+rule first:
+    """Read the S3 input in image `first`; the lifecycle cases act here."""
+    input:
+        data=storage(INPUT_URI)
+    output:
+        first="first.txt"
+    log:
+        "logs/first.log"
+    params:
+        checks=task_checks("first"),
+        case=VALIDATION_CASE,
+        apptainer="true" if EXPECT_APPTAINER else "false",
+        sentinel=CANCEL_SENTINEL
+    retries: 1 if VALIDATION_CASE == "retry" else 0
+    resources:
+        mem_mb=256,
+        aws_batch_container_image="first",
+        acceptance_attempt=lambda wildcards, attempt: attempt
+    shell:
+        """
+        echo "ACCEPTANCE_TASK_STARTED rule=first attempt={resources.acceptance_attempt}" >&2
+        (
+            {params.checks}
+            test "$(cat {input.data:q})" = first
+            case {params.case:q} in
+                success)
+                    if [ {params.apptainer} = true ]; then test ! -e {params.sentinel:q}; fi
+                    ;;
+                retry)
+                    [ {resources.acceptance_attempt} -gt 1 ] || exit 37
+                    ;;
+                fail)
+                    exit 37
+                    ;;
+                cancel)
+                    if [ {params.apptainer} = true ]; then
+                        printf 'cancelled\\n' > {params.sentinel:q}
+                    fi
+                    sleep 300
+                    ;;
+            esac
+            cp {input.data:q} {output.first:q}
+        ) > {log:q} 2>&1
+        """
+
+
+rule second:
+    """Consume the first task's output in image `second`."""
+    input:
+        first="first.txt"
+    output:
+        second="second.txt"
+    log:
+        "logs/second.log"
+    params:
+        checks=task_checks("second"),
+        machine=EXPECTED_MACHINE
+    resources:
+        mem_mb=256,
+        aws_batch_container_image="second"
+    shell:
+        """
+        (
+            {params.checks}
+            test "$(cat {input.first:q})" = first
+            printf 'second-%s\\n' {params.machine:q} > {output.second:q}
+        ) > {log:q} 2>&1
+        """
+
+
+rule third:
+    """Run in image `third`, the last of the three images built from one base."""
     input: []
     output:
-        greeting="hello.txt"
+        third="third.txt"
     log:
-        "logs/ubuntu_hello.log"
+        "logs/third.log"
+    params:
+        checks=task_checks("third")
     resources:
         mem_mb=256,
-        aws_batch_container_image="public.ecr.aws/docker/library/ubuntu:24.04"
+        aws_batch_container_image="third"
     shell:
         """
         (
-            . /etc/os-release
-            test "$ID" = ubuntu
-            test "$VERSION_ID" = 24.04
-            test -d /.singularity.d
-            printf 'hello ubuntu 24.04\n' > {output.greeting:q}
+            {params.checks}
+            printf 'third\\n' > {output.third:q}
         ) > {log:q} 2>&1
         """
 
-rule ubuntu_world:
-    """Consume the first task's output in a second nested task."""
-    input:
-        greeting="hello.txt"
-    output:
-        result="world.txt"
-    log:
-        "logs/ubuntu_world.log"
-    resources:
-        mem_mb=256,
-        aws_batch_container_image="public.ecr.aws/docker/library/ubuntu:24.04"
-    shell:
-        """
-        (
-            . /etc/os-release
-            test "$ID" = ubuntu
-            test "$VERSION_ID" = 24.04
-            test -d /.singularity.d
-            cat {input.greeting:q} > {output.result:q}
-            printf 'world ubuntu 24.04\n' >> {output.result:q}
-        ) > {log:q} 2>&1
-        """
 
-rule ubuntu_group_first:
+rule group_first:
     """The first of two jobs that run as one group job, in the image this one names."""
     input: []
     output:
         first=temp("group_first.txt")
+    log:
+        "logs/group_first.log"
+    params:
+        checks=task_checks("first")
     group: "pair"
     resources:
         mem_mb=256,
-        aws_batch_container_image="public.ecr.aws/docker/library/ubuntu:24.04"
+        aws_batch_container_image="first"
     shell:
         """
-        test -d /.singularity.d
-        printf 'first\n' > {output.first:q}
+        (
+            {params.checks}
+            printf 'first\\n' > {output.first:q}
+        ) > {log:q} 2>&1
         """
 
-rule ubuntu_group_second:
+
+rule group_second:
     """Names no image: it runs in its group job's (alone it would run in the coordinator)."""
     input:
         first="group_first.txt"
     output:
         grouped="grouped.txt"
+    log:
+        "logs/group_second.log"
+    params:
+        checks=task_checks("first")
     group: "pair"
     resources:
         mem_mb=256
     shell:
         """
-        . /etc/os-release
-        test "$ID" = ubuntu
-        test -d /.singularity.d
-        test "$(cat {input.first:q})" = first
-        printf 'grouped ubuntu 24.04\n' > {output.grouped:q}
+        (
+            {params.checks}
+            test "$(cat {input.first:q})" = first
+            printf 'grouped\\n' > {output.grouped:q}
+        ) > {log:q} 2>&1
         """
 
-rule ubuntu_run:
+
+rule python_run:
     """A Python run: block runs in its job's image too, on the Snakemake runtime biffix adds."""
     input: []
     output:
         python="python.txt"
     resources:
         mem_mb=256,
-        aws_batch_container_image="public.ecr.aws/docker/library/ubuntu:24.04"
+        aws_batch_container_image="second"
     run:
         import os
+        import platform
+        from pathlib import Path
 
-        assert os.path.isdir("/.singularity.d"), "not in an Apptainer container"
-        with open(output.python, "w") as out:
-            out.write("python ubuntu 24.04\n")
+        assert platform.machine() == EXPECTED_MACHINE, platform.machine()
+        assert Path("/opt/biffix-acceptance-image").read_text() == "second\n"
+        assert "BIFFIX_INGEST_TOKEN" not in os.environ
+        if EXPECT_APPTAINER:
+            assert os.path.isdir("/.singularity.d"), "not in an Apptainer container"
+        Path(output.python).write_text("python\n")

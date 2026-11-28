@@ -128,8 +128,8 @@ Rust types).
 One base image serves as the coordinator and, for a Snakemake version with no image of its own,
 as the task image. It has no `ENTRYPOINT`; the Batch job definition picks the role.
 `entrypoint.sh` documents the environment the backend injects (`BIFFIX_RUN_ID`, `BIFFIX_ENGINE`,
-`BIFFIX_PARAMS`, and so on). On x86_64 it also carries a non-setuid Apptainer, which a
-[single-job run](#single-job-runs) runs its tasks with. The base image carries no Snakemake or
+`BIFFIX_PARAMS`, and so on). On both x86_64 and arm64 it also carries a non-setuid Apptainer,
+which a [single-job run](#single-job-runs) runs its tasks with. The base image carries no Snakemake or
 Nextflow: each workflow version pins an engine release, and a CodeBuild project builds that
 release into a runtime layer on top of the base. Versions pinning the same release share it.
 

@@ -25,6 +25,7 @@ def two_project_stacks(tmp_path_factory: pytest.TempPathFactory) -> Stacks:
 
 @pytest.fixture(scope="session")
 def single_job_stacks(tmp_path_factory: pytest.TempPathFactory) -> Stacks:
-    """The stack graph of `SINGLE_JOB_CONFIG` (the default config plus two single-job
-    queue-classes), synthesized once and shared like ``default_stacks``."""
+    """The stack graph of `SINGLE_JOB_CONFIG` (the default config plus three single-job
+    queue-classes, the last of Graviton types), synthesized once and shared like
+    ``default_stacks``."""
     return _build(tmp_path_factory.mktemp("single_job_graph"), config=SINGLE_JOB_CONFIG)

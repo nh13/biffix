@@ -191,10 +191,11 @@ pub struct FakeCloud {
     pub fail_describe_instance_types: Mutex<Option<AwsError>>,
 }
 
-/// The instance types a [`FakeCloud`] knows by default, at EC2's sizes: plain x86_64 types, with no
-/// accelerator.
+/// The instance types a [`FakeCloud`] knows by default, at EC2's sizes, with no accelerator: plain
+/// x86_64 types, and two Graviton (arm64) types of the same size as `c6id.8xlarge` and
+/// `m6id.8xlarge`.
 pub fn fake_instance_types() -> BTreeMap<String, crate::aws::ec2::InstanceTypeInfo> {
-    [
+    let x86_64 = [
         ("c6id.4xlarge", 16, 32_768),
         ("c6id.8xlarge", 32, 65_536),
         ("c6id.16xlarge", 64, 131_072),
@@ -205,8 +206,14 @@ pub fn fake_instance_types() -> BTreeMap<String, crate::aws::ec2::InstanceTypeIn
     .map(|(kind, vcpus, memory_mib)| {
         let size = crate::aws::ec2::Resources { vcpus, memory_mib };
         (kind.to_string(), crate::aws::ec2::InstanceTypeInfo::x86_64(size))
-    })
-    .collect()
+    });
+    let arm64 = [("c7gd.8xlarge", 32, 65_536), ("m7gd.8xlarge", 32, 131_072)].into_iter().map(
+        |(kind, vcpus, memory_mib)| {
+            let size = crate::aws::ec2::Resources { vcpus, memory_mib };
+            (kind.to_string(), crate::aws::ec2::InstanceTypeInfo::arm64(size))
+        },
+    );
+    x86_64.chain(arm64).collect()
 }
 
 impl Default for FakeCloud {

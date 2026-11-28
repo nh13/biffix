@@ -1699,7 +1699,15 @@ def test_a_path_without_apptainer_skips_a_directory_it_cannot_list(
         ({"BIFFIX_SIF_PARALLEL": "0"}, "BIFFIX_SIF_PARALLEL must be at least 1: 0"),
         ({"BIFFIX_SIF_PARALLEL": "two"}, "BIFFIX_SIF_PARALLEL is not a number: two"),
         ({"BIFFIX_SCRATCH_ROOT": "/nonexistent/scratch"}, "is not a writable directory"),
-        ({"PATH": PATH_WITHOUT_APPTAINER}, "has no apptainer: a single-job run needs an x86_64"),
+        # An image without Apptainer is an incompatible coordinator base (one built before both
+        # architectures carried it), not an architecture a single-job run cannot use.
+        (
+            {"PATH": PATH_WITHOUT_APPTAINER},
+            "has no apptainer: it was built on a coordinator base older than single-job support "
+            "on this architecture. If a current coordinator image was just deployed, its variants "
+            "may still be building: retry once they are; otherwise deploy a current coordinator "
+            "image",
+        ),
         # Too small to leave the tasks a GiB beside the engine's reserve (2 GiB, and 160 MiB for
         # each of the 8 vCPUs' jobs).
         ({"BIFFIX_SINGLE_JOB_MEMORY_MIB": "3000"}, "leaves -328 MiB for tasks after the engine's"),
@@ -1715,6 +1723,9 @@ def test_a_misconfigured_single_job_run_fails_with_ex_config(
     got = sm_single.run(**env)
     assert got.returncode == 78, got.stderr
     assert why in got.stderr
+    # The old remedy for a missing Apptainer is gone (the message still names `uname -m`, which
+    # is x86_64 on an x86 host, so the architecture's name alone proves nothing).
+    assert "needs an x86_64 instance type" not in got.stderr
     assert not (sm_single.job.out / "argv").exists()
 
 

@@ -3,4 +3,5 @@
 
 mod properties;
 mod samples_props;
+mod smoke_fixtures;
 mod validate;

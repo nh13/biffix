@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from biffix_infra.config import DeployConfig, HostAwsCli, QueueClass
-from biffix_infra.config.compute import is_accelerated, is_graviton
+from biffix_infra.config.compute import check_single_job, is_accelerated, is_graviton
 from biffix_infra.config.fields import Raw
 from biffix_infra.rbac import RBAC_GROUP_ROLES
 from tests.deploy_config_file import FIXTURE, write_config
@@ -233,7 +233,17 @@ def test_a_single_job_queue_class_is_neither_a_worker_nor_the_coordinator(tmp_pa
             {"capacity": "ON_DEMAND", "instances": ["c6id.8xlarge"], "coordinator": True},
             "cannot also be the coordinator",
         ),
-        ({"capacity": "ON_DEMAND", "instances": ["c7gd.8xlarge"]}, r"Graviton.*c7gd\.8xlarge"),
+        # One architecture per single-job queue-class: Batch could place a run on either.
+        (
+            {"capacity": "ON_DEMAND", "instances": ["c6id.8xlarge", "c7gd.8xlarge"]},
+            r"mixes Graviton \(arm64\) types \['c7gd\.8xlarge'\] with x86_64 types "
+            r"\['c6id\.8xlarge'\]",
+        ),
+        # The ECS-optimized AL2023 AMI does not support the first-generation Graviton A1.
+        (
+            {"capacity": "ON_DEMAND", "instances": ["a1.4xlarge"]},
+            r"first-generation Graviton types \['a1\.4xlarge'\]",
+        ),
         ({"capacity": "ON_DEMAND", "instances": ["g5.8xlarge"]}, r"accelerated.*g5\.8xlarge"),
         # Two runs could share a 16xlarge sized for an 8xlarge.
         (
@@ -299,6 +309,24 @@ def test_instance_families_are_classified(family: str, graviton: bool, accelerat
         instance_type = f"{family}.{size}"
         assert is_graviton(instance_type) == graviton, instance_type
         assert is_accelerated(instance_type) == accelerated, instance_type
+
+
+def test_a_single_job_queue_class_may_be_all_graviton(tmp_path: Path) -> None:
+    single = {**_single("single", "c7gd.8xlarge"), "instances": ["c7gd.8xlarge", "m7gd.8xlarge"]}
+    cfg = _load(tmp_path, queue_classes=[_COORDINATOR, single])
+    assert cfg.single_job_queue_classes[0].instances == ["c7gd.8xlarge", "m7gd.8xlarge"]
+
+
+def test_a_single_job_queue_class_built_in_code_must_not_mix_architectures() -> None:
+    # The loader is not the only way in: the compute stack checks a QueueClass it is handed too.
+    mixed = QueueClass(
+        name="single",
+        capacity="ON_DEMAND",
+        single_job=True,
+        instances=["m6id.8xlarge", "m7gd.8xlarge"],
+    )
+    with pytest.raises(ValueError, match="mixes Graviton"):
+        check_single_job(mixed)
 
 
 def test_a_single_job_queue_class_may_mix_classes_of_one_size(tmp_path: Path) -> None:
