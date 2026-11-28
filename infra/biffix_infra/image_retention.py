@@ -15,7 +15,8 @@ Removing a tag with BatchDeleteImage deletes the image AT ONCE when it was the i
 `biffix-keep-*` from an import, a `deployed-*`) is gone immediately: rolling back
 to it means pushing it again. For the same reason the plan never removes the last tag of an image
 that an image it keeps lists (a multi-arch index's platform images): that tag stays until nothing
-kept lists the image any more.
+kept lists the image any more. And since ECR refuses to remove the last tag of an image that a
+manifest list in the repo still references, the plan removes an index's tags before its images'.
 
 The plan is pure; `main` gathers the repo's images and applies it with the aws CLI.
 """
@@ -27,9 +28,10 @@ import json
 import re
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 ARCH_SUFFIX = re.compile(r"-(amd64|arm64)$")
 COORDINATOR_BUILD = r"^[0-9a-f]{40}(-amd64|-arm64)?$"
@@ -136,11 +138,13 @@ def plan_retention(
 
     # Never remove the last tag of an image something kept lists: that would delete it at once
     # and leave the kept index pointing at nothing. Keep one of its tags (its protection tag when
-    # it has one) and look again, since the image it keeps may list others in turn.
+    # it has one) and look again, since the image it keeps may list others in turn. An untagged
+    # image counts as kept: it stays in the repo until the untagged-image lifecycle rule expires
+    # it, and until then ECR refuses to remove the last tag of anything it lists.
     deleting = set(plan.delete)
     while True:
         surviving = protected | {
-            img.digest for img in images if any(t not in deleting for t in img.tags)
+            img.digest for img in images if not img.tags or any(t not in deleting for t in img.tags)
         }
         listed = _listed_by(surviving, children)
         stranded = [
@@ -153,7 +157,14 @@ def plan_retention(
         for img in stranded:
             tags = sorted(img.tags)
             deleting.discard(next((t for t in tags if t.startswith(protect_prefix)), tags[0]))
-    plan.delete = [t for t in plan.delete if t in deleting]
+    # Remove an index's tags before those of the images it lists: ECR refuses to remove the last
+    # tag of an image a manifest list in the repo still references (ImageReferencedByManifestList),
+    # and the index goes only when its own last tag does. An image has more indexes above it than
+    # any index that lists it, so ordering by that count puts every index first.
+    above = Counter(d for index in children for d in _listed_by({index}, children))
+    plan.delete = sorted(
+        (t for t in plan.delete if t in deleting), key=lambda t: above[by_tag[t].digest]
+    )
     return plan
 
 
@@ -209,11 +220,24 @@ def children_of(manifest: str) -> list[str]:
     return [m["digest"] for m in json.loads(manifest).get("manifests", []) if "digest" in m]
 
 
-def apply(repo: str, plan: Plan, dry_run: bool) -> list[str]:
-    """Apply `plan` (or print it, with `dry_run`); return the tags ECR refused to remove, with
-    why. batch-delete-image reports those only in its answer's `failures` (it exits 0), and a
-    tag that is already gone (ImageNotFound) is not one."""
+class Applied(NamedTuple):
+    """What `apply` could not do, each entry a tag with ECR's reason."""
+
+    refused: list[str]
+    """Tags ECR refused to remove: the step fails."""
+    still_referenced: list[str]
+    """Tags left because a manifest list still references their image: harmless, as the tag and
+    its image stay, and a later run removes the tag once nothing lists the image."""
+
+
+def apply(repo: str, plan: Plan, dry_run: bool) -> Applied:
+    """Apply `plan` (or print it, with `dry_run`). batch-delete-image reports what it could not
+    remove only in its answer's `failures` (it exits 0); a tag already gone (ImageNotFound) is not
+    one. The plan keeps the tags of what an index in the repo lists and removes an index's tags
+    before its images', so a still-referenced tag normally means something changed under the plan,
+    such as an index whose own removal failed in this run."""
     refused: list[str] = []
+    still_referenced: list[str] = []
     for digest, tag in plan.add:
         print(f"  tag {digest[:19]} {tag}")
         if dry_run:
@@ -235,10 +259,13 @@ def apply(repo: str, plan: Plan, dry_run: bool) -> list[str]:
         image_id = f"imageTag={tag}"
         out = _aws("batch-delete-image", "--repository-name", repo, "--image-ids", image_id)
         for failure in out.get("failures") or []:
-            if failure.get("failureCode") != "ImageNotFound":
-                why = f"{failure.get('failureCode')}: {failure.get('failureReason')}"
-                refused.append(f"{tag} ({why})")
-    return refused
+            code = failure.get("failureCode")
+            if code == "ImageNotFound":
+                continue
+            why = f"{code}: {failure.get('failureReason')}"
+            target = still_referenced if code == "ImageReferencedByManifestList" else refused
+            target.append(f"{tag} ({why})")
+    return Applied(refused, still_referenced)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -279,7 +306,9 @@ def _retain(a: argparse.Namespace) -> int:
         keep=a.keep,
     )
     print(f"{a.repo}: {len(plan.add)} to protect, {len(plan.delete)} tags to remove")
-    refused = apply(a.repo, plan, a.dry_run)
+    refused, still_referenced = apply(a.repo, plan, a.dry_run)
+    for tag in still_referenced:
+        print(f"kept the tag {tag}", file=sys.stderr)
     for tag in refused:
         print(f"ECR did not remove the tag {tag}", file=sys.stderr)
     return 1 if refused else 0
