@@ -38,9 +38,21 @@ if '--max-bytes' not in sys.argv:
     sys.exit(0)
 
 mode = os.environ['UPLOAD_MODE']
-if mode == 'delayed-stop':
+if mode in ('delayed-stop', 'interrupted-stop'):
     def stop(_signum: int, _frame: object) -> None:
         publish('terminating')
+        if mode == 'interrupted-stop':
+            # Hold the stop open until the test has signalled the coordinator, so that signal
+            # lands while stop_logs_sync still waits on this upload. Bounded: a handshake that
+            # never completes publishes a marker the test asserts is absent.
+            deadline = time.monotonic() + 5
+            while not (work / 'interrupted').exists():
+                if time.monotonic() >= deadline:
+                    publish('handshake-timeout')
+                    break
+                time.sleep(0.01)
+        # Keep running a while longer: a stop_logs_sync that returned without reaping this upload
+        # starts the final upload meanwhile, which then records an overlap.
         time.sleep(0.4)
         publish('ended')
         sys.exit(0)
@@ -178,10 +190,15 @@ def test_signal_interrupting_stop_wait_still_reaps_before_final_upload(tmp_path:
         tmp_path,
         '. "$LIB_DIR/signals.sh"\ninstall_signal_traps\nENGINE_DONE=1\n'
         "start_logs_sync\nawait_file started\nparent=$BASHPID\n"
-        '(await_file terminating; kill -TERM "$parent") &\ninterrupter=$!\n'
+        # The upload's stop waits for `interrupted`, so the TERM reaches the coordinator while
+        # stop_logs_sync is still waiting, as long as this poll sees `terminating` within the
+        # upload's 5 s hold.
+        '(await_file terminating; kill -TERM "$parent"; : > "$WORK/interrupted") &\n'
+        "interrupter=$!\n"
         'stop_logs_sync\nwait "$interrupter"\nupload_run_logs final\n',
-        UPLOAD_MODE="delayed-stop",
+        UPLOAD_MODE="interrupted-stop",
     )
+    assert not (tmp_path / "handshake-timeout").exists(), "the TERM never reached the upload"
     assert got.returncode == 0, got.stderr
     assert "received SIGTERM" in got.stderr
     assert (tmp_path / "final").read_text() == "complete"
