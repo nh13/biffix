@@ -1672,7 +1672,7 @@ def test_a_conversion_never_passes_on_a_registry_login_the_caller_had() -> None:
         "DOCKER_USERNAME": "u",
         "DOCKER_PASSWORD": "p",
     }
-    assert sj.pull_env(caller) == {"PATH": "/bin"}
+    assert sj.pull_env(caller) == {"PATH": "/bin", "APPTAINER_MESSAGELEVEL": "1"}
 
 
 @pytest.mark.parametrize("failing", [1, 2], ids=["deletion", "verification"])

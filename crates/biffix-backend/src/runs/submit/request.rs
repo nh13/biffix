@@ -109,7 +109,7 @@ pub(crate) async fn submit_run(
     let form = <FormSchema as serde::Deserialize>::deserialize(&target.rec.version.form_schema)
         .map_err(|e| ServiceError::Internal(format!("stored form_schema invalid: {e}")))?;
     // A single-job run's queue-class and whole-host size, before anything else reads AWS for it.
-    let single_job = match &req.single_job {
+    let selected_single_job = match &req.single_job {
         None => None,
         Some(request) => Some(
             crate::runs::single_job::resolve(
@@ -121,6 +121,7 @@ pub(crate) async fn submit_run(
             .await?,
         ),
     };
+    let (single_job, single_job_architecture) = selected_single_job.unzip();
     let template =
         target.project.variant_template(single_job.is_some()).map_err(ServiceError::Conflict)?;
     let ready = version_readiness(state, &target, template).await?;
@@ -153,6 +154,34 @@ pub(crate) async fn submit_run(
             .await?;
     let inputs = check_run_inputs(state, &target, &form, &req.params, &filled).await?;
 
+    let worker = single_job_architecture.and_then(|_| {
+        crate::aws::batch::worker_image(
+            &ready.version.image_digest,
+            crate::runs::submit::worker_image_repo_uri(&ready.version).as_deref(),
+            &state.deploy.worker_image_repo,
+            ready.version.engine,
+            &ready.variant.image,
+            true,
+        )
+    });
+    // Submit-time overrides cannot replace the worker default. Refuse a known mismatch before
+    // starting paid imports for additional images; the merged map is checked again below.
+    if let Some(architecture) = single_job_architecture {
+        if let Some(default) = ready.images.iter().find(|image| {
+            image
+                .runnable()
+                .is_some_and(|artifact| Some(artifact.image.as_str()) == worker.as_deref())
+        }) {
+            crate::runs::single_job::check_images(
+                architecture,
+                std::slice::from_ref(default),
+                &[],
+                worker.as_deref(),
+            )
+            .map_err(ServiceError::Invalid)?;
+        }
+    }
+
     // Every other check has passed: the images given at submit are pinned, authorized (an image
     // new to the tenant needs a Developer), and their imports (and derives) started or joined, so
     // no import starts for a request refused for another reason. One that will never be runnable
@@ -163,6 +192,16 @@ pub(crate) async fn submit_run(
     let submit_readiness = crate::runs::launch::readiness(&submit_statuses);
     if let ImagesReadiness::Failed(reason) = &submit_readiness {
         return Err(ServiceError::Conflict(format!("this run cannot launch: {reason}")));
+    }
+
+    if let Some(architecture) = single_job_architecture {
+        crate::runs::single_job::check_images(
+            architecture,
+            &ready.images,
+            &submit_statuses,
+            worker.as_deref(),
+        )
+        .map_err(ServiceError::Invalid)?;
     }
 
     // The samples the run was launched with, for per-sample cost estimates: the first sheet (in the

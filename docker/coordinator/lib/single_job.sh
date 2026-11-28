@@ -205,9 +205,9 @@ fcntl.flock(int(sys.argv[1]), fcntl.LOCK_EX | fcntl.LOCK_NB)' "$SJ_LOCK_FD" 2>/d
   # shellcheck disable=SC2034 # the entrypoint's EXIT owner archives before removing scratch
   COORDINATOR_SCRATCH_PREPARED=1
   SJ_IMAGES="$SCRATCH/apptainer/images" SJ_TASK_TMP="$SCRATCH/tmp" SJ_BIN="$WORK/bin"
-  # Apptainer's own layer cache and build space, and the engine's temporary files (and those of
-  # tasks that run in the engine's own environment), on the instance store rather than the
-  # container's root volume.
+  # Keep Apptainer's configured cache/build paths and the engine/task temporary files on the
+  # instance store, not the container's root volume. Conversion currently bypasses Apptainer's
+  # cache (including shared layers) so each SIF gets fresh architecture recognition.
   export APPTAINER_CACHEDIR="$SCRATCH/apptainer/cache" APPTAINER_TMPDIR="$SCRATCH/apptainer/tmp"
   export TMPDIR="$SJ_TASK_TMP" NXF_TEMP="$SJ_TASK_TMP"
   mkdir -p "$WORK" "$SJ_IMAGES" "$SJ_TASK_TMP" "$SJ_BIN" "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"

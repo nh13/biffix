@@ -314,7 +314,13 @@ them:
   map does not name fails a Snakemake run before any task starts (every rule's image is resolved
   first), and a Nextflow run when the process that names it is dispatched (nf-biffix's container
   resolver), so earlier processes may already have run and published outputs. Either way no image
-  is pulled while it runs.
+  is pulled while it runs. Before launch, the backend compares the queue's architecture with known
+  metadata for runnable artifacts selected by the image map, including a recorded derived default.
+  Missing metadata keeps the normal preparation path. Conversion bypasses Apptainer's cache,
+  including shared OCI layers, so a cached SIF cannot hide an unrecognized-architecture fallback,
+  and checks each fresh SIF's header
+  before the engine starts. This does not add an isolation boundary or permit ARM single-job
+  queues, which remain refused.
   Apptainer needs to create a user namespace and mount inside it, which Docker's default seccomp
   profile refuses, so these hosts' Docker daemon uses that profile plus `mount`, `umount2`,
   `unshare` and `setns`. The relaxation grants no host capability, and container root still cannot

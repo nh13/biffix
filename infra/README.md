@@ -720,7 +720,10 @@ no coordinator may submit to it, and it is never in the task queue-class menu.
   A size suffix does not always mean one vCPU count (`hpc6id.32xlarge` has 64, `x2idn.32xlarge`
   128), so the backend also refuses, from EC2's description, a queue-class whose types' vCPU counts
   differ, or with a type EC2 does not describe (whose vCPUs it cannot check): at submit, and again
-  when it launches a run that waited. Several single-job
+  when it launches a run that waited. EC2 must also report exactly one supported Linux architecture
+  per type (`i386` beside `x86_64` is ignored); an ambiguous or unsupported answer is refused.
+  Task-image architecture metadata is checked before launch, and converted SIFs are checked before
+  the engine starts. These checks do not lift the x86_64 restriction. Several single-job
   queue-classes may coexist (one per size).
 - **Compute.** Its own compute environment and launch template, never shared with tasks-mode work,
   in the coordinator's NAT subnets (the job reports to the API, which `worker_egress: ecr_s3_only`

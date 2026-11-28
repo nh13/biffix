@@ -1381,8 +1381,21 @@ def test_the_logs_are_uploaded_while_the_engine_runs(nf_job: Job) -> None:
 
 _APPTAINER = r"""#!/usr/bin/env bash
 case "${1:-}" in --version|version) echo "apptainer version 1.5.5"; exit 0 ;; esac
+if [ "${1:-}" = sif ] && [ "${2:-}" = header ]; then
+  [ -f "${3:-}" ] || { echo "inspection did not name a SIF" >&2; exit 1; }
+  grep -Fx -- "$3" "$FAKE_PULLS.targets" >/dev/null || exit 1
+  printf '%s\n' "$3" >> "$FAKE_PULLS.inspected"
+  case "${FAKE_SIF_ARCHITECTURE:-$(uname -m)}" in
+    x86_64|amd64) arch=amd64 ;;
+    aarch64|arm64) arch=arm64 ;;
+    *) arch=unknown ;;
+  esac
+  printf 'Primary Architecture: %s\n' "$arch"
+  exit 0
+fi
 if [ "${1:-}" = pull ]; then
-  dest=$2 ref=$3
+  [ "${2:-}" = --disable-cache ] || exit 64
+  dest=$3 ref=$4
   printf '%s %s %s\n' "$ref" "${APPTAINER_DOCKER_USERNAME:--}" "${APPTAINER_DOCKER_PASSWORD:--}" \
     >> "$FAKE_PULLS"
   mkdir -p "$FAKE_RUNNING" && touch "$FAKE_RUNNING/$$"
@@ -1415,6 +1428,7 @@ if [ "${1:-}" = pull ]; then
     echo "FATAL: unauthorized: $ref"; exit 255 ;;
   esac
   echo "image file of $ref" > "$dest"
+  printf '%s\n' "$dest" >> "$FAKE_PULLS.targets"
   exit 0
 fi
 printf '%s\n' "$@" "APPTAINER_BINDPATH=${APPTAINER_BINDPATH-}" > "$FAKE_APPTAINER_ARGV"
@@ -1557,7 +1571,7 @@ class SingleJob:
 
     def run_without_map(self, **overrides: str) -> subprocess.CompletedProcess[str]:
         """The run, with no image map unless `overrides` names one."""
-        for f in ("pulls", "concurrency"):
+        for f in ("pulls", "pulls.targets", "pulls.inspected", "concurrency"):
             (self.job.out / f).unlink(missing_ok=True)
         return self.job.run(**self.env(**overrides))
 
@@ -1846,6 +1860,16 @@ def test_every_task_image_is_converted_before_the_engine_starts(sm_single: Singl
     assert sorted(p.name for p in (sm_single.kept / "apptainer/images").iterdir()) == sorted(
         _sif(i) for i in (TOOL, WORKER, PUBLIC)
     )
+    expected_targets = sorted(
+        str(sm_single.scratch / "apptainer/images" / f".{_sif(image)}.pulling")
+        for image in (TOOL, WORKER, PUBLIC)
+    )
+    assert (
+        sorted((sm_single.job.out / "pulls.targets").read_text().splitlines()) == expected_targets
+    )
+    assert (
+        sorted((sm_single.job.out / "pulls.inspected").read_text().splitlines()) == expected_targets
+    )
     # The ECR login goes to the region's ECR only, and is never logged nor left to the engine.
     assert pulled[f"docker://{TOOL}"] == ["AWS", "ecr-SECRET-pw"]
     assert pulled[f"docker://{PUBLIC}"] == ["-", "-"]
@@ -1859,6 +1883,15 @@ def test_every_task_image_is_converted_before_the_engine_starts(sm_single: Singl
     assert sm_single.job.engine_env["APPTAINER_CACHEDIR"] == str(
         sm_single.scratch / "apptainer/cache"
     )
+
+
+def test_a_wrong_architecture_sif_stops_before_the_engine_starts(sm_single: SingleJob) -> None:
+    wrong = "arm64" if os.uname().machine == "x86_64" else "amd64"
+    got = sm_single.run(FAKE_SIF_ARCHITECTURE=wrong)
+    assert got.returncode == 1, got.stderr
+    assert "does not match host" in got.stderr
+    assert not (sm_single.job.out / "argv").exists()
+    assert "Converting the task images failed" in _logs(sm_single.job)["failure.txt"].decode()
 
 
 def test_a_task_image_that_cannot_be_pulled_fails_the_run_at_once(sm_single: SingleJob) -> None:

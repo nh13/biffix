@@ -197,6 +197,193 @@ async fn a_single_job_run_the_version_or_deploy_cannot_serve_is_refused() {
 }
 
 #[tokio::test]
+async fn a_single_job_queue_with_ambiguous_architecture_is_refused_before_launch() {
+    let (state, events, cloud) = single_job_state(None, true);
+    cloud.instance_types.lock().unwrap().get_mut("m6id.8xlarge").unwrap().architectures =
+        vec!["x86_64".into(), "arm64".into()];
+    let (status, body) = submit(state, allowing(json!({})), submit_body(json!({}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("m6id.8xlarge") && body.contains("architecture"), "{body}");
+    assert!(cloud.launched.lock().unwrap().is_empty());
+    assert!(!events
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| event.kind() == biffix_core::event::Kind::RunSubmitted));
+}
+
+#[tokio::test]
+async fn a_single_job_run_rejects_a_known_incompatible_default_image() {
+    let (mut state, events, cloud) = single_job_state(None, true);
+    let registry = Arc::new(MemRegistry::new());
+    state.registry = registry.clone();
+    let app = api::router(state);
+    setup(&app, "/workflows", "developers", &allowing(json!({}))).await;
+    {
+        let mut artifacts = registry.artifacts.lock().unwrap();
+        assert!(!artifacts.is_empty());
+        for artifact in artifacts.values_mut() {
+            artifact.archs = vec!["arm64".into()];
+        }
+    }
+    let response =
+        app.oneshot(post("/runs", Some("operators"), &submit_body(json!({})))).await.unwrap();
+    let status = response.status();
+    let body = text_body(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("amd64") && body.contains("image"), "{body}");
+    assert!(cloud.launched.lock().unwrap().is_empty());
+    assert!(!events
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| event.kind() == biffix_core::event::Kind::RunSubmitted));
+}
+
+#[tokio::test]
+async fn an_incompatible_default_is_refused_before_starting_submit_image_builds() {
+    let (mut state, events, cloud) = single_job_state(None, true);
+    let registry = Arc::new(MemRegistry::new());
+    state.registry = registry.clone();
+    let app = api::router(state);
+    setup(&app, "/workflows", "developers", &allowing(json!({}))).await;
+    for artifact in registry.artifacts.lock().unwrap().values_mut() {
+        artifact.archs = vec!["arm64".into()];
+    }
+    let imports = cloud.image_imports.lock().unwrap().len();
+    let derives = cloud.image_derives.lock().unwrap().len();
+    let mut request = submit_body(json!({}));
+    request["images"] = json!([SAMTOOLS]);
+    let response = app.oneshot(post("/runs", Some("developers"), &request)).await.unwrap();
+    let status = response.status();
+    let body = text_body(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("amd64") && body.contains("incompatible task images"), "{body}");
+    assert_eq!(cloud.image_imports.lock().unwrap().len(), imports);
+    assert_eq!(cloud.image_derives.lock().unwrap().len(), derives);
+    assert!(cloud.launched.lock().unwrap().is_empty());
+    assert!(!events.events.lock().unwrap().iter().any(|event| matches!(
+        event.kind(),
+        biffix_core::event::Kind::RunSubmitted | biffix_core::event::Kind::RunPreparing
+    )));
+}
+
+#[tokio::test]
+async fn a_snakemake_derived_default_uses_its_runnable_architecture_and_worker_spelling() {
+    for architecture in ["amd64", "arm64"] {
+        let (mut state, events, cloud) = single_job_state(None, true);
+        let registry = Arc::new(MemRegistry::new());
+        state.registry = registry.clone();
+        let app = api::router(state);
+        setup(&app, "/workflows", "developers", &allowing(json!({}))).await;
+        let registered = registry.versions.lock().unwrap()["abc:hash:0"].clone();
+        assert_eq!(registered.version.engine, biffix_workflow::engines::Engine::Snakemake);
+        let default = registered.images.iter().find(|image| image.name == "default").unwrap();
+        let mut imported = testing::fake_artifact(default);
+        imported.archs = vec!["amd64".into()];
+        let mut derived = testing::fake_derived_artifact(default, &registered.version.runtime_key);
+        derived.archs = vec![architecture.into()];
+        assert_ne!(imported.image, derived.image);
+        {
+            let mut artifacts = registry.artifacts.lock().unwrap();
+            artifacts.insert(imported.content_key.clone(), imported);
+            artifacts.insert(derived.content_key.clone(), derived.clone());
+        }
+        let response =
+            app.oneshot(post("/runs", Some("operators"), &submit_body(json!({})))).await.unwrap();
+        let status = response.status();
+        let body = text_body(response).await;
+        if architecture == "amd64" {
+            assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+            let anchor = recorded_anchor(&events);
+            assert_eq!(anchor.image_map.unwrap()["$default"], derived.image);
+            assert_eq!(cloud.launched.lock().unwrap()[0].image_digest, derived.digest);
+        } else {
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert!(body.contains(&derived.image), "{body}");
+            assert!(cloud.launched.lock().unwrap().is_empty());
+            assert!(!events
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| { event.kind() == biffix_core::event::Kind::RunSubmitted }));
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_single_job_run_allows_legacy_image_architecture_metadata() {
+    for architectures in [vec![], vec![""], vec!["  "], vec![" amd64 "]] {
+        let (mut state, _, cloud) = single_job_state(None, true);
+        let registry = Arc::new(MemRegistry::new());
+        state.registry = registry.clone();
+        let app = api::router(state);
+        setup(&app, "/workflows", "developers", &allowing(json!({}))).await;
+        for artifact in registry.artifacts.lock().unwrap().values_mut() {
+            artifact.archs = architectures.iter().map(ToString::to_string).collect();
+        }
+        let response =
+            app.oneshot(post("/runs", Some("operators"), &submit_body(json!({})))).await.unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED, "{architectures:?}");
+        assert_eq!(cloud.launched.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn a_ready_submit_image_is_architecture_checked_only_in_single_job_mode() {
+    use biffix_backend::aws::registry::ImageRegistry;
+    use biffix_backend::store::registry::VersionImage;
+    use biffix_workflow::images::ImageRef;
+
+    for single_job in [true, false] {
+        let (mut state, _, cloud) = single_job_state(None, true);
+        let registry = Arc::new(MemRegistry::new());
+        state.registry = registry.clone();
+        let app = api::router(state);
+        setup(&app, "/workflows", "developers", &allowing(json!({}))).await;
+        let reference = ImageRef::parse(SAMTOOLS).unwrap();
+        let digest = cloud.resolve_image_digest(&reference).await.unwrap();
+        let image = VersionImage {
+            name: SAMTOOLS.into(),
+            declared_ref: SAMTOOLS.into(),
+            source_ref: reference.pinned(&digest).to_string(),
+            content_key: biffix_workflow::images::content_key(&digest),
+            own_runtime: false,
+            build: None,
+        };
+        let runtime_key =
+            registry.versions.lock().unwrap()["abc:hash:0"].version.runtime_key.clone();
+        let mut derived = testing::fake_derived_artifact(&image, &runtime_key);
+        derived.archs = vec!["arm64".into()];
+        let derived_image = derived.image.clone();
+        {
+            let mut artifacts = registry.artifacts.lock().unwrap();
+            artifacts.insert(image.content_key.clone(), testing::fake_artifact(&image));
+            artifacts.insert(derived.content_key.clone(), derived);
+        }
+        let mut body = submit_body(json!({}));
+        body["images"] = json!([SAMTOOLS]);
+        if !single_job {
+            body.as_object_mut().unwrap().remove("single_job");
+        }
+        let response = app.oneshot(post("/runs", Some("developers"), &body)).await.unwrap();
+        let status = response.status();
+        let text = text_body(response).await;
+        if single_job {
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+            assert!(text.contains(&derived_image), "{text}");
+            assert!(cloud.launched.lock().unwrap().is_empty());
+        } else {
+            assert_eq!(status, StatusCode::ACCEPTED, "{text}");
+            assert_eq!(cloud.launched.lock().unwrap().len(), 1);
+        }
+    }
+}
+
+#[tokio::test]
 async fn a_single_job_run_cannot_be_a_resume() {
     let mut body = submit_body(json!({}));
     body["resume_from"] = json!("run-prior");

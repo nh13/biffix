@@ -1077,6 +1077,19 @@ def test_index_main_writes_the_builds_repository(tmp_path: Path, registry: Seede
     assert refused.returncode != 0 and f"not an image in {BUILDS}" in refused.stderr
 
 
+@pytest.mark.parametrize(("base", "architecture"), [("amd", "amd64"), ("arm", "arm64")])
+def test_a_single_platform_derive_reports_only_its_runnable_architecture(
+    tmp_path: Path, registry: Seeded, base: str, architecture: str
+) -> None:
+    reg, ids = registry
+    env = {**_derive_env(ids), "BIFFIX_IMAGE_BASE": f"{REPO}@{ids[base]}"}
+    got, outputs = _main(tmp_path, reg, BIFFIX_IMAGE_STEP="derive", **env)
+    assert got.returncode == 0, got.stderr
+    values = dict(outputs)
+    assert values["ARCHS"] == architecture
+    _assert_derived(reg, values["IMAGE_DIGEST"], (architecture,))
+
+
 def test_a_derive_is_pushed_next_to_its_base(tmp_path: Path, registry: Seeded) -> None:
     reg, ids = registry
     # An imported base: the workflow repository.
