@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-11-28
+
+### Features
+
+- Run single-job workflows natively on Graviton ([#111](https://github.com/nh13/biffix/pull/111))
+
+
 ## [0.4.0] - 2026-11-27
 
 ### Bug Fixes
