@@ -10,6 +10,7 @@ from biffix_infra import image_retention
 from biffix_infra.image_retention import (
     COORDINATOR_BUILD,
     Image,
+    Plan,
     plan_retention,
     protect_tag,
     pushed_at,
@@ -136,6 +137,108 @@ def test_a_kept_image_is_released_once_nothing_kept_lists_it() -> None:
         images, deployed_tag=SHA[2], children={}, protect_prefix="deployed-x-", keep=1
     )
     assert plan.delete == [protect_tag("deployed-x-", "sha256:1a")]
+
+
+def test_an_index_loses_its_tags_before_the_images_it_lists() -> None:
+    """ECR refuses to remove the last tag of an image a manifest list still references
+    (ImageReferencedByManifestList), so a pruned index must lose its tags first: removing its last
+    tag deletes it, and only then can its platform images' stale protection go."""
+    # Build 1 was deployed once: its untagged platform (and attestation) images still carry the
+    # protection tags that deploy gave them. Now it has aged out of `keep`.
+    stale = ["sha256:1a", "sha256:1b", "sha256:1c", "sha256:1d"]
+    images = [
+        Image("sha256:10", (SHA[1],), day(11)),
+        *[Image(d, (protect_tag("deployed-x-", d),), day(11)) for d in stale],
+        Image("sha256:20", (SHA[2],), day(12)),
+    ]
+    plan = plan_retention(
+        images,
+        deployed_tag=SHA[2],
+        children={"sha256:10": stale},
+        protect_prefix="deployed-x-",
+        keep=0,
+    )
+    assert set(plan.delete) == {SHA[1], *[protect_tag("deployed-x-", d) for d in stale]}
+    assert plan.delete[0] == SHA[1], plan.delete
+
+
+def test_nested_indexes_lose_their_tags_outermost_first() -> None:
+    images = [
+        Image("sha256:p", ("deployed-x-a",), day(1)),
+        Image("sha256:m", ("deployed-x-b",), day(1)),
+        Image("sha256:i", ("deployed-x-c",), day(1)),
+        Image("sha256:20", (SHA[2],), day(12)),
+    ]
+    plan = plan_retention(
+        images,
+        deployed_tag=SHA[2],
+        children={"sha256:i": ["sha256:m"], "sha256:m": ["sha256:p"]},
+        protect_prefix="deployed-x-",
+        keep=0,
+    )
+    assert plan.delete == ["deployed-x-c", "deployed-x-b", "deployed-x-a"]
+
+
+def test_an_image_two_indexes_list_at_different_depths_loses_its_tags_last() -> None:
+    # t lists m and a; m lists a too. a must wait for m, not only for t.
+    images = [
+        Image("sha256:t", ("deployed-x-t",), day(1)),
+        Image("sha256:m", ("deployed-x-m",), day(1)),
+        Image("sha256:a", ("deployed-x-a",), day(1)),
+        Image("sha256:20", (SHA[2],), day(12)),
+    ]
+    plan = plan_retention(
+        images,
+        deployed_tag=SHA[2],
+        children={"sha256:t": ["sha256:m", "sha256:a"], "sha256:m": ["sha256:a"]},
+        protect_prefix="deployed-x-",
+        keep=0,
+    )
+    assert plan.delete == ["deployed-x-t", "deployed-x-m", "deployed-x-a"]
+
+
+def test_a_cyclic_listing_does_not_stop_the_plan() -> None:
+    # Content addressing rules a real cycle out; a malformed listing must still plan.
+    images = [
+        Image("sha256:a", ("deployed-x-a",), day(1)),
+        Image("sha256:b", ("deployed-x-b",), day(1)),
+        Image("sha256:20", (SHA[2],), day(12)),
+    ]
+    plan = plan_retention(
+        images,
+        deployed_tag=SHA[2],
+        children={"sha256:a": ["sha256:b"], "sha256:b": ["sha256:a"]},
+        protect_prefix="deployed-x-",
+        keep=0,
+    )
+    assert set(plan.delete) == {"deployed-x-a", "deployed-x-b"}
+
+
+def test_an_untagged_index_still_in_the_repo_keeps_what_it_lists() -> None:
+    """An untagged index stays until the untagged-image lifecycle rule expires it, and until then
+    ECR refuses to remove the last tag of an image it lists, so the plan must not try."""
+    images = [
+        Image("sha256:u", (), day(1)),
+        Image("sha256:c", ("deployed-x-c",), day(1)),
+        Image("sha256:20", (SHA[2],), day(12)),
+    ]
+    plan = plan_retention(
+        images,
+        deployed_tag=SHA[2],
+        children={"sha256:u": ["sha256:c"]},
+        protect_prefix="deployed-x-",
+        keep=0,
+    )
+    assert "deployed-x-c" not in plan.delete, plan.delete
+    # Once the lifecycle rule has expired the index, the tag goes.
+    plan = plan_retention(
+        images[1:],
+        deployed_tag=SHA[2],
+        children={},
+        protect_prefix="deployed-x-",
+        keep=0,
+    )
+    assert plan.delete == ["deployed-x-c"]
 
 
 def test_builds_are_ordered_by_instant_across_a_dst_change() -> None:
@@ -297,3 +400,71 @@ def test_main_stops_on_any_other_put_error_and_shows_it(
     # AWS's own error, not a bare "returned non-zero exit status".
     err = capsys.readouterr().err
     assert "aws put-image" in err and "AccessDeniedException" in err, err
+
+
+def test_main_prunes_an_old_index_and_its_protected_platform_images(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Against a stand-in that behaves like ECR: removing an image's last tag deletes it, and that
+    is refused while a manifest list in the repo still references the image."""
+    index = "application/vnd.oci.image.index.v1+json"
+    children = {"sha256:old": ["sha256:amd", "sha256:arm"]}
+    tags = {
+        "sha256:old": [SHA[1]],
+        "sha256:amd": [protect_tag("deployed-x-", "sha256:amd")],
+        "sha256:arm": [protect_tag("deployed-x-", "sha256:arm")],
+        "sha256:new": [SHA[2], protect_tag("deployed-x-", "sha256:new")],
+    }
+    pushed = {"sha256:old": 1, "sha256:amd": 1, "sha256:arm": 1, "sha256:new": 2}
+
+    def aws(*args: str) -> dict[str, object]:
+        if args[0] == "describe-images":
+            details = [
+                {
+                    **_detail(d, "unused", pushed[d]),
+                    "imageTags": list(t),
+                    "imageManifestMediaType": index if d in children else MANIFEST,
+                }
+                for d, t in tags.items()
+            ]
+            return {"imageDetails": details}
+        if args[0] == "batch-get-image":
+            digest = args[args.index("--image-ids") + 1].removeprefix("imageDigest=")
+            manifest = json.dumps({"manifests": [{"digest": c} for c in children.get(digest, [])]})
+            return {"images": [{"imageManifest": manifest}]}
+        if args[0] == "batch-delete-image":
+            tag = args[-1].removeprefix("imageTag=")
+            owner = next((d for d, t in tags.items() if tag in t), None)
+            if owner is None:
+                gone = {"imageId": {"imageTag": tag}, "failureCode": "ImageNotFound"}
+                return {"imageIds": [], "failures": [gone]}
+            digest = owner
+            referrers = [i for i, cs in children.items() if digest in cs and i in tags]
+            if tags[digest] == [tag] and referrers:
+                failure = {
+                    "imageId": {"imageTag": tag},
+                    "failureCode": "ImageReferencedByManifestList",
+                    "failureReason": f"Requested image referenced by manifest list: {referrers}",
+                }
+                return {"imageIds": [], "failures": [failure]}
+            tags[digest].remove(tag)
+            if not tags[digest]:
+                del tags[digest]
+            return {"imageIds": [{"imageTag": tag}], "failures": []}
+        return {}
+
+    monkeypatch.setattr(image_retention, "_aws", aws)
+    assert image_retention.main([*ARGS, "--deployed-tag", SHA[2]]) == 0, capsys.readouterr().err
+    # The old build and the platform images only its index listed are all gone.
+    assert set(tags) == {"sha256:new"}
+
+
+def test_a_tag_a_manifest_list_still_references_is_reported_apart_and_does_not_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The tag (and its image) stays, which is the safe outcome; any other refusal fails the step.
+    _ecr(monkeypatch, TWO_BUILDS, delete_failure="ImageReferencedByManifestList")
+    applied = image_retention.apply("r", Plan(delete=[SHA[1]]), dry_run=False)
+    assert applied.refused == []
+    assert applied.still_referenced == [f"{SHA[1]} (ImageReferencedByManifestList: refused)"]
+    assert image_retention.main([*ARGS, "--deployed-tag", SHA[2]]) == 0
